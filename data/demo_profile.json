@@ -1,0 +1,280 @@
+{
+  "description": "We manufacture compound animal feed \u2014 poultry, swine, cattle, aquaculture and a premium pet line \u2014 from five plants across southern and northern Europe. We buy grain and protein meals on the open market, most of it quoted in USD, and ship a meaningful share by sea container. Feed is a thin-margin business: a few percent on input cost is the difference between hitting the plan and missing it.",
+  "company": {
+    "name": "NordFeed Group",
+    "industry": "Animal nutrition / compound feed",
+    "reporting_currency": "EUR",
+    "fiscal_year_start_month": 1,
+    "budget_year": 2027
+  },
+  "product_lines": [
+    {
+      "name": "Poultry Feed",
+      "note": "Livestock \u00b7 25kg bag"
+    },
+    {
+      "name": "Swine Feed",
+      "note": "Livestock \u00b7 25kg bag"
+    },
+    {
+      "name": "Cattle Feed",
+      "note": "Livestock \u00b7 bulk"
+    },
+    {
+      "name": "Premium Pet Nutrition",
+      "note": "Companion \u00b7 12kg bag"
+    },
+    {
+      "name": "Aqua Feed",
+      "note": "Aquaculture \u00b7 20kg bag"
+    }
+  ],
+  "markets": [
+    {
+      "name": "Iberia",
+      "currency": "EUR"
+    },
+    {
+      "name": "Nordics",
+      "currency": "EUR"
+    },
+    {
+      "name": "Benelux",
+      "currency": "EUR"
+    },
+    {
+      "name": "Central Europe",
+      "currency": "EUR"
+    },
+    {
+      "name": "Adriatic",
+      "currency": "EUR"
+    }
+  ],
+  "cost_drivers": [
+    {
+      "driver_id": "chicken_meal",
+      "name": "Chicken meal",
+      "category": "ingredient",
+      "unit": "USD/t",
+      "quote_currency": "USD",
+      "hedge_coverage": 0.3,
+      "adverse_direction": "up",
+      "stale_after_days": 7,
+      "search_hint": "chicken meal poultry by-product meal price index Europe",
+      "why": "~22% of poultry feed cost by weight \u2014 the single largest input",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "wheat",
+      "name": "Feed wheat",
+      "category": "ingredient",
+      "unit": "EUR/t",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.45,
+      "adverse_direction": "up",
+      "stale_after_days": 7,
+      "search_hint": "feed wheat price EUR per tonne Matif",
+      "why": "The volume carbohydrate across every livestock line",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "soybean_meal",
+      "name": "Soybean meal",
+      "category": "ingredient",
+      "unit": "USD/t",
+      "quote_currency": "USD",
+      "hedge_coverage": 0.25,
+      "adverse_direction": "up",
+      "stale_after_days": 7,
+      "search_hint": "soybean meal CBOT price USD per tonne",
+      "why": "The protein backbone; quoted in USD, so FX moves it in EUR",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "maize",
+      "name": "Maize",
+      "category": "ingredient",
+      "unit": "EUR/t",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.35,
+      "adverse_direction": "up",
+      "stale_after_days": 7,
+      "search_hint": "feed maize corn price EUR per tonne Europe",
+      "why": "Second carbohydrate source, substitutable with wheat",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "rapeseed_meal",
+      "name": "Rapeseed meal",
+      "category": "ingredient",
+      "unit": "EUR/t",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.2,
+      "adverse_direction": "up",
+      "stale_after_days": 7,
+      "search_hint": "rapeseed meal price EUR per tonne Europe",
+      "why": "Cheaper protein used mainly in cattle and swine",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "fish_meal",
+      "name": "Fish meal",
+      "category": "ingredient",
+      "unit": "USD/t",
+      "quote_currency": "USD",
+      "hedge_coverage": 0.1,
+      "adverse_direction": "up",
+      "stale_after_days": 14,
+      "search_hint": "fish meal price index Peru USD per tonne",
+      "why": "~32% of aqua feed cost; the most volatile input we buy",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "vitamin_premix",
+      "name": "Vitamin premix",
+      "category": "ingredient",
+      "unit": "EUR/kg",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.0,
+      "adverse_direction": "up",
+      "stale_after_days": 30,
+      "search_hint": "feed vitamin premix price index",
+      "why": "Small by weight, material by value, and rarely re-quoted",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "sea_freight",
+      "name": "Sea freight",
+      "category": "logistics",
+      "unit": "USD/FEU",
+      "quote_currency": "USD",
+      "hedge_coverage": 0.15,
+      "adverse_direction": "up",
+      "stale_after_days": 7,
+      "search_hint": "container freight rate index FEU Europe",
+      "why": "Imported protein arrives by container; only 15% hedged",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "road_freight",
+      "name": "Road freight",
+      "category": "logistics",
+      "unit": "EUR/1000km",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.0,
+      "adverse_direction": "up",
+      "stale_after_days": 14,
+      "search_hint": "European road freight rate index",
+      "why": "Plant-to-customer delivery across all regions",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "energy_gas",
+      "name": "Natural gas",
+      "category": "energy",
+      "unit": "EUR/MWh",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.5,
+      "adverse_direction": "up",
+      "stale_after_days": 3,
+      "search_hint": "TTF natural gas price EUR per MWh",
+      "why": "Pelleting and conditioning heat",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "energy_power",
+      "name": "Electricity",
+      "category": "energy",
+      "unit": "EUR/MWh",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.4,
+      "adverse_direction": "up",
+      "stale_after_days": 3,
+      "search_hint": "European wholesale electricity price EUR per MWh",
+      "why": "Grinding and mixing across five plants",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "packaging_film",
+      "name": "Packaging film",
+      "category": "packaging",
+      "unit": "EUR/t",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.0,
+      "adverse_direction": "up",
+      "stale_after_days": 30,
+      "search_hint": "polyethylene packaging film price index Europe",
+      "why": "Bagged lines only; highest per-tonne on the premium pack",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "eur_usd",
+      "name": "EUR/USD rate",
+      "category": "fx",
+      "unit": "USD per EUR",
+      "quote_currency": "USD",
+      "hedge_coverage": 0.0,
+      "adverse_direction": "down",
+      "stale_after_days": 1,
+      "search_hint": "EUR USD exchange rate",
+      "why": "Prices the USD-quoted protein inputs into EUR",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    },
+    {
+      "driver_id": "wage_inflation",
+      "name": "Wage inflation",
+      "category": "labour",
+      "unit": "%/yr",
+      "quote_currency": "EUR",
+      "hedge_coverage": 0.0,
+      "adverse_direction": "up",
+      "stale_after_days": 30,
+      "search_hint": "eurozone manufacturing wage growth rate",
+      "why": "Drives plant and logistics opex year on year",
+      "sources": [],
+      "current_value": null,
+      "assumption_value": null,
+      "confirmed_by_cfo": true
+    }
+  ]
+}

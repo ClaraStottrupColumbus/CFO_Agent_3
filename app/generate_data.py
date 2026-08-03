@@ -332,6 +332,56 @@ def generate(profile: dict | None = None) -> dict:
             "product_lines": len(PRODUCT_LINES), "data_dir": str(DATA_DIR)}
 
 
+def apply_profile(profile: dict) -> dict:
+    """Seed the datasets for a confirmed company profile.
+
+    The internal history is synthetic either way — this is a demo, and there is
+    no real ERP behind it. What the profile genuinely owns is the WATCHLIST, so
+    the driver catalog is rebuilt from the CFO's confirmed drivers while the
+    seeded history stays. Drivers the demo has no price history for simply start
+    as "never verified", which is honest: the agent then has to go and research
+    them, which is exactly the intended first-run experience.
+    """
+    if not (DATA_DIR / "budget_vs_actuals.parquet").exists():
+        generate()
+
+    confirmed = profile.get("cost_drivers") or []
+    if not confirmed:
+        return {"drivers": 0, "note": "no confirmed drivers; kept the seeded watchlist"}
+
+    seeded = {d[0]: d for d in DRIVERS}
+    rows = []
+    for d in confirmed:
+        did = str(d.get("driver_id"))
+        base = seeded.get(did)
+        rows.append({
+            "driver_id": did,
+            "name": d.get("name") or did,
+            "category": d.get("category") or "other",
+            "unit": d.get("unit") or "",
+            "quote_currency": (d.get("quote_currency") or "EUR").upper(),
+            # Fall back to the seeded baseline/hedge where the id matches, so
+            # the demo persona keeps its full fidelity.
+            "baseline": base[5] if base else (d.get("assumption_value") or 0.0),
+            "hedge_coverage": float(d.get("hedge_coverage") or (base[6] if base else 0.0)),
+            "adverse_direction": d.get("adverse_direction") or "up",
+            "stale_after_days": int(d.get("stale_after_days") or 7),
+            "search_hint": d.get("search_hint") or "",
+        })
+    _write(pd.DataFrame(rows), "drivers")
+
+    # Drop price history for drivers no longer on the watchlist, so
+    # driver_status doesn't report on things the CFO removed.
+    keep = {r["driver_id"] for r in rows}
+    prices = _read("driver_prices")
+    if not prices.empty:
+        _write(prices[prices["driver_id"].isin(keep)].reset_index(drop=True),
+               "driver_prices")
+
+    refresh_overview()
+    return {"drivers": len(rows), "unpriced": len(keep - set(seeded))}
+
+
 def _seed_locked_assumptions(series: dict, catalog: dict) -> None:
     """Freeze the September positions the 2027 budget was built on.
 
