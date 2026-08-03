@@ -1,2 +1,306 @@
-<h1>CFO Budgeting Agent</h1>
-<p>Frontend build in progress.</p>
+<!-- index.html — CFO Finance Agent demo UI.
+     A hash-routed single page: a home screen with three feature cards
+     (Chat, Weekly report, Monthly report) plus a quick-ask composer, a shared
+     feature view with a sidebar of past sessions + a message pane, and a data
+     view (opened from the header's "Data ingestion" link). Conversations
+     and reports are persisted server-side, so they survive reloads and
+     restarts. The settings side panel (gear icon) stays available across all
+     views. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CFO Finance Agent</title>
+  <link rel="stylesheet" href="/static/columbus-tokens.css?v=11">
+  <link rel="stylesheet" href="/static/style.css?v=11">
+</head>
+<body>
+  <header>
+    <div class="header-title">
+      <a href="#/" class="home-link" title="Home">
+        <span class="logo">€</span>
+        <div>
+          <h1>CFO Budgeting Agent</h1>
+          <p class="subtitle">Next year's budget · every assumption sourced and dated</p>
+        </div>
+      </a>
+    </div>
+    <nav id="topic-switcher" class="topic-switcher hidden" aria-label="Switch section">
+      <a href="#/chat" data-kind="chat">Ask</a>
+      <a href="#/weekly" data-kind="weekly">Market scan</a>
+      <a href="#/monthly" data-kind="monthly">Budget revision</a>
+      <a href="#/drivers" title="Budget drivers — what you know about the world">Drivers</a>
+      <a href="#/scenarios" title="Saved budget scenarios">Scenarios</a>
+    </nav>
+    <div class="header-right">
+      <a id="scheduler-link" href="#/scheduler" title="Scheduler — autonomous tasks the agent runs for you">Scheduler</a>
+      <a id="data-link" href="#/data" title="Data ingestion — the datasets behind every answer">Data ingestion</a>
+      <span id="scheduler-badge" class="badge" title="Scheduled data refresh status">refresh: …</span>
+      <button id="alerts-btn" title="Alerts" aria-label="Alerts">
+        <svg class="icon" width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 5c-7.2 0-13 5.8-13 13v9l-4 6v3h34v-3l-4-6v-9c0-7.2-5.8-13-13-13Z"/><path d="M19 39a5 5 0 0 0 10 0Z"/></svg>
+        <span id="alerts-badge" class="alerts-badge hidden"></span>
+      </button>
+      <button id="settings-btn" title="Settings" aria-label="Settings">⚙</button>
+    </div>
+  </header>
+
+  <!-- Home view: three feature cards -->
+  <!-- The ONLY view without `hidden`. Nothing else paints until route()
+       decides, so a gated URL never flashes the wrong view. -->
+  <main id="boot-view" class="view">
+    <div class="boot-inner"><span class="boot-dot"></span><span class="boot-dot"></span><span class="boot-dot"></span></div>
+  </main>
+
+  <main id="setup-view" class="view hidden">
+    <div class="page-inner"><div id="setup-body"></div></div>
+  </main>
+
+  <main id="drivers-view" class="view hidden">
+   <div class="page-inner">
+    <header class="page-head">
+      <p class="eyebrow">Budget drivers</p>
+      <h2>What you know about the world</h2>
+      <p class="page-sub">Your budget rests on these assumptions whether or not you write them down.</p>
+    </header>
+    <div id="drivers-summary" class="driver-summary"></div>
+    <div id="drivers-body"></div>
+   </div>
+  </main>
+
+  <main id="scenarios-view" class="view hidden">
+   <div class="page-inner">
+    <header class="page-head">
+      <p class="eyebrow">Scenarios</p>
+      <h2>What the budget could be</h2>
+      <p class="page-sub">Scenarios are created in conversation, during a revision. This is where you compare and activate them.</p>
+    </header>
+    <div id="scenarios-body"></div>
+   </div>
+  </main>
+
+  <main id="home-view" class="view hidden">
+    <div class="home-inner">
+      <h2 class="home-heading">What would you like to do?</h2>
+      <div class="cards">
+        <a class="card" href="#/chat">
+          <p class="eyebrow">Ask anything</p>
+          <h3>Chat</h3>
+          <p>Ask about revenue, margins, cash and risks — source-backed answers, on demand. Your conversations are saved.</p>
+          <svg class="arr" width="28" height="28" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg>
+        </a>
+        <a class="card" href="#/weekly">
+          <p class="eyebrow">This week</p>
+          <h3>Weekly report</h3>
+          <p>This week's finance overview, generated automatically. Read it, then ask follow-up questions in context.</p>
+          <svg class="arr" width="28" height="28" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg>
+        </a>
+        <a class="card" href="#/monthly">
+          <p class="eyebrow">Month-end</p>
+          <h3>Monthly report</h3>
+          <p>The month-end close overview — budget variance, margins, cash and risks — with follow-up questions.</p>
+          <svg class="arr" width="28" height="28" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg>
+        </a>
+      </div>
+      <form id="home-composer">
+        <input id="home-input" type="text" placeholder="Ask the agent right away — revenue, margins, cash, risks…" autocomplete="off">
+        <button type="submit" id="home-send-btn">Send <svg class="arr" width="16" height="16" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg></button>
+      </form>
+
+      <!-- Compact overview of the scheduled tasks; a bouncing ball marks the one running right now. -->
+      <div id="home-schedules" class="home-schedules hidden">
+        <p class="home-schedules-title">Scheduled tasks <a href="#/scheduler" class="home-schedules-link">Manage ↗</a></p>
+        <ul id="home-schedules-list"></ul>
+      </div>
+    </div>
+  </main>
+
+  <!-- Feature view: shared by chat / weekly / monthly -->
+  <div id="feature-view" class="view hidden">
+    <aside id="sidebar">
+      <a href="#/" class="back-btn">← Home</a>
+      <button id="new-session-btn" class="primary-btn">+ New chat</button>
+      <p id="sidebar-title" class="sidebar-title">Conversations</p>
+      <ul id="session-list"></ul>
+    </aside>
+    <main id="feature-main">
+      <div id="feature-header">
+        <h2 id="feature-heading">Chat</h2>
+        <p id="feature-sub" class="feature-sub"></p>
+      </div>
+      <div id="messages"></div>
+      <form id="composer">
+        <button type="button" id="attach-btn" class="icon-btn" title="Attach files" aria-label="Attach files">
+          <svg class="icon" width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><rect x="22" y="9" width="4" height="13"/><rect x="22" y="26" width="4" height="13"/><rect x="26" y="22" width="13" height="4"/><rect x="9" y="22" width="13" height="4"/></svg>
+        </button>
+        <div class="composer-field">
+          <div id="attachments" class="attachments"></div>
+          <input id="input" type="text" placeholder="Ask about revenue, margins, cash, risks…" autocomplete="off">
+        </div>
+        <button type="submit" id="send-btn">Send <svg class="arr" width="16" height="16" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg></button>
+        <input type="file" id="file-input" multiple hidden>
+      </form>
+    </main>
+  </div>
+
+  <!-- Data ingestion view: the curated datasets behind the agent's answers -->
+  <main id="data-view" class="view hidden">
+    <div class="data-inner">
+      <div class="data-header">
+        <div>
+          <h2>Data ingestion</h2>
+          <p class="feature-sub">The curated datasets every answer is sourced from — files, columns, coverage and freshness.</p>
+        </div>
+        <div class="data-refresh">
+          <span id="data-refresh-status" class="hint"></span>
+          <button id="data-refresh-now" class="secondary">Refresh now</button>
+        </div>
+      </div>
+      <div id="datasets-list"></div>
+    </div>
+  </main>
+
+  <!-- Scheduler view: user-defined tasks the agent runs autonomously -->
+  <main id="scheduler-view" class="view hidden">
+    <div class="data-inner">
+      <div class="data-header">
+        <div>
+          <h2>Scheduler</h2>
+          <p class="feature-sub">Autonomous tasks the agent runs for you — data refreshes, reports, custom prompts and urgency scans.</p>
+        </div>
+        <div class="data-refresh">
+          <button id="new-task-btn" class="primary-btn" style="width:auto">+ New task</button>
+        </div>
+      </div>
+      <form id="task-form" class="task-form hidden">
+        <h3 id="task-form-title">New task</h3>
+        <label class="row"><span>Name</span>
+          <input type="text" id="task-name" placeholder="e.g. Morning revenue brief" maxlength="80">
+        </label>
+        <label class="row"><span>Type</span>
+          <select id="task-type">
+            <option value="custom_prompt">Custom agent prompt</option>
+            <option value="weekly_report">Weekly report</option>
+            <option value="monthly_report">Monthly report</option>
+            <option value="urgency_scan">Urgency scan</option>
+            <option value="data_refresh">Data refresh</option>
+          </select>
+        </label>
+        <label class="task-prompt-row"><span>Prompt</span>
+          <textarea id="task-prompt" rows="3" placeholder="What should the agent do on each run? The result appears as a chat in the sidebar."></textarea>
+        </label>
+        <label class="row"><span>Schedule</span>
+          <select id="task-mode">
+            <option value="interval">Every interval</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
+        </label>
+        <label class="row task-interval-row"><span>Interval</span>
+          <select id="task-interval">
+            <option value="30">30 seconds</option>
+            <option value="60">1 minute</option>
+            <option value="300" selected>5 minutes</option>
+            <option value="900">15 minutes</option>
+            <option value="3600">1 hour</option>
+          </select>
+        </label>
+        <label class="row task-time-row hidden"><span>Time</span>
+          <input type="time" id="task-time" value="07:30">
+        </label>
+        <label class="row task-dow-row hidden"><span>Day of week</span>
+          <select id="task-dow">
+            <option value="0">Monday</option><option value="1">Tuesday</option>
+            <option value="2">Wednesday</option><option value="3">Thursday</option>
+            <option value="4">Friday</option><option value="5">Saturday</option>
+            <option value="6">Sunday</option>
+          </select>
+        </label>
+        <label class="row task-dom-row hidden"><span>Day of month</span>
+          <input type="number" id="task-dom" min="1" max="31" value="1">
+        </label>
+        <label class="row"><span>Enabled</span>
+          <input type="checkbox" id="task-enabled" checked>
+        </label>
+        <div class="task-form-actions">
+          <button type="submit" class="primary-btn" style="width:auto">Save task</button>
+          <button type="button" id="task-form-cancel" class="secondary">Cancel</button>
+        </div>
+      </form>
+      <div id="task-list"></div>
+    </div>
+  </main>
+
+  <!-- Alerts view: the urgency-alert inbox -->
+  <main id="alerts-view" class="view hidden">
+    <div class="data-inner">
+      <div class="data-header">
+        <div>
+          <h2>Alerts</h2>
+          <p class="feature-sub">Urgent findings from the monitoring rules — analysed by the agent the moment they appear.</p>
+        </div>
+        <div class="data-refresh">
+          <button id="alerts-scan-now" class="secondary">Scan now</button>
+          <button id="alerts-read-all" class="secondary">Mark all read</button>
+        </div>
+      </div>
+      <div id="alerts-list"></div>
+    </div>
+  </main>
+
+  <aside id="settings-panel" class="hidden">
+    <div class="panel-header">
+      <h2>Settings</h2>
+      <button id="close-settings" aria-label="Close">×</button>
+    </div>
+
+    <section>
+      <h3>Model</h3>
+      <select id="model-select"></select>
+    </section>
+
+    <section>
+      <h3>Scheduled data refresh</h3>
+      <label class="row">
+        <span>Enabled</span>
+        <input type="checkbox" id="refresh-enabled">
+      </label>
+      <label class="row">
+        <span>Interval</span>
+        <select id="refresh-interval">
+          <option value="30">30 seconds</option>
+          <option value="60">1 minute</option>
+          <option value="300">5 minutes</option>
+          <option value="900">15 minutes</option>
+          <option value="3600">1 hour</option>
+        </select>
+      </label>
+      <p class="hint" id="refresh-status">—</p>
+      <button id="refresh-now" class="secondary">Refresh now</button>
+    </section>
+
+    <section>
+      <h3>Urgency rules</h3>
+      <div id="rules-list"></div>
+      <p class="hint">When a rule fires, the agent analyses the breach and raises an alert. One alert per rule, entity and month.</p>
+    </section>
+
+    <section>
+      <h3>Notifications</h3>
+      <button id="notify-enable" class="secondary">Enable browser notifications</button>
+      <p class="hint" id="notify-hint">Get a desktop notification when a new alert lands.</p>
+    </section>
+
+    <section>
+      <h3>Debugging</h3>
+      <label class="row">
+        <span>Show raw tool calls &amp; data</span>
+        <input type="checkbox" id="show-debug">
+      </label>
+    </section>
+  </aside>
+
+  <script src="/static/app.js?v=11"></script>
+</body>
+</html>
