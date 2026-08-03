@@ -1,20 +1,20 @@
 <!-- index.html — CFO Finance Agent demo UI.
-     A hash-routed single page: a home screen with three feature cards
-     (Chat, Weekly report, Monthly report) plus a quick-ask composer, a shared
-     feature view with a sidebar of past sessions + a message pane, and a data
-     view (opened from the header's "Data ingestion" link). Conversations
-     and reports are persisted server-side, so they survive reloads and
-     restarts. The settings side panel (gear icon) stays available across all
-     views. -->
+     A hash-routed single page. `#/` is the chat itself: the shared feature view,
+     with a sidebar of past sessions and a message pane. Everything deeper —
+     market scan, budget revision, drivers, scenarios, budget outlook, scheduler,
+     data ingestion — is reached from the header nav, which route() shows on every
+     screen except the setup wizard and Budget Outlook's first run. Conversations
+     and reports are persisted server-side, so they survive reloads and restarts.
+     The settings side panel (gear icon) stays available across all views. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CFO Finance Agent</title>
-  <link rel="stylesheet" href="/static/columbus-tokens.css?v=17">
-  <link rel="stylesheet" href="/static/style.css?v=17">
-  <link rel="stylesheet" href="/static/budget.css?v=17">
+  <link rel="stylesheet" href="/static/columbus-tokens.css?v=18">
+  <link rel="stylesheet" href="/static/style.css?v=18">
+  <link rel="stylesheet" href="/static/budget.css?v=18">
 </head>
 <body>
   <header>
@@ -27,18 +27,22 @@
         </div>
       </a>
     </div>
+    <!-- The single way into everything deeper. route() owns both its visibility
+         and the active pill — every tab carries data-kind so all six can light up.
+         #budget-link keeps its id only as the anchor for the note below; its
+         styling comes from .topic-switcher a like every other tab. -->
     <nav id="topic-switcher" class="topic-switcher hidden" aria-label="Switch section">
       <a href="#/chat" data-kind="chat">Ask</a>
       <a href="#/weekly" data-kind="weekly">Market scan</a>
       <a href="#/monthly" data-kind="monthly">Budget revision</a>
-      <a href="#/drivers" title="Budget drivers — what you know about the world">Drivers</a>
-      <a href="#/scenarios" title="Saved budget scenarios">Scenarios</a>
-    </nav>
-    <div class="header-right">
-      <!-- In the header, not on the home grid: the header sits outside .view, so
+      <a href="#/drivers" data-kind="drivers" title="Budget drivers — what you know about the world">Drivers</a>
+      <a href="#/scenarios" data-kind="scenarios" title="Saved budget scenarios">Scenarios</a>
+      <!-- In the header, not inside a view: the header sits outside .view, so
            this stays reachable while the profile gate holds the rest of the app
            on #/setup — which is the point of Budget Outlook's independent gate. -->
-      <a id="budget-link" href="#/budget" title="Budget outlook — next year's budget from your own assumptions">Budget outlook</a>
+      <a id="budget-link" href="#/budget" data-kind="budget" title="Budget outlook — next year's budget from your own assumptions">Budget outlook</a>
+    </nav>
+    <div class="header-right">
       <a id="scheduler-link" href="#/scheduler" title="Scheduler — autonomous tasks the agent runs for you">Scheduler</a>
       <a id="data-link" href="#/data" title="Data ingestion — the datasets behind every answer">Data ingestion</a>
       <span id="scheduler-badge" class="badge" title="Scheduled data refresh status">refresh: …</span>
@@ -50,9 +54,8 @@
     </div>
   </header>
 
-  <!-- Home view: three feature cards -->
-  <!-- The ONLY view without `hidden`. Nothing else paints until route()
-       decides, so a gated URL never flashes the wrong view. -->
+  <!-- Boot view: the ONLY view without `hidden`. Nothing else paints until
+       route() decides, so a gated URL never flashes the wrong view. -->
   <main id="boot-view" class="view">
     <div class="boot-inner"><span class="boot-dot"></span><span class="boot-dot"></span><span class="boot-dot"></span></div>
   </main>
@@ -90,46 +93,10 @@
   <main id="budget-view" class="view hidden"></main>
   <main id="budget-config-view" class="view hidden"></main>
 
-  <main id="home-view" class="view hidden">
-    <div class="home-inner">
-      <h2 class="home-heading">What would you like to do?</h2>
-      <div class="cards">
-        <a class="card" href="#/chat">
-          <p class="eyebrow">Ask anything</p>
-          <h3>Chat</h3>
-          <p>Ask about revenue, margins, cash and risks — source-backed answers, on demand. Your conversations are saved.</p>
-          <svg class="arr" width="28" height="28" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg>
-        </a>
-        <a class="card" href="#/weekly">
-          <p class="eyebrow">This week</p>
-          <h3>Weekly report</h3>
-          <p>This week's finance overview, generated automatically. Read it, then ask follow-up questions in context.</p>
-          <svg class="arr" width="28" height="28" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg>
-        </a>
-        <a class="card" href="#/monthly">
-          <p class="eyebrow">Month-end</p>
-          <h3>Monthly report</h3>
-          <p>The month-end close overview — budget variance, margins, cash and risks — with follow-up questions.</p>
-          <svg class="arr" width="28" height="28" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg>
-        </a>
-      </div>
-      <form id="home-composer">
-        <input id="home-input" type="text" placeholder="Ask the agent right away — revenue, margins, cash, risks…" autocomplete="off">
-        <button type="submit" id="home-send-btn">Send <svg class="arr" width="16" height="16" viewBox="0 0 48 48" aria-hidden="true"><path d="M26.41 9.59 23.59 12.41 33.17 22 37 22 37 26 33.17 26 23.59 35.59 26.41 38.41 40.83 24 26.41 9.59Z"/><rect x="9" y="22" width="24" height="4"/></svg></button>
-      </form>
-
-      <!-- Compact overview of the scheduled tasks; a bouncing ball marks the one running right now. -->
-      <div id="home-schedules" class="home-schedules hidden">
-        <p class="home-schedules-title">Scheduled tasks <a href="#/scheduler" class="home-schedules-link">Manage ↗</a></p>
-        <ul id="home-schedules-list"></ul>
-      </div>
-    </div>
-  </main>
-
-  <!-- Feature view: shared by chat / weekly / monthly -->
+  <!-- Feature view: shared by chat / weekly / monthly, and the landing screen —
+       route() sends a bare `#/` here as chat. -->
   <div id="feature-view" class="view hidden">
     <aside id="sidebar">
-      <a href="#/" class="back-btn">← Home</a>
       <button id="new-session-btn" class="primary-btn">+ New chat</button>
       <p id="sidebar-title" class="sidebar-title">Conversations</p>
       <ul id="session-list"></ul>
@@ -314,7 +281,7 @@
 
   <!-- budget.js BEFORE app.js: it only declares window.BudgetPlan, while app.js
        ends by calling boot() → route(), which needs it to already exist. -->
-  <script src="/static/budget.js?v=17"></script>
-  <script src="/static/app.js?v=17"></script>
+  <script src="/static/budget.js?v=18"></script>
+  <script src="/static/app.js?v=18"></script>
 </body>
 </html>

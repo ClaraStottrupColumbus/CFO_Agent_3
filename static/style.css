@@ -50,6 +50,10 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Six nav tabs plus the header-right pills overflow below ~700px. Wrapping,
+     rather than a breakpoint, keeps every link reachable at any width. */
+  flex-wrap: wrap;
+  row-gap: 0.6rem;
   padding: 0.8rem 1.4rem;
   background: var(--surface);
   border-bottom: 1px solid var(--border-subtle);
@@ -159,9 +163,11 @@ h1 {
 }
 #settings-btn:hover { background: rgba(1, 1, 144, 0.06); }
 
-/* Topic switcher — segmented pill shown inside a feature view */
+/* Topic switcher — the app's one navigation surface, shown on every route
+   except #/setup and Budget Outlook's first run (see route() in app.js). */
 .topic-switcher {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 0.15rem;
   background: var(--accent-soft);
   padding: 0.2rem;
@@ -185,59 +191,6 @@ h1 {
 .view { flex: 1; min-height: 0; display: flex; }
 .view.hidden { display: none; }
 
-/* ---------------- Home view ---------------- */
-
-#home-view { align-items: flex-start; justify-content: center; overflow-y: auto; }
-.home-inner { max-width: 1000px; width: 100%; padding: 3rem 1.5rem; margin: 0 auto; }
-.home-heading {
-  font-family: var(--font-display);
-  font-weight: var(--fw-regular);
-  font-size: var(--fs-display-sm);
-  line-height: var(--lh-tight);
-  letter-spacing: var(--tracking-tight);
-  color: var(--fg-1);
-  margin: 0 0 2rem;
-  text-align: center;
-}
-.cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 1.4rem;
-}
-.card {
-  display: flex;
-  flex-direction: column;
-  text-decoration: none;
-  color: inherit;
-  background: var(--bg-surface);
-  border-radius: var(--radius-lg);
-  padding: 1.8rem 1.6rem;
-  box-shadow: 0 2px 8px rgba(1, 1, 144, 0.07);
-  transition: transform var(--duration-base) var(--ease-out),
-              box-shadow var(--duration-base) var(--ease-out);
-}
-.card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
-.card .eyebrow {
-  font-family: var(--font-sans);
-  font-size: var(--fs-caption);
-  font-weight: var(--fw-medium);
-  letter-spacing: var(--tracking-widest);
-  text-transform: uppercase;
-  color: var(--fg-3);
-  margin: 0 0 0.6rem;
-}
-.card h3 {
-  font-family: var(--font-display);
-  font-weight: var(--fw-regular);
-  font-size: 1.75rem;
-  line-height: var(--lh-tight);
-  letter-spacing: var(--tracking-tight);
-  color: var(--columbus-navy);
-  margin: 0 0 0.6rem;
-}
-.card p { margin: 0; font-size: 0.9rem; color: var(--fg-2); line-height: var(--lh-relaxed); }
-.card .arr { color: var(--columbus-orange); margin-top: auto; padding-top: 1.4rem; box-sizing: content-box; }
-
 /* ---------------- Feature view ---------------- */
 
 #feature-view { flex-direction: row; }
@@ -252,19 +205,6 @@ h1 {
   padding: 1rem 0.9rem;
   overflow-y: auto;
 }
-.back-btn {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  text-decoration: none;
-  color: var(--fg-2);
-  font-size: 0.85rem;
-  padding: 0.3rem 0.2rem 0.85rem;
-  border-bottom: 1px solid transparent;
-}
-.back-btn:hover { color: var(--columbus-navy); border-bottom-color: var(--columbus-orange); }
-
 .primary-btn {
   font-family: var(--font-sans);
   font-weight: var(--fw-medium);
@@ -613,7 +553,7 @@ h1 {
 .msg.user .msg-attachments .attach-chip { background: rgba(255, 255, 255, 0.16); color: var(--white); }
 .msg-text { white-space: pre-wrap; }
 
-#input, #home-input {
+#input {
   flex: 1;
   width: 100%;
   font-family: var(--font-sans);
@@ -625,10 +565,10 @@ h1 {
   font-size: 0.95rem;
   outline: none;
 }
-#input::placeholder, #home-input::placeholder { color: rgba(1, 1, 144, 0.4); }
-#input:focus, #home-input:focus { border-color: var(--columbus-navy); box-shadow: 0 0 0 2px rgba(1, 1, 144, 0.18); }
+#input::placeholder { color: rgba(1, 1, 144, 0.4); }
+#input:focus { border-color: var(--columbus-navy); box-shadow: 0 0 0 2px rgba(1, 1, 144, 0.18); }
 
-#send-btn, #home-send-btn {
+#send-btn {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -645,102 +585,9 @@ h1 {
               box-shadow var(--duration-base) var(--ease-out),
               transform var(--duration-fast) var(--ease-out);
 }
-#send-btn:hover, #home-send-btn:hover { background: var(--cta-hover); box-shadow: var(--shadow-glow-orange); }
-#send-btn:active, #home-send-btn:active { transform: scale(0.98); }
-#send-btn:disabled, #home-send-btn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
-
-/* Home-screen quick-ask composer, under the feature cards */
-#home-composer {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  max-width: 720px;
-  margin: 2.2rem auto 0;
-}
-
-/* Home-screen schedule overview, under the composer */
-.home-schedules {
-  max-width: 720px;
-  margin: 1.6rem auto 0;
-  background: var(--bg-surface);
-  border-radius: var(--radius-lg);
-  padding: 1.1rem 1.4rem;
-  box-shadow: 0 2px 8px rgba(1, 1, 144, 0.07);
-}
-.home-schedules.hidden { display: none; }
-.home-schedules-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  font-size: var(--fs-caption);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-widest);
-  color: var(--fg-3);
-  font-weight: var(--fw-medium);
-  margin: 0 0 0.6rem;
-}
-.home-schedules-link {
-  font-size: 0.74rem;
-  font-weight: var(--fw-medium);
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--columbus-navy);
-  text-decoration: none;
-  border-bottom: 1px solid transparent;
-}
-.home-schedules-link:hover { border-bottom-color: var(--columbus-orange); }
-#home-schedules-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.home-schedule-row {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.5rem 0.2rem;
-  border-top: 1px solid var(--border-subtle);
-  font-size: 0.88rem;
-  color: var(--fg-1);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-}
-.home-schedule-row:first-child { border-top: 0; }
-.home-schedule-row:hover { background: rgba(1, 1, 144, 0.04); }
-.home-schedule-name { font-weight: var(--fw-medium); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.home-schedule-when { color: var(--fg-3); font-size: 0.78rem; white-space: nowrap; }
-.home-schedule-status {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  font-size: 0.76rem;
-  font-weight: var(--fw-medium);
-  white-space: nowrap;
-}
-.home-schedule-status.is-running { color: #A04C00; }
-.home-schedule-status.is-idle { color: var(--fg-3); }
-.home-schedule-status.is-paused { color: var(--fg-3); font-style: italic; }
-.home-schedule-status.is-error { color: var(--bad); }
-
-/* The bouncing ball marking the schedule that is running right now.
-   Wrapped in a fixed-height stage so the bounce doesn't shift the row. */
-.ball-stage {
-  display: inline-flex;
-  align-items: flex-end;
-  height: 1rem;
-  width: 0.6rem;
-  overflow: visible;
-}
-.bounce-ball {
-  width: 0.55rem; height: 0.55rem;
-  border-radius: 50%;
-  background: var(--cta);
-  animation: ball-bounce 0.55s cubic-bezier(0.3, 0.05, 0.6, 1) infinite alternate;
-  transform-origin: center bottom;
-}
-@keyframes ball-bounce {
-  from { transform: translateY(0) scaleX(1.15) scaleY(0.85); }  /* squash on landing */
-  25%  { transform: translateY(-0.15rem) scale(1); }
-  to   { transform: translateY(-0.6rem) scale(1); }
-}
+#send-btn:hover { background: var(--cta-hover); box-shadow: var(--shadow-glow-orange); }
+#send-btn:active { transform: scale(0.98); }
+#send-btn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
 
 .secondary {
   font-family: var(--font-sans);

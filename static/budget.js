@@ -827,5 +827,8 @@
     }
   }
 
-  window.BudgetPlan = { route, load };
+  // isConfigured is synchronous on purpose: app.js's route() calls it to decide
+  // nav chrome before dispatching, and boot() awaits BudgetPlan.load() before the
+  // first route(), so state.data is always populated by then.
+  window.BudgetPlan = { route, load, isConfigured: () => !!plan().configured };
 })();

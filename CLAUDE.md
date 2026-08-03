@@ -228,6 +228,17 @@ then attach listeners; a changed list is re-rendered wholesale. Charts are hand-
 (`CHART_COLORS` is validated for lightness/chroma/CVD/contrast — do not reorder). Liveness comes from
 polling timers, not websockets; `route()` is the single place navigation clears them.
 
+There is **no launcher screen**: a bare `#/` falls through to `renderFeature("chat", id)`, so the
+landing page *is* the chat, reusing `#feature-view` unchanged (`renderFeature` only rewrites the hash
+on the report branch, so `#/` stays `#/`). `#topic-switcher` is therefore the app's one navigation
+surface, and **`route()` is the only place that decides nav chrome** — one `updateNav(kind || "chat")`
+call after the profile gate sets both visibility and the active tab. Render functions must not touch
+the switcher themselves; that is exactly how `#/drivers` and `#/scenarios` used to inherit whichever
+pill was highlighted last. `updateNav` hides the nav only where its links would be traps: `#/setup`
+(everything else 409s until the profile is confirmed) and Budget Outlook's first run, read through the
+synchronous `BudgetPlan.isConfigured()` — safe because `boot()` awaits `BudgetPlan.load()` before the
+first `route()`.
+
 `createStreamRenderer(container, bubble, opts)` is the extracted streaming reveal loop, shared by
 chat, the setup wizard and the reasoning disclosure. Its 130 ms cadence, `max(14, backlog/5)` batch
 size, `.fade-new` span boundary (via the `\\u0001` sentinel inserted before markdown parsing), the

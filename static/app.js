@@ -1,14 +1,14 @@
 // app.js — Client logic for the CFO Finance Agent demo.
-// Hash-routed SPA: a home screen (#/) with feature cards + a quick-ask
-// composer, a shared feature view for chat (#/chat, #/chat/{id}), weekly
-// (#/weekly) and monthly (#/monthly) reports, and a data view (#/data)
-// listing the curated datasets. Conversations and reports are persisted
-// server-side as "sessions"; this file lists them in the sidebar, loads them
-// on demand, and streams new turns from /api/sessions/{id}/chat (SSE). The
-// settings panel handles model selection, the scheduled-refresh controls,
-// and the raw-debug view.
+// Hash-routed SPA. There is no launcher screen: a bare `#/` renders the chat,
+// via the same shared feature view that serves #/chat, #/chat/{id}, weekly
+// (#/weekly) and monthly (#/monthly) reports. Everything deeper lives behind the
+// header nav, which route() — the single place that decides chrome — shows on
+// every route except #/setup and Budget Outlook's first run. Conversations and
+// reports are persisted server-side as "sessions"; this file lists them in the
+// sidebar, loads them on demand, and streams new turns from
+// /api/sessions/{id}/chat (SSE). The settings panel handles model selection, the
+// scheduled-refresh controls, and the raw-debug view.
 
-const homeView = document.getElementById("home-view");
 const featureView = document.getElementById("feature-view");
 const dataView = document.getElementById("data-view");
 const schedulerView = document.getElementById("scheduler-view");
@@ -25,8 +25,6 @@ const alertsBadge = document.getElementById("alerts-badge");
 const taskListEl = document.getElementById("task-list");
 const taskForm = document.getElementById("task-form");
 const alertsListEl = document.getElementById("alerts-list");
-const homeComposer = document.getElementById("home-composer");
-const homeInput = document.getElementById("home-input");
 const datasetsListEl = document.getElementById("datasets-list");
 const dataRefreshStatus = document.getElementById("data-refresh-status");
 const dataRefreshNow = document.getElementById("data-refresh-now");
@@ -51,7 +49,7 @@ let settings = { model: null, show_debug: false };
 let profile = null;             // company profile; gates every route until confirmed
 let driverPollTimer = null;     // 2s poll while any driver is re-verifying
 let pendingAttachments = [];   // files staged for the next message: {name, kind, media_type, data}
-let pendingHomeMessage = null; // question typed on the home composer, sent once the chat view is up
+let pendingHomeMessage = null; // question handed to a fresh chat (from an alert, a driver or a scenario), sent once the chat view is up
 let pendingAlertId = null;     // alert being investigated — linked to the chat session once created
 let lastAlertTs = null;        // newest alert seen by the poll; null until the first poll seeds it
 
@@ -1050,18 +1048,6 @@ composer.addEventListener("submit", (e) => {
   sendMessage(text, attachments);
 });
 
-// Home-screen quick-ask composer: stash the question and navigate to a fresh
-// chat; renderFeature() consumes it once the chat view is set up (sending from
-// here would race the hashchange → route() re-render).
-homeComposer.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const text = homeInput.value.trim();
-  if (!text) return;
-  homeInput.value = "";
-  pendingHomeMessage = text;
-  location.hash = "#/chat";
-});
-
 // ---------- File attachments ----------
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;   // 8 MB per file
@@ -1138,7 +1124,7 @@ newSessionBtn.addEventListener("click", () => {
 
 // ---------- Router ----------
 
-const ALL_VIEWS = [bootView, setupView, homeView, featureView, dataView,
+const ALL_VIEWS = [bootView, setupView, featureView, dataView,
                    schedulerView, alertsView, driversView, scenariosView,
                    budgetView, budgetConfigView];
 function showOnly(viewEl) {
@@ -1159,7 +1145,6 @@ async function renderFeature(kind, sessionId) {
   newSessionBtn.textContent = meta.newLabel;
   newSessionBtn.style.display = kind === "chat" ? "" : "none";  // reports use per-folder "+ New chat"
   input.placeholder = meta.placeholder;
-  updateTopicSwitcher(kind);
   pendingAttachments = [];       // don't carry staged files across views
   renderAttachments();
 
@@ -1169,8 +1154,9 @@ async function renderFeature(kind, sessionId) {
     view.mode = "chat";
     if (!sessionId) {
       renderChatView(null);
-      // A question typed on the home screen: send it now that the chat view
-      // is up. sendMessage → resolveTargetSession creates the session lazily.
+      // A question handed over by an alert, a driver or a scenario: send it now
+      // that the chat view is up. sendMessage → resolveTargetSession creates the
+      // session lazily.
       const pending = pendingHomeMessage;
       pendingHomeMessage = null;
       if (pending) sendMessage(pending, []);
@@ -1251,67 +1237,18 @@ function scheduleReportPoll(kind) {
   }, 3000);
 }
 
-function updateTopicSwitcher(kind) {
-  topicSwitcher.classList.remove("hidden");
+// One place decides chrome. Called for every route, including the ones whose
+// render functions never touched the switcher (drivers, scenarios, budget) and
+// so used to inherit whichever pill was highlighted last.
+function updateNav(kind) {
+  // Hidden only where the links would be traps: the setup wizard (every target
+  // 409s until the profile is confirmed) and Budget Outlook's first run.
+  const firstRunBudget = kind === "budget" && !BudgetPlan.isConfigured();
+  topicSwitcher.classList.toggle("hidden", kind === "setup" || firstRunBudget);
   topicSwitcher.querySelectorAll("a").forEach(a =>
     a.classList.toggle("active", a.dataset.kind === kind));
   dataLink.classList.toggle("active", kind === "data");
   schedulerLink.classList.toggle("active", kind === "scheduler");
-}
-
-function showHome() {
-  showOnly(homeView);
-  topicSwitcher.classList.add("hidden");   // topics are already on the home screen
-  dataLink.classList.remove("active");
-  schedulerLink.classList.remove("active");
-  view.sessionId = null;
-  pendingHomeMessage = null;               // don't carry an unconsumed question around
-  pendingAlertId = null;
-  renderHomeSchedules();
-  // Keep the overview live while the home screen is up (running state changes
-  // within seconds); route() clears the timer on navigation.
-  homeSchedulesTimer = setInterval(renderHomeSchedules, 5000);
-}
-
-// ---------- Home-screen schedule overview ----------
-
-const homeSchedulesEl = document.getElementById("home-schedules");
-const homeSchedulesList = document.getElementById("home-schedules-list");
-let homeSchedulesTimer = null;
-
-async function renderHomeSchedules() {
-  let tasks;
-  try {
-    const resp = await fetch("/api/tasks");
-    if (!resp.ok) throw new Error();
-    tasks = (await resp.json()).tasks || [];
-  } catch {
-    homeSchedulesEl.classList.add("hidden");   // old backend / server down — just omit the section
-    return;
-  }
-  if (!tasks.length) { homeSchedulesEl.classList.add("hidden"); return; }
-  homeSchedulesEl.classList.remove("hidden");
-  homeSchedulesList.innerHTML = "";
-  for (const t of tasks) {
-    const li = document.createElement("li");
-    li.className = "home-schedule-row";
-    let status;
-    if (t.last_status === "running") {
-      status = `<span class="home-schedule-status is-running"><span class="ball-stage"><span class="bounce-ball"></span></span>Running now</span>`;
-    } else if (!t.enabled) {
-      status = `<span class="home-schedule-status is-paused">Paused</span>`;
-    } else if (t.last_status === "error") {
-      status = `<span class="home-schedule-status is-error">Active · last run failed · next ${countdownText(t.next_run_utc)}</span>`;
-    } else {
-      status = `<span class="home-schedule-status is-idle">Active · next ${countdownText(t.next_run_utc)}</span>`;
-    }
-    li.innerHTML = `
-      <span class="home-schedule-name">${escapeHtml(t.name)}</span>
-      <span class="home-schedule-when">${escapeHtml(scheduleSummary(t.schedule))}</span>
-      ${status}`;
-    li.addEventListener("click", () => { location.hash = "#/scheduler"; });
-    homeSchedulesList.appendChild(li);
-  }
 }
 
 // ---------- Data ingestion view (#/data) ----------
@@ -1319,7 +1256,6 @@ async function renderHomeSchedules() {
 async function renderData() {
   view.sessionId = null;
   showOnly(dataView);
-  updateTopicSwitcher("data");
   datasetsListEl.innerHTML = `<p class="empty">Loading datasets…</p>`;
   try {
     const [dataResp, settingsResp] = await Promise.all([fetch("/api/datasets"), fetch("/api/settings")]);
@@ -1459,7 +1395,6 @@ function statusChip(t) {
 async function renderScheduler() {
   view.sessionId = null;
   showOnly(schedulerView);
-  updateTopicSwitcher("scheduler");
   taskListEl.innerHTML = `<p class="empty">Loading tasks…</p>`;
   await refreshTaskList();
 }
@@ -1652,7 +1587,6 @@ taskForm.addEventListener("submit", async (e) => {
 async function renderAlerts() {
   view.sessionId = null;
   showOnly(alertsView);
-  updateTopicSwitcher("alerts");
   alertsListEl.innerHTML = `<p class="empty">Loading alerts…</p>`;
   let data;
   try {
@@ -1751,7 +1685,6 @@ function route() {
   clearTimeout(reportPollTimer);
   clearInterval(taskCountdownTimer);
   clearTimeout(taskPollTimer);
-  clearInterval(homeSchedulesTimer);
   clearInterval(driverPollTimer);     // forgetting this leaks a 2s fetch loop
   const hash = location.hash.replace(/^#\/?/, "");
   const [kind, id] = hash.split("/");
@@ -1773,6 +1706,10 @@ function route() {
     location.replace("#/setup");
     return;
   }
+  // A bare `#/` is the chat, so it is also what an unrecognised kind falls
+  // through to below — and what the nav highlights here.
+  updateNav(kind || "chat");
+
   if (kind === "budget") {
     BudgetPlan.route(id);          // id is "config" or undefined
   } else if (kind === "setup") {
@@ -1790,7 +1727,9 @@ function route() {
   } else if (kind === "alerts") {
     renderAlerts();
   } else {
-    showHome();
+    // `#/` and anything unrecognised: the chat. renderFeature only rewrites the
+    // hash on the report branch, so `#/` stays `#/` while the chat renders.
+    renderFeature("chat", id);
   }
 }
 
@@ -1971,11 +1910,11 @@ setInterval(async () => {
 
 // ---------- Boot ----------
 //
-// route() ran synchronously in the reference and #home-view shipped without
-// .hidden, so home painted instantly. Gating needs an await before the first
-// route, so #boot-view is the ONLY view without `hidden` and every other view
-// (home included) gains it. Nothing is visible until route() decides, so there
-// is no flash of the wrong view, ever.
+// route() ran synchronously in the reference and its landing view shipped
+// without .hidden, so it painted instantly. Gating needs an await before the
+// first route, so #boot-view is the ONLY view without `hidden` and every other
+// view gains it. Nothing is visible until route() decides, so there is no flash
+// of the wrong view, ever.
 async function loadProfile() {
   try {
     profile = await (await fetch("/api/profile")).json();
@@ -2065,8 +2004,8 @@ function renderSetupIntro() {
   if (demoBtn) demoBtn.addEventListener("click", async () => {
     demoBtn.disabled = true;
     profile = await (await fetch("/api/profile/demo", { method: "POST" })).json();
-    location.replace("#/");
-    route();
+    location.replace("#/");   // the hashchange off #/setup routes us; calling
+                              // route() as well would double-render the chat
   });
   document.getElementById("setup-form").addEventListener("submit", runProposal);
 }
@@ -2256,8 +2195,7 @@ async function submitProfile(e) {
   }
   profile = await resp.json();
   loadRules();
-  location.replace("#/");
-  route();
+  location.replace("#/");   // as above: the hashchange is the only render we want
 }
 
 // ==========================================================================
