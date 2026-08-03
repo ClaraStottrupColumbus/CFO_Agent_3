@@ -23,10 +23,15 @@ MAX_WAIT_SECONDS = 30.0
 
 
 class TaskScheduler:
-    def __init__(self, get_model):
-        """`get_model` is a zero-arg callable returning the current model id —
-        passed in (rather than importing main.py) to avoid a circular import."""
-        self._get_model = get_model
+    def __init__(self, get_run_params, get_profile=None):
+        """`get_run_params` is a zero-arg callable returning the current run
+        configuration: {model, reasoning, effort, research}. Widened from the
+        reference's `get_model` so background runs carry the same reasoning and
+        research settings as interactive ones. Passed in (rather than importing
+        main.py) to avoid the circular import — the same callable-injection
+        pattern that exists specifically for that reason."""
+        self._get_run_params = get_run_params
+        self._get_profile = get_profile or (lambda: None)
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -79,7 +84,8 @@ class TaskScheduler:
 
     def _worker(self, task: dict) -> None:
         try:
-            detail = tasks_mod.execute_task(task, self._get_model())
+            detail = tasks_mod.execute_task(task, self._get_run_params(),
+                                            self._get_profile())
             tasks_mod.set_run_result(task["id"], "ok", error=None, detail=detail)
         except Exception as exc:  # surface the failure in the UI, keep the demo alive
             print(f"[scheduler] task '{task['name']}' failed: {exc}")
@@ -105,7 +111,8 @@ class TaskScheduler:
 
             def scan() -> None:
                 try:
-                    detail = alerts.run_urgency_scan(self._get_model())
+                    detail = alerts.run_drift_scan(self._get_run_params(),
+                                                   self._get_profile())
                     tasks_mod.set_run_result(tasks_mod.BUILTIN_REFRESH_ID, "ok",
                                              detail=f"manual refresh · {detail}")
                 except Exception as exc:
@@ -133,7 +140,7 @@ class TaskScheduler:
         next_run = tasks_mod.compute_next_run(task, now=now, session_start=self._session_start)
         return {
             "enabled": bool(task.get("enabled")),
-            "interval_seconds": int(task["schedule"].get("interval_seconds", 300)),
+            "interval_seconds": int(task["schedule"].get("interval_seconds", 3600)),
             "last_refresh_utc": task.get("last_run_utc"),
             "next_refresh_in_seconds": (max(0, int((next_run - now).total_seconds()))
                                         if next_run else None),

@@ -1006,6 +1006,16 @@ def lock_assumptions_tool(assumptions: dict, scenario_id=None, note=None) -> dic
     return result
 
 
+def propose_watchlist(ctx: dict | None = None, **proposal) -> dict:
+    """Setup only. The tool's input_schema IS the proposal schema — structured
+    outputs are incompatible with citations (a 400), and the proposal must carry
+    web citations, so it arrives as a tool call instead."""
+    from . import profile as profile_mod
+    ctx = ctx or {}
+    return profile_mod.save_proposal(proposal, model=ctx.get("model"),
+                                     source_records=ctx.get("source_records"))
+
+
 # --------------------------------------------------------------------------
 # 10. project_series
 # --------------------------------------------------------------------------
@@ -1159,6 +1169,7 @@ _TOOLS = {
     "lock_assumptions": lambda i, ctx: lock_assumptions_tool(**i),
     "project_series": lambda i, ctx: project_series(**i),
     "render_chart": lambda i, ctx: render_chart(**i),
+    "propose_watchlist": lambda i, ctx: propose_watchlist(ctx=ctx, **i),
 }
 
 
