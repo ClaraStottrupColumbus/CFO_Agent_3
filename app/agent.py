@@ -1,0 +1,634 @@
+# agent.py — Prompts, the model capability registry, and the streaming loop.
+#
+# This is the one genuinely novel piece versus the reference implementation,
+# whose loop assumes EVERY tool runs locally. Two lines encoded that assumption
+# and both break with server-side web tools:
+#   * `if response.stop_reason != "tool_use": break`  — treats a pause_turn as
+#     "finished", silently truncating a long research turn with no error.
+#   * `convo.append({"role": "user", "content": tool_results})` — would POST an
+#     empty user turn (a 400) on a round that ran no local tools.
+#
+# Deliberately does NOT import config.py: run_agent takes its settings as
+# arguments so the loop stays callable from tests with no settings file on disk.
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import date
+from typing import Generator
+
+import anthropic
+
+from . import citations as cit
+from .tools import TOOL_DEFINITIONS, execute_tool
+
+# --------------------------------------------------------------------------
+# Capability registry
+# --------------------------------------------------------------------------
+#
+# Tool version, thinking mode and effort support are DERIVED per model, never
+# assumed. `web_search` and `web_fetch` carry separate version keys — that is
+# not redundancy: the pre-4.6 basic variants are web_search_20250305 and
+# web_fetch_20250910, two DIFFERENT dates. A single shared "web" key would
+# silently synthesise web_fetch_20250305, which does not exist, and 400 on the
+# first turn. Every model in the picker uses 20260209 for both today, so the
+# split costs nothing now and is what stops a future "let's re-add a cheap
+# model" change from shipping a broken tool name.
+#
+# claude-haiku-4-5 is deliberately absent: it supports neither the web tools nor
+# adaptive thinking, and ERRORS if sent output_config.effort. A budgeting agent
+# whose whole premise is cited market research cannot offer a model that cannot
+# research, so it is excluded from the picker rather than special-cased here.
+
+MODEL_CAPS = {
+    "claude-opus-5": {"web_search": "20260209", "web_fetch": "20260209",
+                      "thinking": "adaptive", "effort": True, "thinking_default_on": True},
+    "claude-sonnet-5": {"web_search": "20260209", "web_fetch": "20260209",
+                        "thinking": "adaptive", "effort": True, "thinking_default_on": True},
+    "claude-opus-4-8": {"web_search": "20260209", "web_fetch": "20260209",
+                        "thinking": "adaptive", "effort": True, "thinking_default_on": False},
+}
+
+# Derived from the registry, so a model can never reach the picker without
+# capability data behind it.
+AVAILABLE_MODELS = list(MODEL_CAPS)
+DEFAULT_MODEL = "claude-opus-5"
+
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT = "high"
+# Disabling thinking is effort-gated on claude-opus-5: {"type": "disabled"} is
+# rejected at xhigh/max. The settings panel makes that pair unreachable, and
+# this clamp refuses it anyway — it is validated per request, so a session that
+# raises effort mid-conversation would otherwise fail where earlier turns passed.
+MAX_EFFORT_WITHOUT_THINKING = "high"
+
+MAX_TOOL_TURNS = 8      # rounds that executed >= 1 local tool
+MAX_CONTINUATIONS = 5   # pause_turn resumptions
+
+# Thinking shares the output budget, and the settings panel exposes the full
+# effort range: at xhigh/max a citation-dense weekly scan plus summarized
+# thinking will truncate under a tighter cap. 64000 over the more obvious 32000
+# is deliberate — a truncated turn stops with stop_reason "max_tokens" and
+# surfaces as a report that simply ends mid-sentence, which looks identical to
+# the research-budget notice below, so the wrong failure gets debugged.
+MAX_TOKENS = 64000
+
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+
+# --------------------------------------------------------------------------
+# Prompts
+# --------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """You are a budgeting agent for a CFO. You help build, defend and revise \
+next year's budget.
+
+Budgeting is an exercise in defending assumptions. Every budget rests on positions about input \
+prices, freight, FX and wage inflation that the CFO has to live with for twelve months. Your job \
+is to hold those assumptions as first-class, sourced, dated objects — and to say clearly when one \
+has moved far enough to change the budget.
+
+You have two kinds of source:
+1. INTERNAL data — the company's own datasets (EUR), reached through your local tools. Every \
+internal figure must cite the dataset file the tool returned in `source_file`.
+2. THE MARKET — reached through web_search and web_fetch. Every market figure must cite the URL \
+it came from and the date you retrieved it.
+
+Rules:
+1. Every number you state must be traceable. Internal figures cite a dataset file; market figures \
+cite a URL and its retrieval date. Never state a figure you cannot attribute.
+2. NEVER do arithmetic yourself on raw rows. For variances, decompositions, sensitivities, \
+exposures, scenarios and currency conversion, ALWAYS use the dedicated tools — they compute \
+server-side and their numbers are exact. Deriving a variance by hand from query_budget_data rows \
+is the single worst failure mode available to you.
+3. `project_series` projects VOLUMES and DRIVER PRICE SERIES only. NEVER use it for revenue, \
+COGS, gross margin, EBITDA or any other P&L line — for forward P&L use `build_budget_scenario`, \
+which applies assumptions through the bill of materials. Present any projection as an \
+extrapolation of past patterns, never as a forecast, and relay its disclaimer.
+4. To record a market price you researched, you MUST first fetch the page with web_fetch in this \
+same turn, then call record_driver_observation citing that exact URL. A URL you did not visit is \
+refused. Record the price in the driver's own quote currency; the tools do the FX.
+5. Never overwrite a locked assumption while doing routine research. `lock_assumptions` is only \
+for when the CFO explicitly agrees to lock.
+6. If the data needed is not there, say so plainly and state what would be required. Never \
+estimate to fill a gap. There is no payroll or salary dataset — wage-rate questions cannot be \
+answered from internal data, and you must say so rather than inventing figures.
+7. Direction is not sentiment. A rising ingredient price is bad; a rising selling price is good. \
+Say "adverse" or "favourable" explicitly rather than leaving a sign to speak for itself.
+8. Format amounts readably (€2.4M, €318k, €412/t) and always name the period. Lead with the \
+figure that changes a decision, then the explanation, then the sources.
+9. Use `render_chart` when a visual carries the point — a waterfall for a budget-to-actual \
+bridge, a line for a driver price history — using only figures the other tools returned. Still \
+state the key numbers in the text.
+10. Be concise and boardroom-ready. A CFO cannot act on "COGS is €1.2M over" but can act on \
+"€900k of it is chicken-meal price, €300k is volume"."""
+
+# Tacked onto the cached block only when the reasoning toggle is off. Disabling
+# thinking on claude-opus-5 can leak internal XML into the visible answer; the
+# documented mitigation is a GENERIC instruction that does not name the tags,
+# and NOT an instruction telling the model not to reason (which makes the
+# leakage worse).
+NO_THINKING_GUARDRAIL = """
+
+Respond with your final answer only. Do not include internal or system XML tags in your response."""
+
+WEEKLY_PROMPT = """Produce this week's market scan for the CFO: what moved in the markets this \
+budget depends on.
+
+Work in one pass: check which watchlist drivers are stale or drifting with driver_status, research \
+the ones that matter with web_search and web_fetch, record what you find with \
+record_driver_observation (citing the exact pages you fetched), then quantify the consequence with \
+driver_sensitivity.
+
+Lead with a one-line headline naming the single most important move. Then: what changed and by how \
+much, with a source link and date for each; what that does to next year's COGS and EBITDA; which \
+assumptions are now far enough from their locked values to need re-locking; and anything you could \
+NOT verify this week, said plainly. End with the sources."""
+
+MONTHLY_PROMPT = """Produce this month's budget revision for the CFO.
+
+Use the latest closed month's actuals and the latest driver observations. Cover: how the closed \
+month landed against budget, with the variance decomposed into price, volume, mix and joint \
+effects (use variance_analysis — never derive these yourself); which drivers have moved since the \
+budget was locked and what that is worth; a re-run of the locked scenario on current prices, \
+showing the delta to full-year EBITDA and margin; and a clear recommendation on what to re-lock \
+and what to leave alone.
+
+Lead with the one-line answer to "is the budget still good?". Keep it boardroom-ready and end with \
+the sources."""
+
+REPORT_PROMPTS = {"weekly": WEEKLY_PROMPT, "monthly": MONTHLY_PROMPT}
+
+SETUP_PROMPT = """A CFO has described their business below. Propose the cost-driver watchlist their \
+budget should rest on.
+
+Research the industry and its cost structure using web_search and web_fetch: what inputs dominate \
+the cost of goods, how those inputs are priced and quoted, which currencies they trade in, and \
+where their prices are published.
+
+Then call the `propose_watchlist` tool EXACTLY ONCE with the complete proposal. Requirements:
+- Every cost driver must carry at least one source URL you actually fetched, and a `why` that says \
+in one line what share of cost it drives.
+- Set `quote_currency` to the currency the input is genuinely quoted in, which is often not the \
+reporting currency.
+- Set `stale_after_days` to how fast that driver really moves: FX in a day, freight in a week, \
+wage inflation in a month.
+- Set `adverse_direction` to the direction that HURTS the budget. For an input cost that is "up". \
+For an FX rate quoted as units-of-foreign-per-unit-of-reporting-currency, a fall usually hurts.
+- Propose 8-15 drivers. Enough to cover the real cost base, few enough that the CFO will actually \
+maintain them.
+
+After the tool call, briefly summarise what you proposed and why, and note anything you were \
+unsure about so the CFO can correct it."""
+
+ASSUMPTION_REFRESH_PROMPT = """Refresh the stale drivers on the watchlist. No report, no narrative.
+
+Call driver_status with only_stale true. For each stale driver, search for its current price, fetch \
+the page carrying the figure, and call record_driver_observation citing that exact URL. Record the \
+price in the driver's own quote currency.
+
+If you cannot verify a driver, skip it and say so in one line. When you are done, reply with a \
+single short paragraph listing what you updated and what you could not."""
+
+# Formatted with a rules.py finding via .format(**finding), so every key used
+# here must exist in the finding shape — renaming one breaks prompt formatting
+# at runtime rather than at import.
+URGENCY_ANALYSIS_PROMPT = """An automated budget rule has fired.
+Rule: {rule_id} — {title}. Observed value: {metric_value} (threshold: {threshold}), \
+period {period}, entity: {entity}.
+
+Using your tools, verify the figure and write a short briefing for the CFO (max 6 sentences): what \
+moved, what it is worth to next year's budget, whether it is adverse or favourable, and the one \
+action you recommend. Use driver_status and driver_sensitivity for the numbers — do not estimate. \
+End with the Source: line(s)."""
+
+# The proposal comes back through a TOOL CALL rather than structured outputs
+# because output_config.format is incompatible with citations (a 400), and the
+# proposal must carry web citations. The input_schema IS the proposal schema.
+PROPOSE_WATCHLIST_TOOL = {
+    "name": "propose_watchlist",
+    "description": "Submit the proposed company profile and cost-driver watchlist. Call this "
+                   "exactly once, after researching, with the complete proposal.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "company": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "industry": {"type": "string"},
+                    "reporting_currency": {"type": "string"},
+                    "fiscal_year_start_month": {"type": "integer"},
+                    "budget_year": {"type": "integer"},
+                },
+                "required": ["name", "industry", "reporting_currency"],
+            },
+            "product_lines": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "note": {"type": "string"}},
+                    "required": ["name"]},
+            },
+            "markets": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "currency": {"type": "string"}},
+                    "required": ["name"]},
+            },
+            "cost_drivers": {
+                "type": "array",
+                "description": "8-15 drivers, each with at least one source URL you fetched.",
+                "items": {"type": "object", "properties": {
+                    "driver_id": {"type": "string",
+                                  "description": "lower_snake_case, e.g. chicken_meal."},
+                    "name": {"type": "string"},
+                    "category": {"type": "string",
+                                 "description": "ingredient | logistics | energy | packaging | "
+                                                "fx | labour | other"},
+                    "unit": {"type": "string", "description": "e.g. USD/t, EUR/MWh."},
+                    "quote_currency": {"type": "string"},
+                    "why": {"type": "string", "description": "One line: what share of cost."},
+                    "search_hint": {"type": "string",
+                                    "description": "The query that finds this price."},
+                    "adverse_direction": {"type": "string", "enum": ["up", "down"]},
+                    "stale_after_days": {"type": "integer"},
+                    "sources": {"type": "array", "items": {"type": "object", "properties": {
+                        "url": {"type": "string"}, "title": {"type": "string"}},
+                        "required": ["url"]}},
+                }, "required": ["driver_id", "name", "category", "unit", "quote_currency",
+                                "why", "adverse_direction", "stale_after_days", "sources"]},
+            },
+        },
+        "required": ["company", "cost_drivers"],
+    },
+}
+
+
+# --------------------------------------------------------------------------
+# Tool assembly
+# --------------------------------------------------------------------------
+
+def build_tools(model: str, research: dict | None = None, *, setup: bool = False) -> list[dict]:
+    """Assemble the tool list for a model.
+
+    Deterministically ordered: `tools` renders before `system` in the cached
+    prefix, so reordering this list silently invalidates the prompt cache.
+
+    Do NOT additionally declare code_execution — the _20260209 web variants run
+    dynamic filtering internally, and a second execution environment confuses
+    the model.
+    """
+    caps = MODEL_CAPS.get(model) or MODEL_CAPS[DEFAULT_MODEL]
+    research = research or {}
+    tools: list[dict] = list(TOOL_DEFINITIONS)
+    if setup:
+        tools = [PROPOSE_WATCHLIST_TOOL] + tools
+
+    if research.get("enabled", True) and caps.get("web_search"):
+        search: dict = {"type": f"web_search_{caps['web_search']}", "name": "web_search"}
+        if research.get("max_searches"):
+            search["max_uses"] = int(research["max_searches"])
+        if research.get("allowed_domains"):
+            search["allowed_domains"] = list(research["allowed_domains"])
+        tools.append(search)
+
+    if research.get("enabled", True) and caps.get("web_fetch"):
+        fetch: dict = {"type": f"web_fetch_{caps['web_fetch']}", "name": "web_fetch",
+                       # Citations make the model attribute cited_text to a URL,
+                       # which is what populates the snippet on each source chip.
+                       "citations": {"enabled": True}}
+        if research.get("max_fetches"):
+            fetch["max_uses"] = int(research["max_fetches"])
+        if research.get("max_content_tokens"):
+            fetch["max_content_tokens"] = int(research["max_content_tokens"])
+        tools.append(fetch)
+
+    return tools
+
+
+def clamp_effort(effort: str | None, reasoning: bool) -> str:
+    """Effort, clamped to what the thinking setting actually permits."""
+    level = effort if effort in EFFORT_LEVELS else DEFAULT_EFFORT
+    if not reasoning:
+        cap = EFFORT_LEVELS.index(MAX_EFFORT_WITHOUT_THINKING)
+        if EFFORT_LEVELS.index(level) > cap:
+            level = MAX_EFFORT_WITHOUT_THINKING
+    return level
+
+
+def build_system(profile_text: str | None, volatile: str | None,
+                 reasoning: bool = True) -> list[dict]:
+    """Two blocks: a cached one (static prompt + the stable company profile) and
+    an uncached one (today's date, staleness counts).
+
+    The reference marks the WHOLE system prompt ephemeral. The profile is stable
+    per CFO and belongs inside that block; today's date cannot be — f-stringing
+    it in means zero cache reads forever, with no error to tell you.
+    """
+    static = SYSTEM_PROMPT
+    if not reasoning:
+        static += NO_THINKING_GUARDRAIL
+    if profile_text:
+        static += "\n\n---\n\nThe company you are budgeting for:\n\n" + profile_text
+    blocks = [{"type": "text", "text": static, "cache_control": {"type": "ephemeral"}}]
+    if volatile:
+        blocks.append({"type": "text", "text": volatile})
+    return blocks
+
+
+_client: anthropic.Anthropic | None = None
+
+
+def get_client() -> anthropic.Anthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic()   # reads ANTHROPIC_API_KEY from the environment
+    return _client
+
+
+# --------------------------------------------------------------------------
+# The loop
+# --------------------------------------------------------------------------
+
+def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
+              reasoning: bool = True, effort: str = DEFAULT_EFFORT,
+              research: dict | None = None, profile: dict | None = None,
+              setup: bool = False,
+              volatile: str | None = None) -> Generator[dict, None, None]:
+    """Run one turn through the streaming loop, yielding event dicts.
+
+      {type: "text", text}                  assistant text delta
+      {type: "reasoning", text}             summarized thinking delta
+      {type: "research", tool, query|url}   a server-side web call started
+      {type: "tool_call", name, input}      model invoked a local tool
+      {type: "tool_result", name, result}   local tool execution result
+      {type: "chart", spec}                 validated render_chart spec
+      {type: "citation", url, title, ...}   one citation on a cited text block
+      {type: "web_error", tool, error_code} NON-terminal web tool failure
+      {type: "notice", message}             non-fatal notice (budget reached)
+      {type: "sources", sources, records}   sources used this turn
+      {type: "done"} / {type: "error", message}
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        yield {"type": "error",
+               "message": "ANTHROPIC_API_KEY is not set. Export it or put it in a .env file "
+                          "in the project root, then restart the server."}
+        yield {"type": "done"}
+        return
+
+    if model not in MODEL_CAPS:
+        model = DEFAULT_MODEL
+    caps = MODEL_CAPS[model]
+    effort = clamp_effort(effort, reasoning)
+
+    # Keep only fields the API accepts — stored messages carry UI-only extras
+    # (attachment metadata, charts, reasoning, per-message sources).
+    convo = [{"role": m["role"], "content": m["content"]} for m in messages]
+
+    tools = build_tools(model, research, setup=setup)
+    system = build_system(_render_profile(profile), volatile, reasoning)
+
+    if reasoning and caps.get("thinking") == "adaptive":
+        # display MUST be explicit: the default on every model in the picker is
+        # "omitted", which still streams thinking blocks but with empty text —
+        # so the reasoning disclosure would render an empty box and look broken
+        # rather than absent.
+        thinking: dict = {"type": "adaptive", "display": "summarized"}
+    else:
+        thinking = {"type": "disabled"}
+
+    request: dict = {
+        "model": model,
+        "max_tokens": MAX_TOKENS,
+        "system": system,
+        "tools": tools,
+        "thinking": thinking,
+        # betas + fallbacks are accepted only on the beta messages endpoint, so
+        # this whole loop runs through client.beta.messages.stream. The header
+        # and parameter form are paired: server-side-fallback-2026-07-01 goes
+        # with the SCALAR fallbacks="default"; the older array form needs
+        # -2026-06-01. Crossing them is a 400. "default" routes by refusal
+        # category and needs no maintenance when a pinned model is retired.
+        "betas": [FALLBACK_BETA],
+        "fallbacks": "default",
+    }
+    if caps.get("effort"):
+        request["output_config"] = {"effort": effort}
+
+    client = get_client()
+    records: list[dict] = []
+    fetched: set[str] = set()
+    ctx = {"fetched_urls": fetched, "profile": profile or {}}
+
+    try:
+        any_text = False
+        tool_turns = 0
+        continuations = 0
+
+        while True:
+            if tool_turns >= MAX_TOOL_TURNS or continuations >= MAX_CONTINUATIONS:
+                yield {"type": "notice",
+                       "message": "Research budget reached — this answer may be incomplete."}
+                break
+
+            first_in_turn = True
+            with client.beta.messages.stream(**request, messages=convo) as stream:
+                for event in stream:
+                    etype = getattr(event, "type", None)
+
+                    if etype == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if getattr(block, "type", None) == "server_tool_use":
+                            inp = getattr(block, "input", None) or {}
+                            # The single highest-value event for perceived
+                            # responsiveness: it fills an otherwise silent
+                            # 10-30s gap with "Searching: chicken meal price".
+                            yield {"type": "research",
+                                   "tool": getattr(block, "name", None),
+                                   "query": _get(inp, "query"),
+                                   "url": _get(inp, "url")}
+
+                    elif etype == "content_block_delta":
+                        dtype = getattr(event.delta, "type", None)
+                        if dtype == "text_delta":
+                            text = event.delta.text
+                            # Text resuming after a tool round must start its own
+                            # paragraph, or markdown like a leading "---" is
+                            # glued onto the previous narration line.
+                            if first_in_turn and any_text:
+                                text = "\n\n" + text
+                            first_in_turn = False
+                            any_text = True
+                            yield {"type": "text", "text": text}
+                        elif dtype == "thinking_delta":
+                            yield {"type": "reasoning",
+                                   "text": getattr(event.delta, "thinking", "")}
+
+                    elif etype == "content_block_stop":
+                        # A cited text block is complete: drop the marker in
+                        # right here. No offset tracking, and the marker lands
+                        # exactly where the citation belongs.
+                        block = getattr(event, "content_block", None)
+                        for marker in _markers_for(block, records):
+                            yield marker
+
+                response = stream.get_final_message()
+
+            # Check stop_reason BEFORE reading content: a refusal can come back
+            # HTTP 200 with empty content, and stop_details can be null even
+            # then — so branch on stop_reason, never on stop_details.
+            if response.stop_reason == "refusal":
+                yield {"type": "error",
+                       "message": "The request was declined by the model's safety system. "
+                                  "Rephrasing the question usually resolves it."}
+                break
+
+            info = cit.classify_blocks(response.content)
+            for err in info["web_errors"]:
+                # Non-terminal: `error` is terminal in the frontend's contract,
+                # and the model sees the failure in its own context and adapts
+                # within the turn. Never raise, never retry client-side.
+                yield {"type": "web_error", **err}
+            for rec in info["source_records"]:
+                records.append(rec)
+            fetched.update(info["fetched_urls"])
+            cit.attach_snippets(records, info["citations"])
+            for c in info["citations"]:
+                yield {"type": "citation", **c}
+            records[:] = cit.merge_records(records)
+
+            if response.stop_reason == "pause_turn":
+                # Append the assistant turn and re-issue with NO user turn and
+                # no "Continue." message — the API detects the trailing
+                # server_tool_use and resumes on its own.
+                convo.append({"role": "assistant", "content": response.content})
+                continuations += 1
+                continue
+
+            local = info["local_tool_uses"]
+            if not local:
+                # Positive filter plus an emptiness break. Without this an
+                # all-server-tool round would POST content: [] -> 400, turning a
+                # research turn into an error event. Load-bearing, not incidental.
+                break
+
+            # Appending response.content wholesale preserves the thinking blocks
+            # the API needs back on the next round. Do not "tidy" this.
+            convo.append({"role": "assistant", "content": response.content})
+            tool_results = []
+            for block in local:
+                yield {"type": "tool_call", "name": block.name, "input": block.input}
+                result = execute_tool(block.name, block.input, ctx)
+                # render_chart smuggles its validated spec out under a private
+                # key: the UI gets the full spec, the model a compact ack.
+                chart_spec = (result.pop("_chart_spec", None)
+                              if isinstance(result, dict) else None)
+                yield {"type": "tool_result", "name": block.name, "result": result}
+                if chart_spec:
+                    yield {"type": "chart", "spec": chart_spec}
+                for rec in cit.records_from_tool_result(block.name, result):
+                    records.append(rec)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(result, default=str),
+                    "is_error": bool(isinstance(result, dict) and result.get("error")),
+                })
+            convo.append({"role": "user", "content": tool_results})
+            tool_turns += 1
+
+        records[:] = cit.merge_records(records)
+        yield {"type": "sources",
+               "sources": [cit.display_label(r) for r in records],
+               "records": records}
+        yield {"type": "done"}
+
+    except anthropic.AuthenticationError:
+        yield {"type": "error",
+               "message": "Anthropic authentication failed — is ANTHROPIC_API_KEY set correctly?"}
+        yield {"type": "done"}
+    except anthropic.APIConnectionError:
+        yield {"type": "error", "message": "Could not reach the Anthropic API (network error)."}
+        yield {"type": "done"}
+    except anthropic.APIStatusError as e:
+        yield {"type": "error", "message": f"Anthropic API error {e.status_code}: {e.message}"}
+        yield {"type": "done"}
+    except Exception as e:      # last-resort guard so the SSE stream always ends cleanly
+        yield {"type": "error", "message": f"Unexpected error: {e}"}
+        yield {"type": "done"}
+    # Every arm yields `done` after `error`. The reference's four except arms
+    # yield only `error`, which leaves the frontend's streaming state uncleared.
+
+
+def _get(obj, key):
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _markers_for(block, records: list[dict]) -> list[dict]:
+    """Inline `[n]` markers for a finished text block that carried citations.
+
+    The backend inserts the literal characters into the streamed text and the
+    frontend rewrites them to superscript links in one post-reveal pass over
+    text nodes. Zero offset tracking on either side.
+    """
+    if getattr(block, "type", None) != "text":
+        return []
+    out = []
+    seen = set()
+    for c in getattr(block, "citations", None) or []:
+        url = _get(c, "url")
+        if not url:
+            continue
+        key = cit.normalise_url(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        index = next((i for i, r in enumerate(records)
+                      if r.get("kind") == "web" and r.get("id") == key), None)
+        if index is None:
+            continue
+        out.append({"type": "text", "text": f"[{index + 1}]"})
+    return out
+
+
+def _render_profile(profile: dict | None) -> str | None:
+    """The stable part of the company profile, for the cached system block."""
+    if not profile or not profile.get("setup_complete"):
+        return None
+    company = profile.get("company") or {}
+    lines = [f"Company: {company.get('name') or 'unnamed'}",
+             f"Industry: {company.get('industry') or 'unspecified'}",
+             f"Reporting currency: {company.get('reporting_currency') or 'EUR'}",
+             f"Budget year: {company.get('budget_year') or ''}"]
+    if profile.get("description"):
+        lines.append(f"\nIn the CFO's own words: {profile['description']}")
+    lines_ = [p.get("name") for p in profile.get("product_lines") or [] if p.get("name")]
+    if lines_:
+        lines.append("\nProduct lines: " + ", ".join(lines_))
+    markets = [m.get("name") for m in profile.get("markets") or [] if m.get("name")]
+    if markets:
+        lines.append("Markets: " + ", ".join(markets))
+    drivers = profile.get("cost_drivers") or []
+    if drivers:
+        lines.append("\nWatchlist drivers:")
+        for d in drivers:
+            lines.append(f"  - {d.get('driver_id')} ({d.get('name')}, {d.get('unit')}, "
+                         f"quoted {d.get('quote_currency')}): {d.get('why') or ''}")
+    return "\n".join(lines)
+
+
+def volatile_context(stale_count: int | None = None, drifted_count: int | None = None) -> str:
+    """The uncached system block: things that change between turns.
+
+    Kept OUT of the cached block on purpose — putting today's date in there
+    means zero cache reads forever, and nothing errors to tell you.
+    """
+    parts = [f"Today's date is {date.today().isoformat()}."]
+    if stale_count is not None:
+        parts.append(f"{stale_count} watchlist driver(s) are currently stale.")
+    if drifted_count is not None:
+        parts.append(f"{drifted_count} driver(s) have drifted more than 10% since the lock.")
+    return " ".join(parts)
