@@ -1,0 +1,198 @@
+/* ============================================================
+   Columbus Design System — Core Tokens
+   colors_and_type.css
+
+   Brand palette and typography for Columbus (columbusglobal.com),
+   sourced from the official 2025 PowerPoint template
+   (theme name: "Columbus Colors 2025").
+
+   Imported into this demo from the "Columbus Design System" project
+   (claude.ai/design). Brand fonts (Feature Display + Roobert) are
+   commercial — we substitute Instrument Serif and Onest from Google
+   Fonts. Replace the @import when licensed files arrive.
+   ============================================================ */
+
+/* --- Web fonts: Google Fonts substitutes -------------------- */
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Onest:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  /* ============================================================
+     COLOR — Base palette
+     Lifted directly from theme1.xml > clrScheme "Columbus Colors 2025"
+     ============================================================ */
+
+  /* Brand core */
+  --columbus-navy:        #010190;  /* dk2 — primary brand */
+  --columbus-navy-deep:   #02018C;  /* logo + icon ink (very close variant) */
+  --columbus-cream:       #F4E8E3;  /* lt2 — primary brand background */
+  --columbus-orange:      #FF7800;  /* accent3 — sole high-contrast accent */
+
+  /* Supporting accents (use sparingly, mainly for charts/data) */
+  --columbus-blue-light:  #BDCEFE;  /* accent1 */
+  --columbus-blue-pale:   #DDE5FE;  /* accent4 */
+  --columbus-blue-mid:    #4266B8;  /* accent6 */
+  --columbus-peach:       #FFCDA9;  /* accent2 */
+  --columbus-teal:        #3A9295;  /* accent5 */
+  --columbus-pink:        #D5A2C8;  /* hlink */
+
+  /* Neutrals */
+  --black:                #000000;
+  --white:                #FFFFFF;
+
+  /* Cream tints (derived — used for surfaces & dividers on cream bg) */
+  --cream-50:             #FBF6F3;
+  --cream-100:            #F4E8E3;   /* = --columbus-cream */
+  --cream-200:            #EAD9D1;
+  --cream-300:            #D9C2B6;
+
+  /* Navy tints (derived) */
+  --navy-900:             #010190;   /* = --columbus-navy */
+  --navy-700:             #2A2BA8;
+  --navy-500:             #5658C2;
+  --navy-300:             #9395D9;
+  --navy-100:             #DDE5FE;   /* shared with accent4 */
+
+  /* Greys (derived neutrals for UI chrome) */
+  --grey-900:             #14141F;
+  --grey-700:             #3D3D52;
+  --grey-500:             #76768A;
+  --grey-300:             #C9C9D2;
+  --grey-100:             #EEEEF1;
+  --grey-50:              #F7F7F9;
+
+  /* ============================================================
+     SEMANTIC COLOR TOKENS
+     ============================================================ */
+
+  /* Foreground (text & icons) */
+  --fg-1:                 var(--columbus-navy);      /* primary text on cream/white */
+  --fg-2:                 var(--grey-700);           /* secondary text */
+  --fg-3:                 var(--grey-500);           /* tertiary / captions */
+  --fg-inverse:           var(--white);              /* text on navy/orange */
+  --fg-accent:            var(--columbus-orange);    /* numeric callouts, links */
+
+  /* Background */
+  --bg-canvas:            var(--columbus-cream);     /* default page bg */
+  --bg-surface:           var(--white);              /* cards, panels */
+  --bg-surface-alt:       var(--cream-50);           /* slightly recessed */
+  --bg-inverse:           var(--columbus-navy);      /* dark sections */
+  --bg-accent:            var(--columbus-orange);    /* CTAs */
+  --bg-subtle:            var(--navy-100);           /* tinted bands, tags */
+
+  /* Lines */
+  --border-subtle:        rgba(1, 1, 144, 0.08);     /* hairlines on cream */
+  --border-default:       rgba(1, 1, 144, 0.16);
+  --border-strong:        var(--columbus-navy);
+
+  /* Status (derived — kept harmonious with palette) */
+  --status-success:       var(--columbus-teal);
+  --status-warning:       var(--columbus-orange);
+  --status-error:         #C24545;
+  --status-info:          var(--columbus-blue-mid);
+
+  /* ============================================================
+     TYPOGRAPHY — Brand fonts
+     Brand: Feature Display (display) + Roobert (text).
+     Substitutes here: Instrument Serif + Onest.
+     ============================================================ */
+
+  --font-display:         'Instrument Serif', 'Feature Display', 'Times New Roman', Georgia, serif;
+  --font-sans:            'Onest', 'Roobert', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono:            'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Base type scale — derived from template (10/12/14/16/18/30pt)
+     converted to a fluent web scale anchored at 16px body. */
+  --fs-display-2xl:       96px;    /* hero chapter openers */
+  --fs-display-xl:        72px;    /* title slide */
+  --fs-display-lg:        56px;    /* section openers */
+  --fs-display-md:        40px;    /* slide titles */
+  --fs-display-sm:        32px;    /* sub-titles */
+
+  --fs-h1:                40px;
+  --fs-h2:                30px;    /* template body title size */
+  --fs-h3:                24px;
+  --fs-h4:                20px;
+  --fs-h5:                18px;
+  --fs-h6:                16px;
+
+  --fs-body-lg:           18px;
+  --fs-body:              16px;    /* template default */
+  --fs-body-sm:           14px;
+  --fs-caption:           12px;
+  --fs-micro:             10px;    /* template footer/page numbers */
+
+  /* Line heights — template uses 90% (tight) for headings */
+  --lh-tight:             0.92;
+  --lh-snug:              1.12;
+  --lh-normal:            1.4;
+  --lh-relaxed:           1.55;
+
+  /* Letter spacing — Feature Display uses negative tracking */
+  --tracking-tightest:    -0.04em;
+  --tracking-tight:       -0.02em;
+  --tracking-normal:      0;
+  --tracking-wide:        0.02em;
+  --tracking-widest:      0.16em;
+
+  /* Weights */
+  --fw-light:             300;
+  --fw-regular:           400;
+  --fw-medium:            500;
+  --fw-semibold:          600;
+  --fw-bold:              700;
+
+  /* ============================================================
+     SPACING — 4-px base grid
+     ============================================================ */
+  --space-0:   0;
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:   12px;
+  --space-4:   16px;
+  --space-5:   20px;
+  --space-6:   24px;
+  --space-8:   32px;
+  --space-10:  40px;
+  --space-12:  48px;
+  --space-16:  64px;
+  --space-20:  80px;
+  --space-24:  96px;
+  --space-32:  128px;
+
+  /* ============================================================
+     RADII — soft, friendly corners throughout.
+     ============================================================ */
+  --radius-xs:  4px;
+  --radius-sm:  8px;
+  --radius-md:  12px;
+  --radius-lg:  20px;     /* default for cards */
+  --radius-xl:  28px;
+  --radius-2xl: 40px;
+  --radius-pill: 999px;
+
+  /* ============================================================
+     ELEVATION — soft, no harsh shadows. Navy-tinted, vertical only.
+     ============================================================ */
+  --shadow-xs: 0 1px 2px rgba(1, 1, 144, 0.08);
+  --shadow-sm: 0 6px 16px rgba(1, 1, 144, 0.14);
+  --shadow-md: 0 16px 36px -4px rgba(1, 1, 144, 0.26);
+  --shadow-lg: 0 36px 72px -16px rgba(1, 1, 144, 0.42);
+  --shadow-glow-orange: 0 8px 32px rgba(255, 120, 0, 0.45);
+
+  /* ============================================================
+     MOTION
+     ============================================================ */
+  --ease-out:        cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-in-out:     cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast:   140ms;
+  --duration-base:   220ms;
+  --duration-slow:   420ms;
+
+  /* ============================================================
+     SIGNATURE GRADIENTS — derived from the brand hero artwork
+     ============================================================ */
+  --gradient-hero:        linear-gradient(135deg, #F4E8E3 0%, #E6D8F0 40%, #D5A2C8 75%, #FF7800 100%);
+  --gradient-lavender:    linear-gradient(135deg, #DDE5FE 0%, #BDCEFE 60%, #9C8AE6 100%);
+  --gradient-cream-peach: linear-gradient(135deg, #F4E8E3 0%, #FFCDA9 100%);
+  --gradient-navy-blue:   linear-gradient(135deg, #010190 0%, #4266B8 100%);
+}

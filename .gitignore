@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+.pytest_cache/
+
+# Runtime session memory (chat conversations + generated reports), not source.
+data/history/
+
+# Runtime state for the autonomous features, not source.
+data/tasks.json
+data/alerts.json
+data/alerts_log.jsonl
+data/rules.json
+data/settings.json
+data/scenarios.json
+data/company_profile.json
+
+# Generated demo datasets — rebuilt deterministically by app/generate_data.py.
+data/*.parquet
+data/*.csv

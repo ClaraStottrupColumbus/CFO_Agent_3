@@ -1,0 +1,91 @@
+{
+  "locked_at": "2026-08-03T10:54:07+00:00",
+  "scenario_id": null,
+  "note": "2027 budget lock (2026-09)",
+  "assumptions": {
+    "chicken_meal": {
+      "value": 610.7113,
+      "unit": "USD/t",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "wheat": {
+      "value": 237.1147,
+      "unit": "EUR/t",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "soybean_meal": {
+      "value": 422.1069,
+      "unit": "USD/t",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "maize": {
+      "value": 209.408,
+      "unit": "EUR/t",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "rapeseed_meal": {
+      "value": 274.2309,
+      "unit": "EUR/t",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "fish_meal": {
+      "value": 1716.2282,
+      "unit": "USD/t",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "vitamin_premix": {
+      "value": 6.9669,
+      "unit": "EUR/kg",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "sea_freight": {
+      "value": 1772.9506,
+      "unit": "USD/FEU",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "road_freight": {
+      "value": 839.7353,
+      "unit": "EUR/1000km",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "energy_gas": {
+      "value": 32.9309,
+      "unit": "EUR/MWh",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "energy_power": {
+      "value": 86.9916,
+      "unit": "EUR/MWh",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "packaging_film": {
+      "value": 1495.123,
+      "unit": "EUR/t",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "eur_usd": {
+      "value": 1.0495,
+      "unit": "USD per EUR",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    },
+    "wage_inflation": {
+      "value": 3.919,
+      "unit": "%/yr",
+      "source_url": "",
+      "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+    }
+  }
+}
