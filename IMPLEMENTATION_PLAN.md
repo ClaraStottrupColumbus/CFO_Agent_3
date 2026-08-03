@@ -9,10 +9,17 @@ reuses.
 ## Context
 
 `CFO_Agent_3` is currently docs-only: a single [ARCHITECTURE.md](ARCHITECTURE.md) that
-blueprints a sibling implementation (`../CFO_Agent_1`, a conversational finance agent) and
-marks which layers are domain-agnostic scaffolding versus finance-specific domain code.
-`../CFO_Agent_2` is a second agent already built on that scaffolding, so the "clone the
+blueprints a sibling implementation (`../Agent 1/CFO_Agent_1`, a conversational finance
+agent) and marks which layers are domain-agnostic scaffolding versus finance-specific domain
+code. `../CFO_Agent_2` is a second agent already built on that scaffolding, so the "clone the
 shell, replace the domain" recipe is proven.
+
+**Path note, because every file reference below depends on it:** the two siblings do not sit
+at symmetrical paths. Agent 1 is at `../Agent 1/CFO_Agent_1/` — nested one level deeper,
+under a directory whose name **contains a space** — while Agent 2 is at `../CFO_Agent_2/`.
+Any `cp`/`diff` against Agent 1 needs the path quoted (`cp "../Agent 1/CFO_Agent_1/app/store.py" app/`)
+or the copy silently resolves to the wrong place. Line references in this plan were verified
+against those paths.
 
 This plan builds a **third** agent, for budgeting.
 
@@ -38,7 +45,7 @@ to the P&L — with all arithmetic computed in Python, never by the model.
 | Report kinds | `chat` + `weekly` (market/driver scan) + `monthly` (budget revision) |
 | Setup | Agent-assisted: free-text business description → agent proposes a cited watchlist → CFO edits and confirms |
 | Scaffolding | Copy the domain-agnostic layers from `CFO_Agent_1`; write the domain fresh |
-| LLM | Anthropic only; model picked in settings. Default `claude-opus-5` |
+| LLM | Anthropic only; model picked in settings. Picker is `claude-opus-5` (default), `claude-sonnet-5`, `claude-opus-4-8` — every model offered supports web tools, adaptive thinking *and* effort, so no model in the UI can hit constraint 1 |
 | Reasoning toggle | Adaptive thinking with `display: "summarized"`, streamed as its own event type |
 | Port | 8323 (Agent 1 = 8321, Agent 2 = 8322) |
 
@@ -48,17 +55,30 @@ These were discovered during design review and each one invalidates an otherwise
 approach. They are stated up front because they explain choices that would otherwise look
 arbitrary.
 
-1. **`claude-haiku-4-5` is incompatible with three requirements at once.** It does not
-   support `web_search_20260209` / `web_fetch_20260209` (those need Opus 5/4.8/4.7/4.6 or
-   Sonnet 5/4.6), does not support adaptive thinking, and **errors** if sent
-   `output_config.effort`. Its context is 200 K, not 1 M. Hence the `MODEL_CAPS` registry in
-   §2 — tool version, thinking mode and effort are all derived per model, never assumed.
+1. **`claude-haiku-4-5` is incompatible with three requirements at once, so it is not
+   offered.** It does not support `web_search_20260209` / `web_fetch_20260209` (those need
+   Opus 5/4.8/4.7/4.6 or Sonnet 5/4.6), does not support adaptive thinking, and **errors** if
+   sent `output_config.effort`. Its context is 200 K, not 1 M. A budgeting agent whose whole
+   premise is cited market research cannot offer a model that cannot research, so Haiku is
+   **excluded from the picker** rather than special-cased in the loop — which deletes a
+   branch from `build_tools`, from the thinking config, and from §12.5. Where a cheap model
+   is genuinely wanted (`assumption_refresh`), §8's per-task `model` override selects
+   `claude-sonnet-5`.
+
+   The `MODEL_CAPS` registry in §2 stays regardless — tool version, thinking mode and effort
+   are derived per model, never assumed — and it carries **separate `web_search` and
+   `web_fetch` version keys**. That is not redundancy: the pre-4.6 basic variants are
+   `web_search_20250305` and `web_fetch_20250910` — two **different dates**. A single shared
+   `"web": "20250305"` key would silently synthesise `web_fetch_20250305`, which does not
+   exist, and 400 on the first turn. Every model in the picker today uses `20260209` for
+   both, so the split costs nothing now and is the thing that stops a future "let's re-add a
+   cheap model" change from shipping a broken tool name.
 2. **`output_config.format` (structured outputs) is incompatible with citations — a 400.**
    The setup proposal must carry web citations, so it cannot use structured outputs. The
    proposal comes back through a `propose_watchlist` **tool call** whose `input_schema` *is*
    the proposal schema (§6). This is a constraint, not a preference.
 3. **`escapeHtml` in the reference frontend escapes `& < >` but not quotes**
-   (`../CFO_Agent_1/static/app.js:74`). Interpolating a model-supplied URL into
+   (`../Agent 1/CFO_Agent_1/static/app.js:74`). Interpolating a model-supplied URL into
    `href="${escapeHtml(url)}"` is attribute injection, and `javascript:` URLs survive it.
    Every web citation link must be built imperatively with a protocol allowlist (§9).
 4. **Disabling thinking is effort-gated on `claude-opus-5`.** `{"type": "disabled"}` is
@@ -129,12 +149,12 @@ spirit:
 - **`scheduler.__init__` widens from `get_model` to `get_run_params`**, a zero-arg callable
   returning `{model, reasoning, effort, research}`. Same callable-injection pattern that
   exists specifically to avoid the circular import
-  (`../CFO_Agent_1/app/scheduler.py:26-28`).
+  (`../Agent 1/CFO_Agent_1/app/scheduler.py:26-28`).
 
 **Reuse ledger — copy with zero edits:**
 
 - `store.py` — its `KINDS` is *already* `("chat", "weekly", "monthly")`
-  (`../CFO_Agent_1/app/store.py:17`), exactly the shape chosen here, so the single most
+  (`../Agent 1/CFO_Agent_1/app/store.py:17`), exactly the shape chosen here, so the single most
   load-bearing scaffolding assumption needs no change at all.
 - `scheduler.py`, and `compute_next_run` + `_validate_schedule` inside `tasks.py`.
 - `tests/test_schedule_math.py` — passes unmodified against unmodified schedule math.
@@ -152,7 +172,7 @@ SDK typing lags.
 
 ## 2. The agent loop — the one genuinely novel piece
 
-`CFO_Agent_1`'s `run_agent` (`../CFO_Agent_1/app/agent.py:112-208`) assumes **every** tool
+`CFO_Agent_1`'s `run_agent` (`../Agent 1/CFO_Agent_1/app/agent.py:112-208`) assumes **every** tool
 runs locally. Two lines encode that assumption and both break with server-side web tools:
 
 - `agent.py:169` — `if response.stop_reason != "tool_use": break`
@@ -163,13 +183,21 @@ runs locally. Two lines encode that assumption and both break with server-side w
 
 ```python
 MODEL_CAPS = {
-  "claude-opus-5":    {"web": "20260209", "thinking": "adaptive", "effort": True,
-                       "thinking_default_on": True},
-  "claude-sonnet-5":  {"web": "20260209", "thinking": "adaptive", "effort": True},
-  "claude-opus-4-8":  {"web": "20260209", "thinking": "adaptive", "effort": True},
-  "claude-haiku-4-5": {"web": "20250305", "thinking": None,       "effort": False},
+  "claude-opus-5":   {"web_search": "20260209", "web_fetch": "20260209",
+                      "thinking": "adaptive", "effort": True, "thinking_default_on": True},
+  "claude-sonnet-5": {"web_search": "20260209", "web_fetch": "20260209",
+                      "thinking": "adaptive", "effort": True, "thinking_default_on": True},
+  "claude-opus-4-8": {"web_search": "20260209", "web_fetch": "20260209",
+                      "thinking": "adaptive", "effort": True, "thinking_default_on": False},
 }
 ```
+
+`thinking_default_on` records what happens when `thinking` is **omitted** — adaptive on
+Opus 5 and Sonnet 5, *no* thinking on Opus 4.8. The loop always sends `thinking` explicitly
+(§2f), so nothing branches on this flag; it is here so the asymmetry is written down rather
+than rediscovered, and so `AVAILABLE_MODELS` and the `max_tokens` reasoning in §2f can be
+sanity-checked against it. `AVAILABLE_MODELS` is derived as `list(MODEL_CAPS)` — one
+registry, so a model can never appear in the picker without capability data.
 
 Do **not** additionally declare `code_execution` — the `_20260209` variants run dynamic
 filtering internally, and a second execution environment confuses the model. Keep the tool
@@ -217,17 +245,36 @@ return HTTP 200 with `stop_reason: "refusal"` and possibly empty `content`. Chec
 (which can be `null` even on a refusal). Opt into server-side fallback by default:
 `betas=["server-side-fallback-2026-07-01"]` + `fallbacks="default"`.
 
+**This changes the call site, which is easy to miss.** `betas` and `fallbacks` are accepted
+only on the beta messages endpoint, so the stream becomes
+`client.beta.messages.stream(...)` — not `client.messages.stream(...)` as the reference uses
+at `../Agent 1/CFO_Agent_1/app/agent.py:148`. Two consequences, both benign here: response blocks
+arrive as `Beta*` variants (harmless precisely because the loop compares `block.type` as a
+string, per §1's SDK-typing note — this is now load-bearing rather than incidental), and the
+header/parameter pairing is fixed — `server-side-fallback-2026-07-01` goes with the scalar
+`fallbacks="default"`, while the older array form `fallbacks=[{"model": …}]` needs
+`-2026-06-01`. Crossing them is a 400. Prefer `"default"`: it routes by refusal category and
+needs no maintenance when a pinned fallback model is retired.
+
 **f. Thread the reasoning toggle.** When on, pass
 `thinking={"type": "adaptive", "display": "summarized"}` and forward `thinking_delta` as a
 new `{"type": "reasoning", "text": ...}` event. When off, send `{"type": "disabled"}` with
-effort **clamped to ≤ `high`** (constraint 4). On `claude-haiku-4-5`, omit `thinking` *and*
-`output_config` entirely. Keep appending `response.content` wholesale (`agent.py:172`) so
-thinking blocks survive into the next tool round — that already works and must not be
-"tidied".
+effort **clamped to ≤ `high`** (constraint 4). `display: "summarized"` must be explicit —
+the default on every model in the picker is `"omitted"`, which still streams `thinking`
+blocks but with empty text, so the reasoning disclosure in §9 would render an empty box and
+look broken rather than absent. Keep appending `response.content` wholesale
+(`agent.py:172`) so thinking blocks survive into the next tool round — that already works
+and must not be "tidied".
 
-Raise `max_tokens` from the reference's 16000 to **32000**: on `claude-opus-5` thinking is
-on by default and shares the output budget, so a citation-dense report plus summarized
-thinking will otherwise truncate.
+Raise `max_tokens` from the reference's 16000 to **64000** for every caller. On
+`claude-opus-5` thinking is on by default and shares the output budget, and the settings
+panel exposes the full effort range: at `xhigh`/`max` a citation-dense weekly scan plus
+summarized thinking will truncate under a tighter cap. 64000 is chosen over the more
+obvious 32000 deliberately — the failure it prevents is **silent and misattributable**. A
+truncated turn stops with `stop_reason: "max_tokens"`, which surfaces as a report that
+simply ends mid-sentence; the loop's own truncation signal is the `notice` event about the
+research budget (§2b), so the two failures look identical in the UI and the wrong one gets
+debugged. All streaming, so the larger cap carries no HTTP-timeout risk.
 
 **g. Split the system prompt into cached and uncached blocks.** The reference marks the
 whole system prompt `cache_control: ephemeral` (`agent.py:150-151`). The company profile is
@@ -235,6 +282,14 @@ stable per CFO and can live inside that block; today's date or a stale-driver co
 f-stringing those in means zero cache reads forever, with no error to tell you. Use two
 blocks: `[{static prompt + rendered profile, cache_control: ephemeral}, {volatile line}]`.
 Verify with `usage.cache_read_input_tokens`.
+
+**Know the floor before reading that number.** The minimum cacheable prefix on
+`claude-opus-5` is 512 tokens (half the 1024 of `claude-opus-4-8` — the minimum is *not*
+monotonic across generations, so it is a per-model fact, not a constant). A prefix below the
+floor silently does not cache: `cache_creation_input_tokens: 0`, no error. The static prompt
+plus a rendered profile clears 512 comfortably, but the no-key / empty-profile path in §6
+may not — so a zero on that path means "too short", not "the volatile block leaked into the
+cached one". §12.8 must be run with a confirmed profile or its result is uninterpretable.
 
 **h. Event vocabulary.** Existing: `text`, `tool_call`, `tool_result`, `chart`, `sources`,
 `done`, `error`. Add:
@@ -276,6 +331,16 @@ chips for one source. Never store `encrypted_content`; it is opaque and large.
 
 Built from three places in the loop: local tool `source_file`s; `web_search_tool_result`
 hits; `web_fetch_tool_result` (using its `retrieved_at` as `accessed`).
+
+**`classify_blocks` also returns the visited-URL set**, normalised, alongside the source
+records — it does not leave the loop to accumulate that separately. This is a testability
+decision, not tidiness: `ctx["fetched_urls"]` is the input to the provenance guard in §4, and
+if the loop assembles it inline then the guard's input is produced by the one part of the
+codebase §10 deliberately does not test. Returning it from a pure function puts it under
+`test_citations.py`, so a bug that quietly leaves the set empty (every write refused) or
+over-full (the guard defeated) fails a test instead of a demo. It also forces the set and the
+records through the *same* `normalise_url`, which is what makes the guard's comparison
+meaningful — see the matching test in §10.
 
 **Citations on text blocks.** With `citations: {"enabled": true}` on `web_fetch`, the
 response splits into multiple text blocks and cited ones carry a `citations` array. Streaming
@@ -326,8 +391,9 @@ pandas; `_load` prefers Parquet and falls back to CSV so tests can use CSV fixtu
 presentation via the `_chart_spec` side channel.
 
 **One signature change: `execute_tool(name, tool_input, ctx)`.** `ctx` carries
-`{"fetched_urls": set[str], "session_id": str, "profile": dict}`. Required because the write
-tool must verify a cited URL was actually visited this turn — see below.
+`{"fetched_urls": set[str], "session_id": str, "profile": dict}`, where `fetched_urls` holds
+**normalised** URLs (§3) so the guard below compares like with like. Required because the
+write tool must verify a cited URL was actually visited this turn — see below.
 
 | Tool | Purpose |
 |---|---|
@@ -405,9 +471,30 @@ Because this makes a dataset model-writable, `drivers.py` guards it:
   error naming the previous value, unless `override_sanity_check: true`. The model can then
   justify a genuine spike rather than silently poisoning the table.
 - **`source_url` required *and* verified** against `ctx["fetched_urls"]`, the per-turn set
-  the loop populates from web tool results. This closes the invented-citation hole — the
-  agent cannot record a number attributed to a page it never visited. It is the one place in
-  this design where a model mistake would become durable, wrong data.
+  §3's `classify_blocks` returns from web tool results. This closes the invented-citation
+  hole — the agent cannot record a number attributed to a page it never visited. It is the
+  one place in this design where a model mistake would become durable, wrong data.
+
+**Both guards are pure predicates, and they are the two functions in this codebase that most
+need tests.** Factor them out of the I/O path rather than writing them inline in the write
+tool:
+
+```python
+verify_source_url(url, fetched_urls) -> bool          # normalises both sides, then compares
+check_sanity_band(price, previous, *, override=False) -> dict | None   # None == accepted
+```
+
+`drivers.py` then reads the previous value, calls the predicates, and appends — I/O around a
+tested core, the same shape that makes `budget.py` testable. Putting them inline would leave
+the single irreversible write in the system verified only by hand in a browser (§12.6),
+which is exactly backwards: highest consequence, weakest coverage. `test_driver_guards.py`
+in §10 covers them.
+
+The normalisation detail is the one worth stating explicitly, because getting it wrong fails
+*closed* and looks like model misbehaviour: if `verify_source_url` compares raw URLs while
+`classify_blocks` stored normalised ones, then every legitimate observation is refused with
+a provenance error, the agent dutifully retries and reports it cannot verify its own
+sources, and nothing in the logs points at the comparison.
 - Append-only with a `revision` column; never mutate seeded history. Atomic `.tmp` +
   `Path.replace()` under a lock, because a scheduler worker and an interactive chat can
   write concurrently.
@@ -507,7 +594,7 @@ readable transcript for free:
 wizard function.
 
 **Startup gating.** The reference's `_startup_generate_reports` gates only on the API key
-(`../CFO_Agent_1/app/main.py:71`). Here it must gate on `setup_complete` **as well** —
+(`../Agent 1/CFO_Agent_1/app/main.py:71`). Here it must gate on `setup_complete` **as well** —
 generating a weekly market scan before the agent knows which markets matter burns tokens
 producing a report the CFO cannot use.
 
@@ -525,7 +612,7 @@ evaluation, and alert creation with the finding title as the narrative.
 `rules.py` is pure pandas over stable tables and never calls the API; `alerts.py` narrates.
 Preserve the finding shape exactly —
 `{rule_id, entity, period, metric_value, threshold, severity, title}`, verified at
-`../CFO_Agent_1/app/rules.py:91-97`. Its `URGENCY_ANALYSIS_PROMPT` is `.format(**finding)`,
+`../Agent 1/CFO_Agent_1/app/rules.py:91-97`. Its `URGENCY_ANALYSIS_PROMPT` is `.format(**finding)`,
 so renaming a key breaks prompt formatting at runtime rather than at import.
 
 | `rule_id` | Fires when |
@@ -596,11 +683,14 @@ lets the refresh run daily and cheaply while the narrative runs weekly.
 **Two concrete breakages to fix.** `execute_task` derives the report kind via
 `ttype.split("_")[0]` (`tasks.py:315`), which no longer works — replace with an explicit
 `TASK_KIND = {"driver_scan": "weekly", "budget_revision": "monthly"}`. And add an optional
-per-task `model` override so `assumption_refresh` can run on a cheaper model while
-`driver_scan` runs on `claude-opus-5`.
+per-task `model` override so `assumption_refresh` can run on `claude-sonnet-5` while
+`driver_scan` runs on `claude-opus-5`. **The override must be validated against
+`MODEL_CAPS`** and fall back to the configured model if absent — it is the one place a model
+id enters the system without passing through the settings picker, so it is the one place
+constraint 1 could be reintroduced by a hand-edited `tasks.json`.
 
 `period_key` needs **no change** — ISO week for `weekly`, `%Y-%m` for `monthly` is already
-exactly right (`../CFO_Agent_1/app/reporting.py:21-27`).
+exactly right (`../Agent 1/CFO_Agent_1/app/reporting.py:21-27`).
 
 ---
 
@@ -630,6 +720,15 @@ verbatim with `messagesEl` → `container`, plus an `opts.onEvent` hook and an
 `opts.onRevealDone` callback fired next to `addSources`. This is the largest structural
 change; everything else is cheap once it exists.
 
+**It is also the critical path, so land it as a no-op first.** Six of the eight items in §9's
+build order depend on this extraction, so if it slips they all slip — and because it moves
+streaming animation state, a subtle regression here (a dropped `fade-new` boundary, a broken
+near-bottom check) shows up later as a *citations* or *reasoning* bug and gets debugged in
+the wrong file. Extract it and ship it against the existing chat view alone, with no new
+callers and no new features, and confirm the reveal cadence, the 120 px auto-scroll rule and
+the `document.hidden` flush path are byte-for-byte unchanged. Only then point the wizard and
+the reasoning disclosure at it.
+
 **`addAttachment(file, target)`.** `pendingAttachments` is one module global that
 `renderFeature` wipes on every navigation (`app.js:867`); the wizard needs its own array.
 
@@ -647,8 +746,16 @@ route. No flash of the wrong view, ever, because nothing is visible until `route
 The gate goes at the top of `route()`, right after the existing timer cleanup:
 
 ```js
-if (!profile?.completed && kind !== "setup") { location.replace("#/setup"); return; }
+if (!profile?.setup_complete && kind !== "setup") { location.replace("#/setup"); return; }
 ```
+
+**The field name is `setup_complete`, matching what §6 persists and what `GET /api/profile`
+returns.** Spelling it `completed` here would read as `undefined` — permanently falsy — so
+every route would redirect to `#/setup` forever, including after the CFO confirms the
+profile. It fails as a hard lock-out rather than a leak, so it cannot escape a smoke test,
+but it also cannot be *diagnosed* from the symptom: the wizard works, the POST succeeds,
+`company_profile.json` is correct on disk, and the app still refuses to leave setup. Keep
+one name end to end.
 
 `location.replace` (not assignment) so a gated URL never enters history and Back cannot
 bounce into it. No loop, because `#/setup` is itself ungated.
@@ -852,17 +959,20 @@ punitive, and the typed description must never be cleared.
 
 ## 10. Tests
 
-Pure functions get tests; I/O and the API surface do not. The variance and sensitivity maths
-are the most consequential thing in the codebase and are pure, so there is no excuse.
+Pure functions get tests; I/O and the API surface do not. Two things in this codebase are
+consequential enough that untested is not defensible, and both are pure: the variance and
+sensitivity maths (wrong numbers, confidently presented) and the provenance guard (wrong
+data, durably written). Everything else is a demo.
 
 | Test file | Covers |
 |---|---|
 | `test_variance_decomposition.py` | **The headline test.** `price + volume + mix + joint == total Δ` (the additivity identity); a pure price move gives zero volume and zero mix; a mix-only shift gives zero price and zero volume; zero/missing volume returns `{"error": …}` rather than raising `ZeroDivisionError` |
 | `test_sensitivity.py` | Exposure equals `Σ qty × volume × price`; +10% with 0% hedge moves COGS by exactly 10% of exposure; 50% hedge halves it; `breakeven_pct` fed back reproduces the floor; a falling cost driver *raises* EBITDA |
 | `test_scenario_engine.py` | All-zero assumptions reproduce the baseline exactly; monthly rows sum to the annual total; `EBITDA == revenue − COGS − opex` on every row |
-| `test_citations.py` | `classify_blocks` over dict fixtures: server-tool blocks never reach local dispatch; an error object in `content` yields `web_error` and no crash; `render_chart` contributes no source; search + fetch of one URL collapse to one record; a legacy session with no `source_records` upgrades cleanly |
+| `test_citations.py` | `classify_blocks` over dict fixtures: server-tool blocks never reach local dispatch; an error object in `content` yields `web_error` and no crash; `render_chart` contributes no source; search + fetch of one URL collapse to one record; **the returned visited-URL set is normalised** and yields exactly one entry for that URL (this is the guard's input — see `test_driver_guards.py`); a legacy session with no `source_records` upgrades cleanly |
 | `test_rules.py` | One fires/doesn't-fire pair per rule at the threshold boundary, plus severity escalation (CSV fixtures, viable because `_load` falls back to CSV) |
 | `test_alerts_dedup.py` | Same key inside the window suppressed; outside it re-fires; magnitude-bucket escalation re-fires *inside* the window; the cost cap at 3; narrative falls back to the finding title |
+| `test_driver_guards.py` | **The provenance boundary** (§4). `verify_source_url`: a URL absent from the set is refused; a URL that differs from the visited one only by trailing slash, host casing or a `utm_*` param is **accepted** (the fails-closed case — both sides must go through `normalise_url`); an empty set refuses everything. `check_sanity_band`: accepted at exactly 0.2× and 5.0×, refused just outside; `override_sanity_check: true` admits a genuine spike; the rejection dict names the previous value so the error is teachable; no previous value (first observation) is accepted rather than crashing |
 | `test_schedule_math.py` | **Copied verbatim** — 13 cases, unchanged maths |
 
 Deliberately untested: `main.py` routes, the SSE layer, the streaming shell of `run_agent`,
@@ -875,7 +985,8 @@ anything touching the network.
 Maths first, red-to-green, before any I/O exists — then data, then tools, then the loop.
 
 1. `budget.py` + its three test files.
-2. `generate_data.py`, `drivers.py`, `scenarios.py`.
+2. `generate_data.py`, `drivers.py` (pure guards first, then the I/O around them) +
+   `test_driver_guards.py`, `scenarios.py`.
 3. `tools.py`, verifying each tool standalone via `python -m` before the model sees it.
 4. `citations.py` + `test_citations.py`, then `agent.py`'s loop rewrite against those helpers.
 5. `config.py`, `profile.py`, `reporting.py`.
@@ -886,7 +997,7 @@ Maths first, red-to-green, before any I/O exists — then data, then tools, then
 
 ## 12. Verification
 
-1. **Unit tests:** `.venv/bin/python -m pytest -q` — all seven files green.
+1. **Unit tests:** `.venv/bin/python -m pytest -q` — all eight files green.
 2. **Cold start, no key:** unset `ANTHROPIC_API_KEY`, launch, confirm the setup view appears
    with the manual fallback, the app is navigable, and no traceback appears.
 3. **Setup flow:** with a key, submit a free-text animal-food description; confirm the
@@ -896,18 +1007,29 @@ Maths first, red-to-green, before any I/O exists — then data, then tools, then
    confirm `server_tool_use` blocks are **not** dispatched locally, a `pause_turn` resumes
    rather than truncating, and the answer carries both web and dataset chips. Verify web
    chips open in a new tab and that a `javascript:` URL in a source is rendered inert.
-5. **Every model in the picker:** send one turn on each, with the reasoning toggle both on
-   and off. This is where the `MODEL_CAPS` work pays off — the failure modes are a 400 for
-   the wrong web-tool version on Haiku, and a 400 for `disabled` thinking at high effort on
-   Opus 5.
-6. **Provenance guard:** ask the agent to record a driver observation citing a URL it never
-   fetched; confirm it is refused with a teachable error rather than written.
+5. **Every model in the picker:** send one turn on each of the three, with the reasoning
+   toggle both on and off, **and at each effort level**. The effort sweep is the point: the
+   one remaining 400 in this design is `thinking: {"type": "disabled"}` paired with effort
+   `xhigh` or `max` on `claude-opus-5` (constraint 4 — it is accepted at `high` and below, so
+   testing only the default hides it), and it is validated *per request*, so a session that
+   raises effort mid-conversation fails where earlier turns passed. Confirm the settings
+   panel's coupling makes that combination unreachable from the UI, then confirm the clamp in
+   `run_agent` refuses it anyway.
+6. **Provenance guard:** `test_driver_guards.py` is the real coverage here; this step only
+   confirms the guard is *wired in*. Ask the agent to record a driver observation citing a
+   URL it never fetched and confirm it is refused with a teachable error rather than written.
+   Then run the inverse, which is the case that actually breaks in practice: ask it to record
+   an observation from a page it **did** fetch, and confirm the write succeeds. A guard that
+   refuses everything passes the first half of this test and is worse than no guard.
 7. **Arithmetic provenance:** ask for a variance and independently reproduce the
    decomposition from the CSVs in a REPL. The four effects must sum to the total exactly — if
    the model did the arithmetic, they won't.
-8. **Prompt cache:** run two turns in one session and confirm
-   `usage.cache_read_input_tokens > 0` on the second. Zero means the volatile block leaked
-   into the cached one.
+8. **Prompt cache:** with a **confirmed profile** (§2g — an empty profile can fall under the
+   512-token floor and never cache, which is not the same failure), run two turns in one
+   session and confirm `usage.cache_read_input_tokens > 0` on the second. Zero means the
+   volatile block leaked into the cached one. Also confirm
+   `cache_creation_input_tokens > 0` on the *first* turn — if both are zero the prefix is
+   simply too short and the test is measuring nothing.
 9. **Scheduler:** create a task at each cadence, confirm the computed next-run times, then
    `Run now` the driver refresh and confirm an observation with a citation lands and a drift
    alert fires. Navigate away from `#/drivers` and confirm the 2 s poll stops.
