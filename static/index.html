@@ -12,8 +12,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CFO Finance Agent</title>
-  <link rel="stylesheet" href="/static/columbus-tokens.css?v=11">
-  <link rel="stylesheet" href="/static/style.css?v=11">
+  <link rel="stylesheet" href="/static/columbus-tokens.css?v=17">
+  <link rel="stylesheet" href="/static/style.css?v=17">
+  <link rel="stylesheet" href="/static/budget.css?v=17">
 </head>
 <body>
   <header>
@@ -34,6 +35,10 @@
       <a href="#/scenarios" title="Saved budget scenarios">Scenarios</a>
     </nav>
     <div class="header-right">
+      <!-- In the header, not on the home grid: the header sits outside .view, so
+           this stays reachable while the profile gate holds the rest of the app
+           on #/setup — which is the point of Budget Outlook's independent gate. -->
+      <a id="budget-link" href="#/budget" title="Budget outlook — next year's budget from your own assumptions">Budget outlook</a>
       <a id="scheduler-link" href="#/scheduler" title="Scheduler — autonomous tasks the agent runs for you">Scheduler</a>
       <a id="data-link" href="#/data" title="Data ingestion — the datasets behind every answer">Data ingestion</a>
       <span id="scheduler-badge" class="badge" title="Scheduled data refresh status">refresh: …</span>
@@ -78,6 +83,12 @@
     <div id="scenarios-body"></div>
    </div>
   </main>
+
+  <!-- Budget Outlook. Two empty shells filled entirely by budget.js — a
+       deliberately different page from every other view here: no .page-inner,
+       no sidebar, no cards. See static/budget.css for why. -->
+  <main id="budget-view" class="view hidden"></main>
+  <main id="budget-config-view" class="view hidden"></main>
 
   <main id="home-view" class="view hidden">
     <div class="home-inner">
@@ -301,6 +312,9 @@
     </section>
   </aside>
 
-  <script src="/static/app.js?v=11"></script>
+  <!-- budget.js BEFORE app.js: it only declares window.BudgetPlan, while app.js
+       ends by calling boot() → route(), which needs it to already exist. -->
+  <script src="/static/budget.js?v=17"></script>
+  <script src="/static/app.js?v=17"></script>
 </body>
 </html>

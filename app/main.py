@@ -21,8 +21,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (alerts, config, drivers, generate_data, profile as profile_mod,
-               reporting, rules, scenarios, scheduler, store, tasks, tools)
+from . import (alerts, budgetplan, config, drivers, generate_data,
+               profile as profile_mod, reporting, rules, scenarios, scheduler,
+               store, tasks, tools)
 from .agent import AVAILABLE_MODELS, EFFORT_LEVELS, volatile_context
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -170,6 +171,16 @@ class ObservationRequest(BaseModel):
     note: str | None = None
 
 
+class BudgetPlanRequest(BaseModel):
+    company: dict | None = None
+    baseline: dict | None = None
+    variables: list[dict] | None = None
+
+
+class BudgetChatRequest(BaseModel):
+    message: str = ""
+
+
 # --------------------------------------------------------------------------
 # SSE
 # --------------------------------------------------------------------------
@@ -294,6 +305,71 @@ def post_settings(payload: SettingsRequest) -> dict:
     config.save_settings(update)
     _scheduler.wake()
     return get_settings()
+
+
+# --------------------------------------------------------------------------
+# Budget Outlook  (UNGATED — deliberately, and this is the one place it matters)
+# --------------------------------------------------------------------------
+#
+# The omission of `dependencies=Gated` on every route below is intentional, not
+# an oversight. Budget Outlook is config-driven: it reads no dataset and needs no
+# company profile, and it carries its OWN first-run gate (`plan["configured"]`).
+# Putting it behind require_setup would force a CFO through the driver-research
+# wizard for a feature that never touches a driver.
+
+@app.get("/api/budgetplan")
+def get_budget_plan() -> dict:
+    plan = budgetplan.get_plan()
+    return {
+        "plan": plan,
+        "derived": budgetplan.derive(plan) if plan.get("configured") else None,
+        "industries": budgetplan.industry_options(),
+        "sizes": [{"id": s, "label": budgetplan.SIZE_LABELS[s]} for s in budgetplan.SIZES],
+        "has_api_key": budgetplan.has_api_key(),
+    }
+
+
+@app.get("/api/budgetplan/defaults")
+def get_budget_defaults(industry: str = Query(budgetplan.DEFAULT_INDUSTRY),
+                        revenue: float = Query(0.0)) -> dict:
+    """Repopulates the config screen's variable table when the industry changes."""
+    return {"variables": budgetplan.defaults_for(industry, revenue)}
+
+
+@app.post("/api/budgetplan/config")
+def post_budget_plan(payload: BudgetPlanRequest) -> dict:
+    result = budgetplan.save_config(payload.model_dump())
+    if isinstance(result, str):
+        raise HTTPException(status_code=400, detail={"error": result})
+    return {"plan": result, "derived": budgetplan.derive(result)}
+
+
+@app.post("/api/budgetplan/reset")
+def reset_budget_plan() -> dict:
+    return {"plan": budgetplan.reset_plan()}
+
+
+@app.post("/api/budgetplan/narrative")
+def post_budget_narrative(force: bool = Query(False)) -> dict:
+    plan = budgetplan.get_plan()
+    if not plan.get("configured"):
+        raise HTTPException(status_code=409, detail={"error": "budget_plan_not_configured"})
+    model = config.get_run_params()["model"]
+    return {"narrative": budgetplan.ensure_narrative(plan, model, force=force)}
+
+
+@app.post("/api/budgetplan/chat")
+def post_budget_chat(payload: BudgetChatRequest) -> StreamingResponse:
+    plan = budgetplan.get_plan()
+    if not plan.get("configured"):
+        raise HTTPException(status_code=409, detail={"error": "budget_plan_not_configured"})
+    model = config.get_run_params()["model"]
+    return _sse(budgetplan.stream_chat(plan, payload.message, model))
+
+
+@app.post("/api/budgetplan/chat/clear")
+def clear_budget_chat() -> dict:
+    return {"plan": budgetplan.clear_chat()}
 
 
 # --------------------------------------------------------------------------

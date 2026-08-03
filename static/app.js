@@ -17,6 +17,8 @@ const bootView = document.getElementById("boot-view");
 const setupView = document.getElementById("setup-view");
 const driversView = document.getElementById("drivers-view");
 const scenariosView = document.getElementById("scenarios-view");
+const budgetView = document.getElementById("budget-view");
+const budgetConfigView = document.getElementById("budget-config-view");
 const schedulerLink = document.getElementById("scheduler-link");
 const alertsBtn = document.getElementById("alerts-btn");
 const alertsBadge = document.getElementById("alerts-badge");
@@ -1137,7 +1139,8 @@ newSessionBtn.addEventListener("click", () => {
 // ---------- Router ----------
 
 const ALL_VIEWS = [bootView, setupView, homeView, featureView, dataView,
-                   schedulerView, alertsView, driversView, scenariosView];
+                   schedulerView, alertsView, driversView, scenariosView,
+                   budgetView, budgetConfigView];
 function showOnly(viewEl) {
   ALL_VIEWS.forEach(v => v.classList.toggle("hidden", v !== viewEl));
 }
@@ -1758,13 +1761,21 @@ function route() {
   // undefined, permanently falsy, and redirect every route to #/setup forever,
   // including after the CFO confirms. It fails as a hard lock-out that a smoke
   // test catches but cannot diagnose, so the name is kept identical end to end.
-  if (!profile?.setup_complete && kind !== "setup") {
+  //
+  // `budget` is exempt alongside `setup`. Budget Outlook reads no dataset and
+  // needs no company profile — it runs entirely off its own configuration and
+  // carries its own first-run gate (plan.configured, enforced in
+  // BudgetPlan.route). Its API routes are ungated for the same reason, so
+  // gating it here would lock out a working feature for no benefit.
+  if (!profile?.setup_complete && kind !== "setup" && kind !== "budget") {
     // replace, not assign: a gated URL never enters history, so Back can't
     // bounce into it. No loop, because #/setup is itself ungated.
     location.replace("#/setup");
     return;
   }
-  if (kind === "setup") {
+  if (kind === "budget") {
+    BudgetPlan.route(id);          // id is "config" or undefined
+  } else if (kind === "setup") {
     renderSetup();
   } else if (kind === "drivers") {
     renderDrivers();
@@ -1975,7 +1986,10 @@ async function loadProfile() {
 }
 
 async function boot() {
-  await loadProfile();
+  // In parallel: Budget Outlook's gate is independent of the profile gate, and
+  // preloading it here means route() can paint #/budget without first showing
+  // the boot dots while its own fetch resolves.
+  await Promise.all([loadProfile(), BudgetPlan.load()]);
   loadSettings();
   if (profile.setup_complete) loadRules();
   refreshNotifyUi();
@@ -1985,7 +1999,7 @@ async function boot() {
 boot();
 
 // ==========================================================================
-// Setup wizard  (#/setup — the only ungated route)
+// Setup wizard  (#/setup — ungated, as is #/budget)
 // ==========================================================================
 
 function restoreReasoning(bubble, text) {

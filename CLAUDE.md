@@ -50,9 +50,10 @@ Rebuild the demo datasets (deterministic, `RNG_SEED = 42`):
 `ANTHROPIC_API_KEY` is the only required env var. `app.main` reads `.env` at import time and never
 overrides a value already exported in the shell (`cp .env.example .env`).
 
-**Editing `static/*` requires bumping the `?v=N` query string** on all three asset links in
-[static/index.html](static/index.html) — there is no no-cache middleware in this app, so browsers
-serve a stale `app.js` otherwise.
+**Editing `static/*` requires bumping the `?v=N` query string** on all **five** asset links in
+[static/index.html](static/index.html) (`columbus-tokens.css`, `style.css`, `budget.css`,
+`budget.js`, `app.js`) — there is no no-cache middleware in this app, so browsers serve a stale
+`app.js` otherwise. Bump them together; a half-bumped set is worse than none.
 
 ## Documentation already in the repo
 
@@ -78,6 +79,7 @@ static/ (vanilla JS SPA, hash-routed)  ──fetch JSON + SSE──►  app/main
    reporting.py  run_session_turn  ── agent.py (streaming loop) ── tools.py ── budget.py (pure maths)
    scheduler.py (daemon thread) ── tasks.py ── rules.py (pure pandas) ── alerts.py
    store.py / profile.py / config.py / scenarios.py / drivers.py   =  JSON + Parquet on disk
+   budgetplan.py (self-contained: own store, own gate, own chat loop) ── agent.get_client only
 ```
 
 Two rules hold the graph acyclic and are load-bearing:
@@ -164,13 +166,40 @@ to overwrite the CFO's locked position.
 ### Setup gate
 
 Almost every route depends on `require_setup` and 409s with `{"error": "setup_incomplete"}` until the
-CFO confirms a company profile. `/api/settings` and `/api/profile*` stay **ungated** so the settings
-panel and the setup wizard work while gated. On the frontend, `profile` gates every route. Startup
-report generation is gated on both the API key and `setup_complete()`.
+CFO confirms a company profile. `/api/settings`, `/api/profile*` and `/api/budgetplan*` stay
+**ungated** so the settings panel, the setup wizard and Budget Outlook work while gated. On the
+frontend, `profile` gates every route except `#/setup` and `#/budget`. Startup report generation is
+gated on both the API key and `setup_complete()`.
 
 The setup research turn runs as a real session so it inherits streaming, citations and a readable
 transcript; the proposal comes back through the `propose_watchlist` **tool call** rather than
 structured outputs, because `output_config.format` is incompatible with citations (400).
+
+### Budget Outlook — the one feature that stands apart
+
+[app/budgetplan.py](app/budgetplan.py) + [static/budget.js](static/budget.js) +
+[static/budget.css](static/budget.css) + `#budget-view` / `#budget-config-view`. A config-driven read
+on next year's budget for **any** company. Four properties are load-bearing and easy to erode:
+
+- **It reads no dataset.** Not `drivers.parquet`, not `budget_vs_actuals.parquet`. Everything on the
+  page comes from `data/budget_plan.json`, which the user fills in. That is what lets it work on a
+  fresh install with no profile and no demo data.
+- **Its gate is its own** (`plan["configured"]`), independent of `setup_complete`. Adding
+  `dependencies=Gated` to a `/api/budgetplan*` route, or dropping `kind !== "budget"` from the
+  frontend gate, silently locks out a feature that has no need of a profile.
+- **Numbers are computed, prose is not.** `derive()` is pure and does the whole page: ranking,
+  deltas, totals, margin. The model only writes the 2–4 sentence read (cached on `fingerprint()`,
+  falling back to `templated_narrative()` when the API is unreachable) and answers chat.
+- **It does not reuse `run_agent`.** `stream_chat` is a small dedicated loop, because a tool-less,
+  citation-less turn needs none of that loop's tool rounds, `pause_turn` handling or `MODEL_CAPS`
+  logic — and the alternative was adding override parameters to the most correctness-critical code
+  in the repo. It yields a strict subset of the event vocabulary (`text`, `error`, `done`) so
+  `createStreamRenderer` consumes it unchanged.
+
+Structurally it shares only primitives with the other three agents — design tokens, the chat bubble
+and markdown CSS, `createStreamRenderer` / `readSSE` / `escapeHtml`. It uses none of `#feature-view`,
+`KIND_META`, `.page-inner`, `.data-inner`, `.card` or `store.py`. Keep it that way: the point of the
+feature is that it is not a fourth `KIND_META` entry.
 
 ### Autonomy
 

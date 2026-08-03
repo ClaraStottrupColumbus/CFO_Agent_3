@@ -1,0 +1,713 @@
+/* budget.css — Budget Outlook.
+   ------------------------------------------------------------------------
+   A DELIBERATELY DIFFERENT PAGE. The other three agents share one shell
+   (#feature-view: 270px session sidebar + centred message column) and the
+   remaining pages share .page-inner / .data-inner — a 1000px centred column of
+   rounded white cards. Budget Outlook uses neither.
+
+   Its shape is: full-bleed dark gradient hero across the top of a wide left
+   column, then the variables as EDGE-TO-EDGE RANKED BANDS with materiality
+   bars — a ranking, which is what the page is actually about — and a permanent
+   chat rail docked on the right so the conversation sits beside the numbers
+   instead of on another screen.
+
+   Everything here is namespaced `bo-` and scoped under #budget-view /
+   #budget-config-view. It borrows tokens from columbus-tokens.css and the chat
+   bubble/markdown rules from style.css, and nothing else: no .card, no
+   .page-inner, no .page-head, no .card-grid.
+
+   Brand ratio holds: cream canvas, a navy gradient band, and orange (--cta)
+   only on the two primary CTAs (save configuration, send a message). */
+
+/* ---------------- Shell ---------------- */
+
+#budget-view { overflow: hidden; }
+
+.bo-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  width: 100%;
+  min-height: 0;
+}
+
+.bo-main {
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--bg-canvas);
+}
+
+/* ---------------- Hero ---------------- */
+
+.bo-hero {
+  background: var(--gradient-navy-blue);
+  color: var(--fg-inverse);
+  padding: var(--space-10) var(--space-12) var(--space-8);
+}
+
+.bo-eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--columbus-blue-light);
+  margin-bottom: var(--space-5);
+}
+.bo-eyebrow .bo-dot { opacity: 0.45; }
+
+.bo-read {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-display-sm);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+  max-width: 34ch;
+  color: var(--white);
+}
+.bo-read.is-loading { opacity: 0.55; }
+
+/* Three figures under the read, separated by hairlines rather than boxed —
+   a stat strip, not a card grid. */
+.bo-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+  padding-top: var(--space-6);
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+}
+.bo-stat { min-width: 150px; }
+.bo-stat-label {
+  display: block;
+  font-size: var(--fs-caption);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--columbus-blue-light);
+  margin-bottom: var(--space-1);
+}
+.bo-stat-value {
+  display: block;
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-snug);
+}
+.bo-stat-sub {
+  display: block;
+  font-size: var(--fs-body-sm);
+  color: rgba(255, 255, 255, 0.72);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.bo-regen {
+  margin-top: var(--space-6);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.38);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--fs-body-sm);
+  padding: 0.4rem 0.9rem;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.bo-regen:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
+.bo-regen:disabled { opacity: 0.5; cursor: default; }
+
+/* ---------------- Ranked variables ---------------- */
+
+.bo-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-10) var(--space-12) var(--space-4);
+}
+.bo-section-head h2 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+  color: var(--fg-1);
+}
+.bo-section-note {
+  margin: 0;
+  font-size: var(--fs-body-sm);
+  color: var(--fg-3);
+}
+
+.bo-rows { border-top: 1px solid var(--border-subtle); }
+
+/* One variable = one full-width band. Not a card: cards are what the rest of
+   the app uses, and a ranking reads better as a stack of rules than as tiles. */
+.bo-row {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) minmax(0, 15rem);
+  align-items: center;
+  gap: var(--space-5);
+  width: 100%;
+  text-align: left;
+  padding: var(--space-5) var(--space-12);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: inherit;
+  color: var(--fg-1);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.bo-row:hover, .bo-row:focus-visible { background: var(--bg-surface-alt); }
+.bo-row.is-open { background: var(--bg-subtle); }
+
+.bo-rank {
+  font-family: var(--font-display);
+  font-size: var(--fs-h3);
+  color: var(--navy-300);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.bo-row.is-open .bo-rank { color: var(--columbus-navy); }
+
+.bo-name {
+  display: block;
+  font-size: var(--fs-body-lg);
+  font-weight: var(--fw-medium);
+  margin-bottom: var(--space-1);
+}
+.bo-meta {
+  display: block;
+  font-size: var(--fs-caption);
+  color: var(--fg-3);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  margin-bottom: var(--space-2);
+}
+
+/* The materiality bar. Width is share of the TOTAL movement, so the bars read
+   against each other rather than against an arbitrary maximum. */
+.bo-bar {
+  display: block;        /* it is a <span> inside a <button>; inline ignores height */
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(1, 1, 144, 0.09);
+  overflow: hidden;
+  max-width: 34rem;
+}
+.bo-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--columbus-navy);
+  min-width: 2px;
+}
+.bo-row[data-direction="down"] .bo-bar-fill { background: var(--columbus-teal); }
+.bo-row[data-direction="flat"] .bo-bar-fill { background: var(--grey-300); }
+
+.bo-figures { text-align: right; }
+.bo-next {
+  display: block;
+  font-size: var(--fs-h5);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+/* The delta is NOT coloured by sign. A cost line falling is good and a revenue
+   line falling is bad; the arrow and the word carry the direction, and the
+   figure stays neutral — the same rule the driver cards follow. */
+.bo-delta {
+  display: block;
+  font-size: var(--fs-body-sm);
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+.bo-arrow { font-weight: var(--fw-semibold); }
+
+.bo-showall {
+  display: block;
+  width: 100%;
+  padding: var(--space-4) var(--space-12);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: inherit;
+  font-size: var(--fs-body-sm);
+  font-weight: var(--fw-medium);
+  color: var(--columbus-navy);
+  text-align: left;
+  cursor: pointer;
+}
+.bo-showall:hover { background: var(--bg-surface-alt); }
+
+.bo-foot {
+  padding: var(--space-6) var(--space-12) var(--space-16);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-3);
+}
+.bo-foot a, .bo-linkish {
+  color: var(--columbus-navy);
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---------------- Chat rail ---------------- */
+
+.bo-chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border-default);
+  background: var(--bg-surface);
+}
+
+.bo-chat-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-5) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.bo-chat-head h2 {
+  margin: 0;
+  font-size: var(--fs-h6);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--fg-1);
+}
+
+.bo-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.bo-messages .bubble { max-width: 100%; font-size: 0.88rem; }
+
+.bo-scope-note {
+  margin: 0;
+  font-size: var(--fs-body-sm);
+  color: var(--fg-3);
+  line-height: var(--lh-relaxed);
+}
+
+/* Inside .bo-messages, which already supplies the padding. */
+.bo-starters:not(:empty) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.bo-starter {
+  text-align: left;
+  padding: 0.55rem 0.8rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface-alt);
+  font-family: inherit;
+  font-size: var(--fs-body-sm);
+  color: var(--fg-1);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out),
+              background var(--duration-fast) var(--ease-out);
+}
+.bo-starter:hover { border-color: var(--columbus-navy); background: var(--bg-subtle); }
+
+.bo-composer {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+.bo-composer textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  font-family: inherit;
+  font-size: var(--fs-body-sm);
+  line-height: var(--lh-normal);
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--fg-1);
+  max-height: 8rem;
+}
+.bo-composer textarea:focus { outline: 2px solid var(--columbus-navy); outline-offset: 1px; }
+
+/* Orange #1 of 2 — a primary CTA. */
+.bo-send {
+  flex-shrink: 0;
+  align-self: flex-end;
+  padding: 0.6rem 1.1rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--cta);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--fs-body-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+}
+.bo-send:hover:not(:disabled) { background: var(--cta-hover); }
+.bo-send:disabled { opacity: 0.45; cursor: default; }
+
+/* ---------------- Detail drawer ---------------- */
+
+.bo-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 1, 144, 0.34);
+  opacity: 1;
+  z-index: 40;
+  transition: opacity var(--duration-base) var(--ease-out);
+}
+.bo-scrim.hidden { opacity: 0; pointer-events: none; }
+
+.bo-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: min(560px, 100%);
+  z-index: 41;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(0);
+  transition: transform var(--duration-base) var(--ease-out);
+}
+.bo-drawer.hidden { transform: translateX(105%); }
+
+.bo-drawer-head {
+  padding: var(--space-8) var(--space-8) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-subtle);
+}
+.bo-drawer-head h2 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-h2);
+  letter-spacing: var(--tracking-tight);
+  margin: var(--space-2) 0 var(--space-1);
+  color: var(--fg-1);
+}
+.bo-drawer-rank {
+  font-size: var(--fs-caption);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.bo-drawer-close {
+  position: absolute;
+  top: var(--space-5);
+  right: var(--space-5);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--fg-1);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.bo-drawer-close:hover { background: var(--bg-surface-alt); }
+
+.bo-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6) var(--space-8) var(--space-10);
+}
+.bo-block { padding: var(--space-5) 0; border-bottom: 1px solid var(--border-subtle); }
+.bo-block:last-child { border-bottom: 0; }
+.bo-block h3 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.bo-block p { margin: 0 0 var(--space-2); line-height: var(--lh-relaxed); font-size: var(--fs-body-sm); }
+.bo-block p:last-child { margin-bottom: 0; }
+
+.bo-derivation {
+  font-family: var(--font-mono);
+  font-size: var(--fs-body-sm);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  line-height: 1.8;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.bo-assumption {
+  border-left: 3px solid var(--columbus-navy);
+  padding-left: var(--space-4);
+  font-style: italic;
+  color: var(--fg-2);
+}
+.bo-assumption.is-default { border-left-color: var(--grey-300); }
+.bo-source {
+  display: block;
+  font-style: normal;
+  font-size: var(--fs-caption);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-top: var(--space-2);
+}
+
+/* Two points is all we have — the config holds this year and next, no history.
+   Rendered as a labelled two-step comparison rather than a line chart, so it
+   cannot imply a trend series that does not exist. */
+.bo-trend { display: flex; align-items: flex-end; gap: var(--space-6); height: 128px; }
+.bo-trend-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; gap: var(--space-2); }
+.bo-trend-bar { background: var(--navy-300); border-radius: var(--radius-sm) var(--radius-sm) 0 0; min-height: 4px; }
+.bo-trend-col.is-next .bo-trend-bar { background: var(--columbus-navy); }
+.bo-trend-label {
+  font-size: var(--fs-caption);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.bo-trend-value {
+  font-size: var(--fs-body-sm);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.bo-facts { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: var(--space-2) var(--space-4); }
+.bo-facts dt { font-size: var(--fs-body-sm); color: var(--fg-2); }
+.bo-facts dd {
+  margin: 0;
+  font-size: var(--fs-body-sm);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Orange #2 of 2. */
+.bo-drawer-ask {
+  margin-top: var(--space-5);
+  padding: 0.55rem 1.1rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--cta);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--fs-body-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+}
+.bo-drawer-ask:hover { background: var(--cta-hover); }
+
+/* ---------------- Configuration screen ---------------- */
+
+#budget-config-view { overflow-y: auto; justify-content: center; align-items: flex-start; }
+
+.bo-config { width: 100%; max-width: 940px; padding: var(--space-12) var(--space-6) var(--space-16); }
+
+.bo-config-head { margin-bottom: var(--space-10); }
+.bo-config-head h2 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-display-sm);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--tracking-tight);
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--fg-1);
+}
+.bo-config-head p { margin: 0; color: var(--fg-2); line-height: var(--lh-relaxed); max-width: 62ch; }
+
+/* Banded sections divided by rules, not stacked cards. */
+.bo-fieldset {
+  border: 0;
+  margin: 0;
+  padding: var(--space-8) 0;
+  border-top: 1px solid var(--border-default);
+}
+.bo-fieldset legend {
+  padding: 0;
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.bo-fieldset > .bo-legend-note {
+  margin: var(--space-1) 0 var(--space-5);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-3);
+  max-width: 62ch;
+}
+
+.bo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--space-5);
+}
+.bo-field { display: flex; flex-direction: column; gap: var(--space-2); }
+.bo-field > span { font-size: var(--fs-body-sm); font-weight: var(--fw-medium); color: var(--fg-2); }
+.bo-field input, .bo-field select {
+  font-family: inherit;
+  font-size: var(--fs-body);
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--fg-1);
+  width: 100%;
+}
+.bo-field input:focus, .bo-field select:focus { outline: 2px solid var(--columbus-navy); outline-offset: 1px; }
+.bo-field-hint { font-size: var(--fs-caption); color: var(--fg-3); }
+
+/* The variable editor. A real table — this IS tabular data, and every other
+   surface in the app deliberately avoids one, which keeps it distinct. */
+.bo-vars-wrap { overflow-x: auto; }
+.bo-vars { width: 100%; border-collapse: collapse; font-size: var(--fs-body-sm); }
+.bo-vars th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--fg-3);
+  border-bottom: 1px solid var(--border-default);
+  white-space: nowrap;
+}
+.bo-vars td { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
+.bo-vars tr.is-excluded td { opacity: 0.42; }
+.bo-vars input[type="text"], .bo-vars input[type="number"] {
+  width: 100%;
+  font-family: inherit;
+  font-size: var(--fs-body-sm);
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--fg-1);
+}
+.bo-vars input[type="number"] { text-align: right; font-variant-numeric: tabular-nums; }
+.bo-vars .bo-col-amount { width: 9.5rem; }
+.bo-vars .bo-col-pct { width: 6.5rem; }
+.bo-vars .bo-col-inc, .bo-vars .bo-col-del { width: 2.5rem; text-align: center; }
+.bo-vars .bo-col-note { min-width: 16rem; }
+.bo-rowdel {
+  border: 0;
+  background: none;
+  color: var(--fg-3);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: var(--radius-sm);
+}
+.bo-rowdel:hover { color: var(--status-error); background: var(--bg-surface-alt); }
+
+.bo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-8);
+  border-top: 1px solid var(--border-default);
+}
+.bo-primary {
+  padding: 0.7rem 1.6rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--cta);
+  color: var(--white);
+  font-family: inherit;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+}
+.bo-primary:hover:not(:disabled) { background: var(--cta-hover); }
+.bo-primary:disabled { opacity: 0.5; cursor: default; }
+.bo-ghost {
+  padding: 0.7rem 1.4rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--columbus-navy);
+  background: transparent;
+  color: var(--columbus-navy);
+  font-family: inherit;
+  font-size: var(--fs-body);
+  cursor: pointer;
+}
+.bo-ghost:hover { background: var(--bg-subtle); }
+.bo-danger { border-color: var(--status-error); color: var(--status-error); }
+.bo-danger:hover { background: rgba(194, 69, 69, 0.08); }
+.bo-spacer { flex: 1; }
+
+.bo-error {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(194, 69, 69, 0.1);
+  border: 1px solid rgba(194, 69, 69, 0.35);
+  color: var(--status-error);
+  font-size: var(--fs-body-sm);
+}
+.bo-error.hidden { display: none; }
+
+/* Two-step reset: no native confirm(), no new modal component. */
+.bo-reset-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(194, 69, 69, 0.35);
+  background: rgba(194, 69, 69, 0.06);
+}
+.bo-reset-confirm.hidden { display: none; }
+.bo-reset-confirm p { margin: 0; flex: 1; min-width: 16rem; font-size: var(--fs-body-sm); color: var(--fg-2); }
+
+.bo-empty { padding: var(--space-16) var(--space-12); color: var(--fg-3); }
+
+/* ---------------- Narrow ---------------- */
+
+@media (max-width: 1080px) {
+  .bo-shell { grid-template-columns: minmax(0, 1fr); }
+  #budget-view { overflow-y: auto; }
+  .bo-main { overflow: visible; }
+  .bo-chat {
+    border-left: 0;
+    border-top: 1px solid var(--border-default);
+    height: 70vh;
+  }
+  .bo-hero, .bo-section-head, .bo-row, .bo-showall, .bo-foot {
+    padding-left: var(--space-6);
+    padding-right: var(--space-6);
+  }
+}
+
+@media (max-width: 700px) {
+  .bo-row { grid-template-columns: 1.8rem minmax(0, 1fr); }
+  .bo-figures { grid-column: 2; text-align: left; }
+  .bo-read { font-size: var(--fs-h2); }
+}
