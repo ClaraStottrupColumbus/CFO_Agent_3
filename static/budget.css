@@ -915,3 +915,191 @@
 
 .bo-vars .bo-col-driver { width: 10rem; }
 .bo-vars .bo-col-driver input { font-size: var(--fs-body-sm); }
+
+/* ---------------- Cash ----------------
+   Phase 5. Sits on cream between the model's read and the ranked cost lines, so
+   the page reads P&L → cash → what moves it. The metric cards reuse .bo-metrics
+   for layout and re-tint for the light surface: .bo-metric is styled for the
+   navy hero above, where the type is white, so every colour it sets is
+   overridden here rather than a second three-card layout being invented.
+
+   Nothing here is coloured by whether a number is good or bad — same rule as the
+   trend badges. The ONE exception is a breach of a stated minimum, which is not
+   a sentiment but a fact about a covenant, and it gets the page's warning tone. */
+
+.bo-cash {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+  padding: var(--space-6);
+  margin: var(--space-8) var(--space-12) 0;
+}
+.bo-cash.hidden { display: none; }
+
+.bo-cash-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.bo-cash-label {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+/* Measured off the balance sheet, or decided by the CFO. This label is the
+   section's provenance and it is deliberately as prominent as the heading. */
+.bo-cash-basis {
+  font-size: var(--fs-body-sm);
+  color: var(--fg-3);
+  text-align: right;
+}
+.bo-cash-empty {
+  margin: 0;
+  font-size: var(--fs-body-sm);
+  color: var(--fg-2);
+  line-height: var(--lh-relaxed);
+  max-width: 68ch;
+}
+
+.bo-cash .bo-metrics { gap: var(--space-4); }
+.bo-cash .bo-metric {
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  padding: var(--space-4);
+}
+.bo-cash .bo-metric-label { color: var(--fg-3); }
+.bo-cash .bo-metric-value { color: var(--fg-1); font-size: var(--fs-h3); }
+.bo-cash .bo-metric-foot { color: var(--fg-3); }
+/* A covenant breach, not a mood: a 3px left rule in the warning tone, the same
+   device the scenario rail uses for "this is the one you are running on". */
+.bo-cash .bo-metric[data-breach="true"] {
+  border-left: 3px solid var(--status-warning);
+}
+
+/* Twelve bars of closing cash with the floor drawn across them. This is the
+   shape a P&L cannot show: EBITDA flat, and cash under the line in one month
+   because the capex and the working-capital build landed together. */
+.bo-cash-chart {
+  position: relative;
+  margin: var(--space-5) 0 var(--space-6);
+  padding-bottom: 1.1rem;
+}
+/* The bars and the floor line share this box, so `height: N%` on a bar and
+   `bottom: N%` on the floor are measured against the same 84px. The axis labels
+   sit OUTSIDE it for exactly that reason. */
+.bo-cash-bars {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 110px;
+}
+.bo-cash-bar {
+  flex: 1 1 0;
+  min-width: 4px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: var(--columbus-navy);
+  opacity: 0.72;
+}
+.bo-cash-bar[data-breach="true"] { background: var(--status-warning); opacity: 1; }
+.bo-cash-floor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1px dashed var(--status-warning);
+  z-index: 1;
+}
+.bo-cash-axis {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fs-caption);
+  color: var(--fg-3);
+}
+
+/* EBITDA → working capital → tax → capex, as one line of signed figures. The
+   bridge, not a second chart: the same four steps cash.cash_bridge returns. */
+.bo-cash-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.bo-cash-step { display: flex; flex-direction: column; gap: 2px; }
+.bo-cash-step-label {
+  font-size: var(--fs-caption);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.bo-cash-step-value {
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-1);
+}
+
+.bo-cash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+.bo-cash-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.bo-cash-caveat {
+  margin: var(--space-4) 0 0;
+  font-size: var(--fs-caption);
+  color: var(--fg-3);
+  line-height: var(--lh-relaxed);
+  max-width: 78ch;
+}
+
+/* The cash inputs. Empty means "not stated", so the placeholders carry what
+   would be measured instead — the field has to say what leaving it blank does. */
+.bo-cash-form {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+.bo-cash-form.hidden { display: none; }
+.bo-cash-form-note {
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-2);
+  line-height: var(--lh-relaxed);
+  max-width: 72ch;
+}
+.bo-cash-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-4);
+}
+.bo-cash-note-field { margin-top: var(--space-4); }
+.bo-cash-form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+.bo-cash-form-status { font-size: var(--fs-body-sm); color: var(--fg-3); }
+
+@media (max-width: 900px) {
+  .bo-cash { margin-left: var(--space-6); margin-right: var(--space-6); }
+}

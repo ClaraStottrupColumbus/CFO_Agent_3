@@ -58,13 +58,20 @@ BLOCK_KEY_LABELS = {
 
 def scenario_pack(scenario: dict, *, drivers_snapshot=None, locked_at=None,
                   company: str | None = None, narrative: str | None = None,
-                  diff: dict | None = None) -> dict:
-    """A stored scenario, flattened for export."""
+                  diff: dict | None = None, cash: dict | None = None) -> dict:
+    """A stored scenario, flattened for export.
+
+    `cash` is `cash.project_cashflow`'s result (or the tool's), passed in as an
+    ARGUMENT for the same reason `drivers_snapshot` is: this module reads no
+    dataset. None means the cash profile was not available — a company with no
+    working-capital history and no stated terms — and the sheet says so rather
+    than printing zeros.
+    """
     return _pack(scenario, kind="scenario",
                  title=scenario.get("name") or "Budget scenario",
                  assumptions=scenario.get("assumptions"),
                  drivers_snapshot=drivers_snapshot, locked_at=locked_at,
-                 company=company, narrative=narrative, diff=diff,
+                 company=company, narrative=narrative, diff=diff, cash=cash,
                  meta=[("Scenario", scenario.get("name")),
                        ("Baseline", scenario.get("baseline")),
                        # What the drivers were priced at before the assumptions
@@ -78,9 +85,10 @@ def scenario_pack(scenario: dict, *, drivers_snapshot=None, locked_at=None,
 
 def version_pack(version: dict, *, company: str | None = None,
                  narrative: str | None = None, diff: dict | None = None) -> dict:
-    """A frozen budget version, flattened for export. Its driver provenance
-    comes from the version's own snapshot — never from today's dataset, which is
-    the point of a version."""
+    """A frozen budget version, flattened for export. Its driver provenance AND
+    its cash profile come from the version's own snapshots — never from today's
+    dataset, which is the point of a version: the days were measured on the day
+    the board approved it."""
     label = version.get("label") or f"Version {version.get('version_no')}"
     return _pack(version, kind="version",
                  title=f"v{version.get('version_no')} · {label}",
@@ -88,6 +96,7 @@ def version_pack(version: dict, *, company: str | None = None,
                  drivers_snapshot=version.get("drivers_snapshot"),
                  locked_at=version.get("locked_at"),
                  company=company, narrative=narrative, diff=diff,
+                 cash=version.get("cash_snapshot"),
                  meta=[("Version", version.get("version_no")),
                        ("Label", label),
                        ("Status", version.get("status")),
@@ -102,7 +111,7 @@ def version_pack(version: dict, *, company: str | None = None,
 
 
 def _pack(record: dict, *, kind: str, title: str, assumptions, drivers_snapshot,
-          locked_at, company, narrative, diff, meta) -> dict:
+          locked_at, company, narrative, diff, meta, cash=None) -> dict:
     return {
         "kind": kind,
         "title": title,
@@ -119,6 +128,7 @@ def _pack(record: dict, *, kind: str, title: str, assumptions, drivers_snapshot,
         "opex_bridge": record.get("opex_bridge") or {},
         "ebitda_bridge": record.get("ebitda_bridge") or {},
         "drivers": list(drivers_snapshot or []),
+        "cash": cash or None,
         "locked_at": locked_at,
         "narrative": narrative,
         "diff": diff,
@@ -140,8 +150,8 @@ def filename(pack: dict, extension: str) -> str:
 # --------------------------------------------------------------------------
 
 def workbook(pack: dict) -> bytes:
-    """Six sheets: Summary · Monthly P&L · By product line · Assumptions ·
-    Driver bridge · Version diff. Returns the .xlsx bytes.
+    """Seven sheets: Summary · Monthly P&L · By product line · Cash flow ·
+    Assumptions · Driver bridge · Version diff. Returns the .xlsx bytes.
 
     Raises RuntimeError — never an ImportError — when openpyxl is absent, so the
     route can answer with something a CFO can act on.
@@ -241,6 +251,79 @@ def workbook(pack: dict) -> bytes:
                           _num(row.get("gross_margin_eur")), _num(row.get("opex_eur")),
                           _num(row.get("ebitda_eur")), _num(row.get("ebitda_margin_pct"))],
                   fmt)
+
+    # ---- Cash flow ----
+    ws = sheet("Cash flow")
+    widths(ws, 14, 16, 20, 14, 14, 18, 18)
+    cash = pack.get("cash")
+    if not cash:
+        ws["A1"] = ("No cash profile is attached. It needs either monthly receivables, "
+                    "inventory and payables balances in the working_capital dataset, or "
+                    "collection, inventory and payment days stated on the Budget page.")
+    else:
+        totals = cash.get("totals") or {}
+        cdays = cash.get("days") or {}
+        r = 1
+        for label, value, fmt in (
+                ("Days sales outstanding (DSO)", cdays.get("dso_days"), pct),
+                ("Days inventory outstanding (DIO)", cdays.get("dio_days"), pct),
+                ("Days payable outstanding (DPO)", cdays.get("dpo_days"), pct),
+                ("Cash conversion cycle (days)", cdays.get("cash_conversion_cycle_days"), pct),
+                # Whether each day count was measured off the balance sheet or
+                # decided by the CFO is the whole provenance of this sheet — the
+                # same argument the Assumptions sheet makes for driver prices.
+                ("Days basis", cdays.get("basis"), None),
+                ("Cash tax rate (%)", cash.get("tax_rate_pct"), pct),
+                ("Minimum cash tested (€)", cash.get("min_cash_eur"), money)):
+            r = write(ws, r, [label, _num(value) if fmt else value],
+                      {2: fmt} if fmt else None)
+        trough = cash.get("trough") or {}
+        r = write(ws, r, ["Lowest cash balance (€)", _num(trough.get("closing_cash_eur"))],
+                  {2: money})
+        r = write(ws, r, ["Lowest month", trough.get("month")])
+        if cash.get("months_below_minimum"):
+            r = write(ws, r, ["Months below the minimum",
+                              ", ".join(cash["months_below_minimum"])])
+        r = write(ws, r, ["EBITDA converted to cash (%)",
+                          _num(totals.get("cash_conversion_pct"))], {2: pct})
+        r += 1
+
+        header(ws, r, ["Month", "EBITDA (€)", "Working capital (€)", "Cash tax (€)",
+                       "Capex (€)", "Free cash flow (€)", "Closing cash (€)"])
+        r += 1
+        fmt = {2: money, 3: money, 4: money, 5: money, 6: money, 7: money}
+        for row in cash.get("months") or []:
+            r = write(ws, r, [row.get("month"), _num(row.get("ebitda_eur")),
+                              # Sign-flipped to the effect ON CASH: absorbing
+                              # working capital is a negative in a cash column,
+                              # however the balance moved.
+                              -_num(row.get("working_capital_change_eur")),
+                              -_num(row.get("tax_eur")), -_num(row.get("capex_eur")),
+                              _num(row.get("free_cash_flow_eur")),
+                              _num(row.get("closing_cash_eur"))], fmt)
+        r = write(ws, r, ["Total", _num(totals.get("ebitda_eur")),
+                          -_num(totals.get("working_capital_change_eur")),
+                          -_num(totals.get("tax_eur")), -_num(totals.get("capex_eur")),
+                          _num(totals.get("free_cash_flow_eur")),
+                          _num(totals.get("closing_cash_eur"))], fmt)
+
+        capex = cash.get("capex") or {}
+        if capex.get("projects"):
+            r += 1
+            r = write(ws, r, ["Capital plan"])
+            header(ws, r, ["Month", "Project", "Category", "Status", "Amount (€)"])
+            r += 1
+            for project in capex["projects"]:
+                r = write(ws, r, [project.get("month"), project.get("project"),
+                                  project.get("category"), project.get("status"),
+                                  _num(project.get("amount_eur"))], {5: money})
+
+        # The limitations travel with the figures rather than being left to the
+        # covering email: this is free cash flow before financing, and a board
+        # reading a closing balance has to know that.
+        for caveat in cash.get("caveats") or []:
+            r += 1
+            r = write(ws, r, ["Note", caveat])
 
     # ---- Assumptions (the sheet that justifies exporting from here) ----
     ws = sheet("Assumptions")
@@ -421,6 +504,36 @@ def board_pack_markdown(pack: dict) -> str:
                        f"{line.get('basis')} | {_fmt(line.get('pct'), 2)}% | "
                        f"{_fmt(line.get('delta_eur'))} |")
         out += ["", f"Weighted opex growth: **{_fmt(opex.get('weighted_pct'), 2)}%**", ""]
+
+    cash = pack.get("cash")
+    if cash:
+        ct = cash.get("totals") or {}
+        cd = cash.get("days") or {}
+        trough = cash.get("trough") or {}
+        out += ["## Cash", "",
+                f"Free cash flow **{_fmt(ct.get('free_cash_flow_eur'))} €** on EBITDA of "
+                f"{_fmt(ct.get('ebitda_eur'))} €"
+                + (f" ({_fmt(ct.get('cash_conversion_pct'), 1)}% converts)"
+                   if ct.get("cash_conversion_pct") is not None else "")
+                + f". Cash is lowest in **{trough.get('month') or '—'}** at "
+                  f"{_fmt(trough.get('closing_cash_eur'))} €.", ""]
+        if cash.get("months_below_minimum"):
+            out += [f"⚠ Below the {_fmt(cash.get('min_cash_eur'))} € minimum in "
+                    f"{', '.join(cash['months_below_minimum'])}.", ""]
+        out += ["| Step | € |", "| --- | ---: |",
+                f"| EBITDA | {_fmt(ct.get('ebitda_eur'))} |",
+                f"| Working capital | {_fmt(-_num(ct.get('working_capital_change_eur') or 0))} |",
+                f"| Cash tax | {_fmt(-_num(ct.get('tax_eur') or 0))} |",
+                f"| Capex | {_fmt(-_num(ct.get('capex_eur') or 0))} |",
+                f"| Free cash flow | {_fmt(ct.get('free_cash_flow_eur'))} |", "",
+                f"Working-capital days: DSO {_fmt(cd.get('dso_days'), 1)}, "
+                f"DIO {_fmt(cd.get('dio_days'), 1)}, DPO {_fmt(cd.get('dpo_days'), 1)} "
+                f"— cash conversion cycle {_fmt(cd.get('cash_conversion_cycle_days'), 1)} days"
+                + (f" ({cd['basis']})." if cd.get("basis") else "."), ""]
+        # Every caveat, every time. This is the section a board is most likely to
+        # read as a bank balance, and it is not one.
+        out += [f"_{caveat}_" for caveat in cash.get("caveats") or []]
+        out.append("")
 
     if pack.get("by_month"):
         out += ["## Monthly P&L", "",

@@ -115,6 +115,7 @@ def summary(version: dict) -> dict:
         "locked_at": version.get("locked_at"),
         "assumption_count": sum(len(v) for v in spec.values()),
         "driver_count": len(version.get("drivers_snapshot") or []),
+        "has_cash": bool(version.get("cash_snapshot")),
         "revenue_eur": totals.get("revenue_eur"),
         "ebitda_eur": totals.get("ebitda_eur"),
         "ebitda_margin_pct": totals.get("ebitda_margin_pct"),
@@ -123,7 +124,7 @@ def summary(version: dict) -> dict:
 
 def create_version(scenario: dict, *, label: str | None = None, note: str | None = None,
                    created_by: str | None = None, drivers_snapshot: list[dict] | None = None,
-                   locked_at: str | None = None,
+                   locked_at: str | None = None, cash_snapshot: dict | None = None,
                    parent_version_id: str | None = None) -> dict:
     """Freeze a scenario as the next budget version.
 
@@ -132,6 +133,14 @@ def create_version(scenario: dict, *, label: str | None = None, note: str | None
     copied in rather than referenced, so a later observation cannot rewrite what
     was approved. It is passed in by the caller (main.py reads it off
     drivers.driver_status) to keep this module free of dataset I/O.
+
+    `cash_snapshot` is the cash profile as it stood at approval, and it is frozen
+    for exactly the same reason: the working-capital days were MEASURED off the
+    balance sheet on the day this was approved, so next quarter's measurement
+    must not silently rewrite the funding case the board signed off. Optional —
+    versions created before the cash phase, or on a company with no
+    working-capital history, simply carry None, and the export says so rather
+    than showing a zero.
     """
     if not isinstance(scenario, dict) or not scenario.get("id"):
         raise ValueError("A version must be created from a stored scenario.")
@@ -169,6 +178,7 @@ def create_version(scenario: dict, *, label: str | None = None, note: str | None
             "ebitda_bridge": scenario.get("ebitda_bridge") or {},
             "driver_prices_used": scenario.get("driver_prices_used") or {},
             "drivers_snapshot": list(drivers_snapshot or []),
+            "cash_snapshot": (dict(cash_snapshot) if cash_snapshot else None),
             "locked_at": locked_at,
             "created_at": now,
             "created_by": (created_by or None),

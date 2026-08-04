@@ -35,18 +35,19 @@ What the review found bad, and what this rewrite fixes:
 | 5 | No approval state, no version diff, no audit of what a re-lock was worth | Phase 2 ✅ |
 | 6 | The CFO **cannot lock from the UI** — `lock_assumptions` is a model-only tool | Phase 2 ✅ |
 | 7 | Budgets are built on **today's spot**; `project_series` is extrapolation dressed as foresight | Phase 3 ✅ (tool deleted in Phase 4 ✅) |
-| 8 | No cash / working capital | **Deferred** — see Phase 5 |
+| 8 | No cash / working capital | Phase 5 ✅ |
 
 **Correction to the review:** it also asked for the tool-call debug blocks to be put behind a
 flag. They already are — [app.js:199](static/app.js#L199) returns early unless
 `settings.show_debug`, which defaults to `false` in [config.py:27](app/config.py#L27). No work
 required.
 
-**Deferred by decision:** cash, working capital and capex. Reason: it needs DSO/DPO/DIO and
-capex inputs that have no home in the current data model, and the five funded items are already
-a large rewrite. Recorded as Phase 5 so it is not lost.
+**Originally deferred, now built:** cash, working capital and capex. The deferral reason was that
+DSO/DPO/DIO and capex inputs had no home in the current data model — Phase 5 gives them one, and the
+answer to "where do the days come from" turned out to be a dataset to measure them off rather than
+the profile fields the deferral assumed. See Phase 5.
 
-**Delivery:** four phases, each ending with a green `.venv/bin/python -m pytest -q`.
+**Delivery:** five phases, each ending with a green `.venv/bin/python -m pytest -q`.
 
 ---
 
@@ -379,11 +380,81 @@ Deviations from plan, all deliberate:
 
 ---
 
-## Phase 5 — Deferred: cash
+## Phase 5 — Cash ✅ COMPLETE
 
-Not in this rewrite. Recorded so it is not lost: working-capital days (DSO/DPO/DIO), capex, a
-monthly cash-flow projection off the scenario's EBITDA, and a cash line on the budget page.
-Needs a new dataset and new profile inputs.
+**Status: done**, and no longer deferred. `app/cash.py` lands as a fourth pure leaf,
+`working_capital` and `capex_plan` as two new read-only datasets, `working_capital` as a new profile
+block, `cash_flow_projection` as a new tool with a `GET /api/cash` route onto it, and a cash strip on
+the Budget page. 406 tests green (new `tests/test_cash_flow.py` +33, `tests/test_export.py` +7).
+`CLAUDE.md` gained "EBITDA is not cash" plus the cash hooks under Demo data. Asset links bumped to
+`?v=26`.
+
+What the phase was scoped as, and all four landed: **working-capital days (DSO/DPO/DIO)**, **capex**,
+**a monthly cash-flow projection off the scenario's EBITDA**, and **a cash line on the budget page**,
+on a new dataset and new profile inputs.
+
+Deviations from the one-paragraph plan, all deliberate:
+
+1. **The days are MEASURED, not entered.** The plan said "needs DSO/DPO/DIO inputs", which reads as
+   three profile fields. Three profile fields would have been an assumption with no source — the
+   exact thing the rest of this app exists to refuse. So `working_capital.parquet` carries monthly
+   receivables, inventory, payables and cash *balances*, `cash.working_capital_days` measures the days
+   off them (average balance × Σdays ÷ Σflow over a trailing window), and the profile fields are
+   *overrides* that get labelled as decisions wherever they appear (`days.basis`). The same move as
+   `driver_exposure` reading qty-per-tonne off the bill of materials instead of guessing an
+   elasticity. A company with no balance-sheet history can still plan cash by stating its terms — the
+   dataset makes the days measured, it does not gate them.
+2. **`cash.py` rather than a fifth section of `budget.py`.** CLAUDE.md says to keep new arithmetic in
+   `budget.py`, and this respects the intent (pure, no I/O, no app imports — it imports nothing at
+   all) while keeping a separate vocabulary separate: days, balances, capex and opening cash are not
+   assumptions about next year's trading, and `budget.py`'s docstring enumerates exactly four things.
+3. **No cash alert rule.** Phase 4's state-vs-event rule applies directly: a cash trough below the
+   floor *stays* below it until someone acts, so a rule would re-fire the same finding every window
+   and train the CFO to mute the other three. The breach is a badge, a metric card and a `⚠` line in
+   the board pack — a screen, not an alert.
+4. **Tax, interest and depreciation are not modelled, and the output says so in three places.** There
+   is no dataset for any of them, so what comes out is free cash flow *before financing* — never net
+   income, never a bank balance. `caveats` carries it, the workbook prints it next to the figures, and
+   prompt rule 15 forbids presenting it otherwise. A cash tax rate is applied only if the CFO states
+   one; `None` deducts nothing and says so, because a guessed rate moves a trough further than most of
+   the assumptions this app guards.
+5. **Capex `proposed` vs `committed` is the one lever, and the demo makes it fail honestly.** The
+   seeded plan puts the committed extruder line in February and April and the two proposed projects
+   in September and November, so `include_proposed_capex: false` does NOT fix the April trough —
+   collections do. A lever that always works teaches nothing; "the capex you can defer is after the
+   problem" is the answer a CFO can act on.
+6. **Scope reached slightly past the plan, in two places that would have been half-features
+   otherwise.** The workbook gained a **Cash flow** sheet and the board pack a **Cash** section (a
+   cash plan nobody can export is not a cash plan), and a version now freezes `cash_snapshot`
+   alongside its driver provenance — the days were measured on the day the board approved it, so next
+   quarter's measurement must not rewrite the funding case. Both are optional and backwards
+   compatible: an older version carries `None` and the sheet says which inputs are missing.
+
+### The work, as built
+
+- **`app/cash.py`** — `working_capital_days` (measured DSO/DIO/DPO + closing balances),
+  `project_cashflow` (monthly balances → working-capital swing → tax → capex → free cash flow →
+  closing cash, with the trough and any floor breach), `cash_bridge` (waterfall points for
+  `render_chart`). Both invariants are asserted: Σ FCF == closing − opening, and Σ working-capital
+  swing == closing balances − opening balances.
+- **Datasets** — `working_capital` (closed months only: a balance sheet is something that happened)
+  and `capex_plan` (project, category, status, budget vs actual), both in `DATASETS` so
+  `query_budget_data` reaches them, neither model-writable.
+- **Profile** — `working_capital` block, every field defaulting to `None` = *not stated*, validated
+  and clamped in `profile._clean_working_capital`; `POST /api/profile/working-capital`, ungated.
+- **Tool** — `cash_flow_projection`, resolving each input argument → profile → measured, plus system
+  prompt rule 15 and a cash paragraph in `MONTHLY_PROMPT`.
+- **Route** — `GET /api/cash`, gated, thin onto the tool, returning `available: false` with a reason
+  rather than a 4xx.
+- **UI** — `#bo-cash` on `#/budget`: free cash flow, the low point against the floor, the cash
+  conversion cycle with its basis, twelve bars of closing cash with the floor drawn across them, the
+  four bridge steps, a defer-proposed-capex toggle, an ask hand-off, and the cash-assumptions form.
+
+### Still not modelled
+
+Interest, debt schedules, depreciation, dividends and deferred tax. Each needs a dataset this app
+does not have, and the projection names the gap instead of filling it. That is the honest boundary,
+not an oversight: the next phase to do cash properly would start with a financing dataset.
 
 ---
 
@@ -395,6 +466,7 @@ Needs a new dataset and new profile inputs.
 .venv/bin/python -m pytest -q                                    # all files green
 .venv/bin/python -m pytest tests/test_scenario_engine.py -q      # Phase 1
 .venv/bin/python -m pytest tests/test_driver_guards.py -q        # guards still pass, unchanged
+.venv/bin/python -m pytest tests/test_cash_flow.py -q            # Phase 5
 ```
 
 **End to end**
@@ -423,6 +495,17 @@ curl -sI http://127.0.0.1:8323/api/scenarios/<id>/export.xlsx    # 200 + xlsx co
    `#/weekly/{id}` transcript still opens.
 8. Confirm the Budget tab shows one budget for one company, and Budget Outlook chat still works
    through the main agent loop.
+9. On `#/budget`, the cash strip names the month cash is lowest and whether it clears the floor, and
+   the cash conversion cycle says whether its days were measured or stated. Open **Cash assumptions**,
+   type a DSO, save — the low point moves and the basis flips to "measured, with 1 you stated". Clear
+   the field again and it returns to measured.
+10. Tick **Defer the capex still marked proposed** — free cash flow improves and the April trough does
+    not, because the proposed projects are in September and November. That is the point.
+11. Ask: *"cash bottoms out in April — what fixes it?"* — the agent runs `cash_flow_projection`, says
+    whether the days were measured or stated, and does not present the closing balance as a bank
+    balance.
+12. Export the active scenario — the workbook has a **Cash flow** sheet carrying the days, their
+    basis, the capital plan project by project and the before-financing caveat.
 
 ---
 
@@ -437,3 +520,9 @@ curl -sI http://127.0.0.1:8323/api/scenarios/<id>/export.xlsx    # 200 + xlsx co
   reconciliation; do not "improve" it into a direct substitution without handling the mismatch.
 - **CLAUDE.md contradiction.** Phase 3 overturns documented rationale. Update the doc in the same
   commit.
+- **Cash read as a bank balance.** The highest-consequence risk in Phase 5, and it is a
+  *communication* risk rather than an arithmetic one: the projection is before financing, and a board
+  reading a closing balance will not assume that unless told. Hence the caveat in three independent
+  places — `caveats`, the workbook, and prompt rule 15 — rather than one.
+- **A stated day count masquerading as a measured one.** `days.basis` and `days.stated` exist so the
+  two can never be confused; any new surface that prints a day count must print its basis too.

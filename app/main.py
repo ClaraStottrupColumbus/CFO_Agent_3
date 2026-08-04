@@ -195,6 +195,20 @@ class ApprovalRequest(BaseModel):
     note: str | None = None
 
 
+class WorkingCapitalRequest(BaseModel):
+    """Every field optional and nullable: None means "not stated", which is a
+    real value here and not the same as zero. Validation and clamping live in
+    profile._clean_working_capital, so the model's tool and this form cannot
+    disagree about what a valid DSO is."""
+    dso_days: float | None = None
+    dio_days: float | None = None
+    dpo_days: float | None = None
+    opening_cash_eur: float | None = None
+    tax_rate_pct: float | None = None
+    min_cash_eur: float | None = None
+    note: str | None = None
+
+
 # --------------------------------------------------------------------------
 # SSE
 # --------------------------------------------------------------------------
@@ -281,6 +295,21 @@ def use_demo_profile() -> dict:
 @app.post("/api/profile/reset")
 def reset_profile() -> dict:
     return profile_mod.public_view(profile_mod.reset_setup())
+
+
+@app.post("/api/profile/working-capital")
+def post_working_capital(payload: WorkingCapitalRequest) -> dict:
+    """The cash inputs, on their own.
+
+    Ungated with the rest of /api/profile*, and separate from POST /api/profile
+    on purpose: DSO, the opening cash position and a facility floor change during
+    a budget round, and re-opening the setup wizard to change one of them would
+    be absurd. `exclude_unset` matters — a field the form did not send must keep
+    its stored value, while a field sent as null is the CFO deliberately clearing
+    it back to "not stated".
+    """
+    saved = profile_mod.set_working_capital(payload.model_dump(exclude_unset=True))
+    return {"working_capital": profile_mod.working_capital(saved)}
 
 
 # --------------------------------------------------------------------------
@@ -612,6 +641,41 @@ def delete_scenario(scenario_id: str) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Cash
+# --------------------------------------------------------------------------
+
+def _cash_for(scenario_id: str | None = None, *,
+              include_proposed_capex: bool = True) -> dict:
+    """The cash profile, or an {"error"} dict — never an exception.
+
+    Thin, and deliberately onto the SAME `tools.cash_flow_projection` the model
+    calls, for the reason POST /api/assumptions/lock is thin onto
+    drivers.lock_assumptions: the CFO gets a second door to one implementation,
+    never a second implementation. It is also what makes the Budget page's cash
+    line and the agent's answer about cash the same numbers.
+    """
+    try:
+        return tools.cash_flow_projection(
+            scenario_id=scenario_id, include_proposed_capex=include_proposed_capex)
+    except Exception as exc:                                  # pragma: no cover
+        return {"error": f"Could not build the cash profile: {type(exc).__name__}: {exc}"}
+
+
+@app.get("/api/cash", dependencies=Gated)
+def cash_profile(scenario_id: str | None = Query(None),
+                 include_proposed_capex: bool = Query(True)) -> dict:
+    result = _cash_for(scenario_id, include_proposed_capex=include_proposed_capex)
+    if "error" in result:
+        # 200 with the reason, not a 4xx: "we have not measured your working
+        # capital yet" is a state the Budget page renders as a prompt to fix it,
+        # not a failure. Same shape as /api/budget-state's available: false.
+        return {"available": False, **result,
+                "working_capital": profile_mod.working_capital()}
+    return {"available": True, **result,
+            "working_capital": profile_mod.working_capital()}
+
+
+# --------------------------------------------------------------------------
 # Locked assumptions — the CFO's door to the same function the model uses
 # --------------------------------------------------------------------------
 
@@ -707,11 +771,17 @@ def create_budget_version(payload: VersionRequest) -> dict:
         raise HTTPException(status_code=404, detail={
             "error": "No scenario to version. Build one on the Scenarios page first."})
     snapshot, locked_at = _drivers_snapshot()
+    # Frozen with the driver provenance, and for the same reason: the days were
+    # measured off the balance sheet as it stood today, so next quarter's
+    # measurement must not rewrite the funding case that was approved. A company
+    # with no working-capital history freezes None and the export says so.
+    cash = _cash_for(scenario.get("id"))
     try:
         version = budgetversions.create_version(
             scenario, label=payload.label, note=payload.note,
             created_by=payload.created_by, drivers_snapshot=snapshot,
-            locked_at=locked_at)
+            locked_at=locked_at,
+            cash_snapshot=None if "error" in cash else cash)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": str(exc)})
     return budgetversions.summary(version)
@@ -794,8 +864,10 @@ def _scenario_pack(scenario_id: str) -> dict:
     if not scenario:
         raise HTTPException(status_code=404, detail={"error": "scenario not found"})
     snapshot, locked_at = _drivers_snapshot()
+    cash = _cash_for(scenario_id)
     return export.scenario_pack(scenario, drivers_snapshot=snapshot,
-                                locked_at=locked_at, company=_company_name())
+                                locked_at=locked_at, company=_company_name(),
+                                cash=None if "error" in cash else cash)
 
 
 def _version_export_pack(version_id: str) -> dict:

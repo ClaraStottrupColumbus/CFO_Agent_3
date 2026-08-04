@@ -69,6 +69,18 @@ DATASETS = {
                        "the driver it is linked to. Note: there is NO payroll or salary dataset.",
         "format": "parquet",
     },
+    "working_capital": {
+        "description": "Monthly balance-sheet working capital: receivables, inventory, payables "
+                       "and the cash balance, with the revenue and COGS of the same month. This "
+                       "is what DSO, DIO and DPO are MEASURED from — they are never typed in.",
+        "format": "parquet",
+    },
+    "capex_plan": {
+        "description": "Capital expenditure by month: project, category, amount, budget and "
+                       "whether it is committed or still proposed. A proposed project is a cash "
+                       "lever the CFO can defer; a committed one is not.",
+        "format": "parquet",
+    },
     "budget_overview": {
         "description": "Curated KPI overview for the latest closed month, kept fresh by the "
                        "scheduled data refresh: revenue vs budget, margins, EBITDA, unit cost.",
@@ -84,6 +96,9 @@ NUMERIC_COLUMNS = {
     "opex_plan": ["amount_eur", "amount_budget_eur", "headcount"],
     "driver_prices": ["price", "revision"],
     "driver_forwards": ["price", "revision"],
+    "working_capital": ["revenue_eur", "cogs_eur", "receivables_eur", "inventory_eur",
+                        "payables_eur", "cash_eur"],
+    "capex_plan": ["amount_eur", "amount_budget_eur"],
 }
 
 # What a scenario prices its drivers at. The percentages in `assumptions` always
@@ -334,6 +349,51 @@ TOOL_DEFINITIONS = [
                                 "description": "Make this the scenario the budget rests on."},
             },
             "required": ["name"],
+        },
+    },
+    {
+        "name": "cash_flow_projection",
+        "description": "Turn a saved scenario's monthly EBITDA into a monthly CASH profile: the "
+                       "working-capital swing its trading pattern implies, capex, optional cash "
+                       "tax, the cash balance month by month and the month cash troughs. Use it "
+                       "whenever cash, liquidity, funding, working capital, DSO/DPO/DIO or capex "
+                       "come up — EBITDA is not cash, and a budget can add EBITDA while "
+                       "consuming cash because the receivables and inventory behind the extra "
+                       "revenue have to be funded first. The days are MEASURED off the "
+                       "working_capital dataset unless the CFO has stated them; the returned "
+                       "`days.basis` says which, and you must say so too. This is free cash flow "
+                       "before financing — depreciation, interest and debt are not modelled and "
+                       "`caveats` says so.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scenario_id": {"type": "string",
+                                "description": "Which scenario (default: the active one)."},
+                "dso_days": {"type": "number",
+                             "description": "Override the measured days sales outstanding — a "
+                                            "collection DECISION, not an observation."},
+                "dio_days": {"type": "number",
+                             "description": "Override the measured days inventory outstanding."},
+                "dpo_days": {"type": "number",
+                             "description": "Override the measured days payable outstanding."},
+                "opening_cash_eur": {"type": "number",
+                                     "description": "Opening cash (default: the latest closed "
+                                                    "month's balance in working_capital)."},
+                "tax_rate_pct": {"type": "number",
+                                 "description": "Cash tax rate on positive EBITDA. Omit unless "
+                                                "the CFO has stated one — no tax is deducted "
+                                                "without it, and the result says so."},
+                "min_cash_eur": {"type": "number",
+                                 "description": "Covenant or comfort floor; every month below it "
+                                                "is named back."},
+                "include_proposed_capex": {"type": "boolean",
+                                           "description": "Default true. False defers the capex "
+                                                          "projects still marked proposed — the "
+                                                          "one real cash lever here."},
+                "measure_months": {"type": "integer",
+                                   "description": "Closed months to measure the days over "
+                                                  "(default 12)."},
+            },
         },
     },
     {
@@ -1288,6 +1348,252 @@ def _ebitda_bridge_points(bridge: dict) -> list[dict]:
     return points
 
 
+# --------------------------------------------------------------------------
+# 10. cash_flow_projection — the scenario's EBITDA turned into cash
+# --------------------------------------------------------------------------
+
+# How many closed months the days are measured over by default. A year cancels
+# seasonality in the balances; a single month is mostly noise about when the
+# invoices went out.
+CASH_MEASURE_MONTHS = 12
+
+
+def cash_flow_projection(scenario_id=None, dso_days=None, dio_days=None,
+                         dpo_days=None, opening_cash_eur=None, tax_rate_pct=None,
+                         min_cash_eur=None, include_proposed_capex=True,
+                         measure_months=CASH_MEASURE_MONTHS) -> dict:
+    """A stored scenario's monthly EBITDA, turned into a monthly cash profile.
+
+    Everything this needs is either read off a dataset or stated by the CFO, and
+    the result says which for every input:
+
+      * **Days** — measured from `working_capital` over the last `measure_months`
+        CLOSED months. An argument here or a figure on the company profile
+        overrides the measurement, and `days.stated` names which ones were
+        overridden. Precedence is argument → profile → measurement, so the model
+        can answer "what if we collected in 30 days" without writing anything.
+      * **Opening cash and balances** — the latest closed month of
+        `working_capital`. Without that dataset the balances are implied by the
+        first projected month and the projection says so.
+      * **Capex** — `capex_plan`, budget-basis, for the scenario's own year.
+        `include_proposed_capex=False` defers the projects still marked proposed,
+        which is the one genuine cash lever in here: committed capex is not a
+        lever and this tool does not pretend it is.
+
+    The arithmetic is all in `cash.py`. This function is the wiring, and the
+    errors it returns enumerate the fix, like every other tool here.
+    """
+    from . import cash, profile as profile_mod
+
+    scenario = (scenarios.get_scenario(scenario_id) if scenario_id
+                else scenarios.get_active())
+    if not scenario:
+        names = [f"{s.get('name')} ({s.get('id')})" for s in scenarios.list_scenarios()]
+        return {"error": ("No scenario found to project cash from. "
+                          + (f"Existing scenarios: {'; '.join(names)}."
+                             if names else "Build one with build_budget_scenario first."))}
+
+    by_month = [r for r in (scenario.get("by_month") or []) if r.get("month")]
+    if not by_month:
+        return {"error": f"Scenario '{scenario.get('name')}' carries no monthly P&L, so there "
+                         f"is nothing to convert into cash. Re-run build_budget_scenario to "
+                         f"regenerate it."}
+    months = sorted({str(r["month"]) for r in by_month})
+    year = months[0][:4]
+
+    # ---- Measure the days off the closed months, if the dataset is there ----
+    history, wc_source = _working_capital_rows(before=months[0])
+    measured = cash.working_capital_days(history, months=measure_months) if history else {}
+    if "error" in measured:
+        measured = {}
+
+    stated = profile_mod.working_capital()
+    overrides = {"dso_days": dso_days, "dio_days": dio_days, "dpo_days": dpo_days,
+                 "opening_cash_eur": opening_cash_eur, "tax_rate_pct": tax_rate_pct,
+                 "min_cash_eur": min_cash_eur}
+
+    def resolve(field):
+        """argument → profile → measurement → None, with the second element
+        saying whether the winner was STATED rather than measured.
+
+        A candidate that will not parse falls through to the next rather than
+        failing the field: the alternative is a "neither measured nor stated"
+        error on a company whose balance sheet was measured perfectly well.
+        """
+        for candidate in (overrides.get(field), stated.get(field)):
+            if candidate is None:
+                continue
+            try:
+                return float(candidate), True
+            except (TypeError, ValueError):
+                continue
+        value = measured.get(field)
+        try:
+            return (None if value is None else float(value)), False
+        except (TypeError, ValueError):
+            return None, False
+
+    days: dict[str, float] = {}
+    was_stated: list[str] = []
+    for field in ("dso_days", "dio_days", "dpo_days"):
+        value, is_stated = resolve(field)
+        if value is None:
+            return {"error": f"{field} is neither measured nor stated, so the cash profile "
+                             f"cannot be built. Either populate the working_capital dataset "
+                             f"(monthly receivables, inventory and payables balances, which is "
+                             f"what dso_days, dio_days and dpo_days are measured from), or pass "
+                             f"dso_days, dio_days and dpo_days explicitly, or set them on the "
+                             f"Budget page."}
+        days[field] = value
+        if is_stated:
+            was_stated.append(field)
+
+    opening_cash, cash_stated = resolve("opening_cash_eur")
+    if opening_cash is None:
+        opening_cash = measured.get("closing_cash_eur") or 0.0
+    tax_rate, _ = resolve("tax_rate_pct")
+    floor, _ = resolve("min_cash_eur")
+
+    opening_balances = measured.get("closing_balances") or None
+
+    # ---- Capex for the scenario's own year ----
+    capex_rows, capex_source = _capex_rows(year)
+    capex_by_month: dict[str, float] = {}
+    deferred: list[dict] = []
+    for row in capex_rows:
+        if not include_proposed_capex and row["status"] == "proposed":
+            deferred.append(row)
+            continue
+        capex_by_month[row["month"]] = capex_by_month.get(row["month"], 0.0) + row["amount_eur"]
+
+    result = cash.project_cashflow(
+        by_month, dso_days=days["dso_days"], dio_days=days["dio_days"],
+        dpo_days=days["dpo_days"], opening_cash_eur=opening_cash,
+        opening_balances=opening_balances, capex_by_month=capex_by_month,
+        tax_rate_pct=tax_rate, min_cash_eur=floor)
+    if "error" in result:
+        return result
+
+    basis = ("stated" if len(was_stated) == 3
+             else "measured" if not was_stated else "measured + stated")
+    caveats = list(result["caveats"])
+    if not capex_rows:
+        caveats.append(f"No capex is planned for {year} in capex_plan, so this is an "
+                       f"operating-cash view only.")
+    if deferred:
+        caveats.append(f"{len(deferred)} proposed capex project(s) worth "
+                       f"€{sum(r['amount_eur'] for r in deferred):,.0f} were EXCLUDED at your "
+                       f"request; they are still in the plan.")
+
+    return {
+        "scenario_id": scenario.get("id"), "scenario": scenario.get("name"),
+        "basis": scenario.get("basis") or "locked", "year": year,
+        "currency": "EUR",
+        "days": {**{k: round(v, 1) for k, v in result["days"].items()},
+                 "basis": basis, "stated": was_stated,
+                 "measured_from": (f"{measured.get('from_month')}..{measured.get('to_month')}"
+                                   if measured else None)},
+        "opening_balances": {k: round(v, 2) for k, v in result["opening_balances"].items()},
+        "opening_balances_implied": result["opening_balances_implied"],
+        "opening_cash_source": ("stated" if cash_stated
+                                else "working_capital" if measured else "assumed zero"),
+        "totals": {k: (round(v, 2) if isinstance(v, (int, float)) and v is not None else v)
+                   for k, v in result["totals"].items()},
+        "months": [{"month": r["month"], "ebitda_eur": round(r["ebitda_eur"], 2),
+                    "working_capital_change_eur": round(r["working_capital_change_eur"], 2),
+                    "tax_eur": round(r["tax_eur"], 2), "capex_eur": round(r["capex_eur"], 2),
+                    "free_cash_flow_eur": round(r["free_cash_flow_eur"], 2),
+                    "closing_cash_eur": round(r["closing_cash_eur"], 2)}
+                   for r in result["months"]],
+        "trough": result["trough"],
+        "min_cash_eur": result["min_cash_eur"],
+        "breaches_minimum": result["breaches_minimum"],
+        "months_below_minimum": result["months_below_minimum"],
+        "tax_rate_pct": result["tax_rate_pct"],
+        "capex": {
+            "total_eur": round(sum(capex_by_month.values()), 2),
+            "committed_eur": round(sum(r["amount_eur"] for r in capex_rows
+                                       if r["status"] == "committed"), 2),
+            "proposed_eur": round(sum(r["amount_eur"] for r in capex_rows
+                                      if r["status"] == "proposed"), 2),
+            "proposed_included": bool(include_proposed_capex),
+            "projects": [{"month": r["month"], "project": r["project"],
+                          "category": r["category"], "status": r["status"],
+                          "amount_eur": round(r["amount_eur"], 2)} for r in capex_rows],
+        },
+        # Waterfall-shaped: hand it straight to render_chart as the single series
+        # of a 'waterfall'. Every step sums to free cash flow.
+        "bridge": cash.cash_bridge(result),
+        "caveats": caveats,
+        "datasets_used": [d for d in (wc_source, capex_source, "scenarios.json") if d],
+        "note": "Free cash flow before financing: EBITDA less the working-capital swing, capex "
+                "and cash tax. The days are stated in `days` with `basis` saying whether each "
+                "was measured off the balance sheet or decided by the CFO — say which when you "
+                "quote them. Read `caveats` before presenting any of this as a cash balance.",
+        # One citation, and it is the load-bearing one: the file the days came
+        # from. The others are listed in `datasets_used` for the narrative.
+        "source_file": wc_source or "scenarios.json",
+    }
+
+
+def _working_capital_rows(before: str | None = None) -> tuple[list[dict], str | None]:
+    """Closed-month working-capital rows, shaped for `cash.working_capital_days`.
+
+    Returns ([], None) rather than raising when the dataset is absent — a company
+    with no balance-sheet history can still plan cash by stating its terms, so a
+    missing dataset narrows the answer instead of removing it.
+    """
+    try:
+        frame, source = _load("working_capital")
+    except (FileNotFoundError, OSError, KeyError):
+        return [], None
+    if frame.empty:
+        return [], source
+    rows = frame.copy()
+    rows["month"] = rows["month"].astype(str)
+    if before:
+        rows = rows[rows["month"] < str(before)]
+    out = []
+    for _, r in rows.sort_values("month").iterrows():
+        entry = {"month": str(r["month"])}
+        for column in ("revenue_eur", "cogs_eur", "receivables_eur", "inventory_eur",
+                       "payables_eur", "cash_eur"):
+            value = r.get(column)
+            entry[column] = None if value is None or pd.isna(value) else float(value)
+        out.append(entry)
+    return out, source
+
+
+CAPEX_STATUSES = ("committed", "proposed")
+
+
+def _capex_rows(year: str) -> tuple[list[dict], str | None]:
+    """Budget-basis capex rows for one year. Prefers `amount_budget_eur` — the
+    plan — over `amount_eur`, which is what was actually spent."""
+    try:
+        frame, source = _load("capex_plan")
+    except (FileNotFoundError, OSError, KeyError):
+        return [], None
+    if frame.empty:
+        return [], source
+    rows = frame[frame["month"].astype(str).str.startswith(str(year))]
+    if rows.empty:
+        return [], source
+    amount_col = ("amount_budget_eur" if "amount_budget_eur" in rows.columns
+                  else "amount_eur")
+    out = []
+    for _, r in rows.sort_values("month").iterrows():
+        status = str(r.get("status") or "committed").strip().lower()
+        out.append({
+            "month": str(r["month"]),
+            "project": str(r.get("project") or "Capex"),
+            "category": str(r.get("category") or "other"),
+            "status": status if status in CAPEX_STATUSES else "committed",
+            "amount_eur": float(r[amount_col] or 0.0),
+        })
+    return out, source
+
+
 def budget_outlook() -> dict:
     """The Budget page's own numbers, for the agent.
 
@@ -1348,7 +1654,7 @@ def propose_watchlist(ctx: dict | None = None, **proposal) -> dict:
 
 
 # --------------------------------------------------------------------------
-# 10. render_chart (presentation only — returns NO source_file)
+# 11. render_chart (presentation only — returns NO source_file)
 # --------------------------------------------------------------------------
 
 def render_chart(chart_type: str, title: str, series: list, unit: str | None = None) -> dict:
@@ -1425,6 +1731,7 @@ _TOOLS = {
     "record_driver_forward": lambda i, ctx: record_driver_forward(**i, ctx=ctx),
     "driver_sensitivity": lambda i, ctx: driver_sensitivity(**i),
     "build_budget_scenario": lambda i, ctx: build_budget_scenario(**i),
+    "cash_flow_projection": lambda i, ctx: cash_flow_projection(**i),
     "budget_outlook": lambda i, ctx: budget_outlook(),
     "lock_assumptions": lambda i, ctx: lock_assumptions_tool(**i),
     "render_chart": lambda i, ctx: render_chart(**i),

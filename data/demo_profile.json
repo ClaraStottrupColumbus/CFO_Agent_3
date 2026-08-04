@@ -51,6 +51,15 @@
       "currency": "EUR"
     }
   ],
+  "working_capital": {
+    "dso_days": null,
+    "dio_days": null,
+    "dpo_days": null,
+    "opening_cash_eur": null,
+    "tax_rate_pct": 24.0,
+    "min_cash_eur": 3000000.0,
+    "note": "Cash tax at 24%; the revolving facility requires EUR 3.0m of headroom at each month end. Collection, inventory and payment days are measured from the balance sheet, not stated."
+  },
   "cost_drivers": [
     {
       "driver_id": "chicken_meal",

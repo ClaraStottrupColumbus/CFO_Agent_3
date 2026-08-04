@@ -23,6 +23,20 @@
 #   * Premium Pet volume +12% vs budget -> a non-trivial mix effect.
 #   * Adriatic opened mid-2026 with no prior-year budget -> "the data isn't there".
 #   * No payroll dataset at all -> the agent must say so, not invent wage detail.
+#   * DSO drifts out from 44 to 53 days across the history while everyone is
+#     watching margin -> a leak a P&L never shows, worth about a month of EBITDA.
+#   * A cash trough in the spring of the budget year: the extruder line is paid
+#     for in Feb and Apr on top of the working-capital build, so the budget is
+#     fine on EBITDA (€11.6M) and still breaches the €3.0M facility floor in
+#     three months. The interesting part is that the two `proposed` capex
+#     projects land in September and November, so DEFERRING THEM DOES NOT FIX
+#     THE TROUGH — the only lever that reaches April is collections (44 days
+#     instead of 52 clears it outright). "The capex you can defer is after the
+#     problem" is a better answer than a lever that always works.
+#   * No debt, interest or depreciation dataset -> the cash projection is free
+#     cash flow BEFORE financing, and has to say so rather than implying a bank
+#     balance. The history's own cash column DOES include those outflows (see
+#     FINANCING_OUTFLOW_SHARE), which is exactly why the projection cannot.
 
 from __future__ import annotations
 
@@ -142,6 +156,60 @@ CONVERSION_COST_PER_TONNE = {
     "Poultry Feed": 44.0, "Swine Feed": 41.0, "Cattle Feed": 38.0,
     "Premium Pet Nutrition": 205.0, "Aqua Feed": 96.0,
 }
+
+# Working-capital terms in days, as (start of history, end of history) — linearly
+# interpolated across the 36 months. The story is in the receivables: DSO drifts
+# out from 44 to 53 days while margins are what everyone is watching. A P&L never
+# shows that, and it is worth roughly a month of EBITDA in cash.
+WC_DAYS = {
+    "receivables": (44.0, 53.0),
+    "inventory": (33.0, 35.5),
+    "payables": (42.0, 39.5),      # paying suppliers faster — a second quiet leak
+}
+
+# Where the cash path is anchored: the minimum balance across the history is
+# shifted onto this level. The absolute opening balance of a synthetic company
+# is arbitrary, so it is pinned to something legible instead of invented — what
+# has to be real is the RELATIONSHIP between EBITDA, the working-capital swing,
+# capex and the balance, and that is computed month by month.
+CASH_FLOOR_HISTORY = 2_600_000.0
+
+# The share of EBITDA that leaves as debt service and distributions in the
+# HISTORY walk. Without it the balance compounds to three months of revenue in
+# cash across 36 months, which no feed business carries, and the cash trough in
+# the budget year stops meaning anything.
+#
+# It is also the honest reason the projection is labelled "before financing":
+# these outflows really happened — they are in the observed `cash_eur` column —
+# and there is NO interest, debt or dividend dataset anywhere in this app, so
+# `cash.project_cashflow` cannot continue them into the budget year and does not
+# pretend to. The agent has to say the closing balance is before financing.
+FINANCING_OUTFLOW_SHARE = 0.62
+
+# Capital expenditure. The 2027 rows are the point: the extruder line is
+# committed and lands in the spring, on top of the seasonal working-capital
+# build, so the budget can be perfectly good on EBITDA and still need funding.
+# The two `proposed` projects are the lever — deferring them is a decision the
+# CFO can actually take, and cash_flow_projection offers exactly that.
+CAPEX_PROJECTS = [
+    # month, project, category, EUR, status
+    ("2024-03", "Pelleting line refurbishment", "maintenance", 720_000.0, "committed"),
+    ("2024-09", "Iberia silo capacity", "capacity", 1_250_000.0, "committed"),
+    ("2025-02", "Effluent treatment (permit)", "compliance", 480_000.0, "committed"),
+    ("2025-07", "Nordics loading bay", "capacity", 640_000.0, "committed"),
+    ("2026-04", "Premium Pet packing line", "capacity", 1_850_000.0, "committed"),
+    ("2026-11", "Fleet telematics", "efficiency", 210_000.0, "committed"),
+    # The budget year.
+    ("2027-02", "Extruder line (phase 1)", "capacity", 1_750_000.0, "committed"),
+    ("2027-04", "Extruder line (phase 2)", "capacity", 1_450_000.0, "committed"),
+    ("2027-06", "Boiler replacement", "compliance", 620_000.0, "committed"),
+    ("2027-09", "Warehouse racking", "capacity", 480_000.0, "proposed"),
+    ("2027-11", "Fleet renewal", "efficiency", 360_000.0, "proposed"),
+]
+
+# Routine maintenance capex, one row a quarter in every year, so the plan is not
+# only lumpy projects.
+MAINTENANCE_CAPEX_PER_QUARTER = 340_000.0
 
 COST_CENTRES = [
     # name, monthly base EUR, headcount, driver link
@@ -323,8 +391,15 @@ def generate(profile: dict | None = None) -> dict:
 
     _write(_driver_prices_frame(series, catalog), "driver_prices")
     _write(_driver_forwards_frame(series, catalog), "driver_forwards")
-    _write(_budget_vs_actuals_frame(rng, series, catalog, list_prices), "budget_vs_actuals")
+    bva = _budget_vs_actuals_frame(rng, series, catalog, list_prices)
+    _write(bva, "budget_vs_actuals")
     _write(_opex_frame(rng, series), "opex_plan")
+
+    # Cash last: the working-capital path is walked off the P&L and the capital
+    # plan, so both have to exist first.
+    capex = _capex_frame()
+    _write(capex, "capex_plan")
+    _write(_working_capital_frame(rng, bva, capex), "working_capital")
 
     refresh_overview()
     _seed_locked_assumptions(series, catalog)
@@ -657,6 +732,99 @@ def _budget_vs_actuals_frame(rng, series: dict, catalog: dict,
             "opex_actual_eur", "opex_budget_eur"]
     return pd.DataFrame(rows)[cols].sort_values(
         ["month", "product_line", "region"]).reset_index(drop=True)
+
+
+def _capex_frame() -> pd.DataFrame:
+    """The capital plan. History rows carry what was spent; budget-year rows
+    carry the plan and no actual, exactly like budget_vs_actuals — which is what
+    lets `_capex_rows` prefer `amount_budget_eur` without a special case."""
+    rows = []
+    for (month, project, category, amount, status) in CAPEX_PROJECTS:
+        rows.append({"month": month, "project": project, "category": category,
+                     "amount_eur": (np.nan if month in BUDGET_MONTHS else round(amount, 2)),
+                     "amount_budget_eur": round(amount, 2), "status": status})
+    for month in ALL_MONTHS:
+        if int(month[5:7]) % 3 != 0:            # one row per quarter
+            continue
+        rows.append({"month": month, "project": "Maintenance capex",
+                     "category": "maintenance",
+                     "amount_eur": (np.nan if month in BUDGET_MONTHS
+                                    else MAINTENANCE_CAPEX_PER_QUARTER),
+                     "amount_budget_eur": MAINTENANCE_CAPEX_PER_QUARTER,
+                     "status": "committed"})
+    return pd.DataFrame(rows).sort_values(["month", "project"]).reset_index(drop=True)
+
+
+def _working_capital_frame(rng, bva: pd.DataFrame, capex: pd.DataFrame) -> pd.DataFrame:
+    """Monthly balance-sheet working capital for the CLOSED months only.
+
+    Balances are derived from the same monthly revenue and COGS the P&L reports,
+    at the day counts in WC_DAYS — so DSO/DIO/DPO measured back off this file
+    reproduce those terms, and the drift in receivables is a real, findable fact
+    rather than a label. There are no budget-year rows: a balance sheet is
+    something that happened.
+
+    The cash column is WALKED rather than invented: each month's balance is the
+    previous one plus EBITDA, less the working-capital swing, less capex. That
+    makes the demo's opening cash the arithmetic result of its own history, which
+    is what the projection then continues. No tax, no interest and no debt appear
+    anywhere — there is no dataset for them, and the projection says so.
+    """
+    closed = bva[bva["revenue_actual_eur"].notna()]
+    by_month = closed.groupby("month")[
+        ["revenue_actual_eur", "cogs_actual_eur", "opex_actual_eur"]].sum()
+    capex_by_month = (capex[capex["amount_eur"].notna()]
+                      .groupby("month")["amount_eur"].sum().to_dict())
+
+    months = [m for m in HISTORY if m in by_month.index]
+    span = max(1, len(months) - 1)
+    rows, prev, cash = [], None, 0.0
+    for i, month in enumerate(months):
+        revenue = float(by_month.loc[month, "revenue_actual_eur"])
+        cogs = float(by_month.loc[month, "cogs_actual_eur"])
+        opex = float(by_month.loc[month, "opex_actual_eur"])
+        days = _days_in_month(month)
+        frac = i / span
+
+        balances = {}
+        for name, (start, end) in WC_DAYS.items():
+            target = start + (end - start) * frac
+            flow = revenue if name == "receivables" else cogs
+            wobble = 1.0 + float(rng.normal(0.0, 0.012))
+            balances[name] = flow / days * target * wobble
+
+        swing = 0.0 if prev is None else (
+            (balances["receivables"] - prev["receivables"])
+            + (balances["inventory"] - prev["inventory"])
+            - (balances["payables"] - prev["payables"]))
+        ebitda = revenue - cogs - opex
+        cash += (ebitda * (1.0 - FINANCING_OUTFLOW_SHARE) - swing
+                 - float(capex_by_month.get(month, 0.0)))
+        prev = balances
+
+        rows.append({
+            "month": month,
+            "revenue_eur": round(revenue, 2),
+            "cogs_eur": round(cogs, 2),
+            "receivables_eur": round(balances["receivables"], 2),
+            "inventory_eur": round(balances["inventory"], 2),
+            "payables_eur": round(balances["payables"], 2),
+            "cash_eur": round(cash, 2),
+        })
+
+    # Shift the whole path so its low point sits on CASH_FLOOR_HISTORY. Only the
+    # level is arbitrary; every movement in it was computed above.
+    offset = CASH_FLOOR_HISTORY - min(r["cash_eur"] for r in rows)
+    for row in rows:
+        row["cash_eur"] = round(row["cash_eur"] + offset, 2)
+    return pd.DataFrame(rows)
+
+
+def _days_in_month(month: str) -> int:
+    import calendar
+
+    year, mon = (int(p) for p in month.split("-"))
+    return calendar.monthrange(year, mon)[1]
 
 
 def _opex_frame(rng, series: dict) -> pd.DataFrame:

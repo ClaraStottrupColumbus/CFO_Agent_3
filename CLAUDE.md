@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A CFO **budgeting** agent: it builds, defends and revises next year's budget by holding cost-driver
 assumptions (ingredient prices, freight, FX, energy) as sourced, dated, first-class objects, and
-saying when one has moved far enough to change the budget.
+saying when one has moved far enough to change the budget. The same rule extends to cash: the
+working-capital days behind the cash plan are measured off the balance sheet, not typed in.
 
 FastAPI + uvicorn in one process, vanilla-JS SPA, JSON/Parquet files on disk. No database, no message
 broker, no frontend build step, no bundler.
@@ -77,6 +78,7 @@ Tests — the whole suite, one file, one case:
 static/ (vanilla JS SPA, hash-routed)  ──fetch JSON + SSE──►  app/main.py (FastAPI, one process)
                                                                 │
    reporting.py  run_session_turn  ── agent.py (streaming loop) ── tools.py ── budget.py (pure maths)
+                                                                            └───── cash.py (pure maths)
    scheduler.py (daemon thread) ── tasks.py ── rules.py (pure pandas) ── alerts.py
    store.py / profile.py / config.py / scenarios.py / drivers.py / budgetversions.py = JSON + Parquet
    export.py (pure leaf: xlsx + markdown out of plain dicts)
@@ -95,8 +97,9 @@ Two rules hold the graph acyclic and are load-bearing:
 suite possible without touching disk or the SDK; keep new arithmetic and new block/URL handling
 there rather than inline in `tools.py`/`agent.py`. `export.py` is the third: it imports only
 `budget.py`, and takes driver provenance and company details as *arguments* rather than reading
-`drivers.py`, which is why `tests/test_export.py` needs no fixtures at all. `budgetversions.py` is a
-store, but its `diff()` is pure for the same reason.
+`drivers.py`, which is why `tests/test_export.py` needs no fixtures at all. `cash.py` is the fourth
+and imports nothing at all. `budgetversions.py` is a store, but its `diff()` is pure for the same
+reason.
 
 `main.py` is the only module that joins those two halves: `_drivers_snapshot()` reads
 `drivers.driver_status()` and hands the result to `budgetversions.create_version` and
@@ -295,12 +298,21 @@ module:
   cannot be deleted or re-submitted. `approved_by` is required and free-text: this app has **no
   authentication**, so it is an *attestation*, not a signature, and both the API error and the UI
   copy say so rather than implying otherwise.
+- **It snapshots the cash profile too** (`cash_snapshot`), for the same reason it snapshots the
+  driver provenance: the working-capital days were *measured* off the balance sheet on the day it was
+  approved, so next quarter's measurement must not silently rewrite the funding case the board signed
+  off. Optional — a version created on a company with no working-capital history carries `None`, and
+  the Cash flow sheet says which inputs are missing rather than printing zeros.
 - `POST /api/assumptions/lock` is a thin route onto the **existing** `drivers.lock_assumptions` — the
   CFO gets a second door to the model's function, never a second implementation. Locking replaces
   the whole set, which is why the form on `#/drivers` posts every driver.
 
 [app/export.py](app/export.py) turns either record into a workbook (**Summary · Monthly P&L · By
-product line · Assumptions · Driver bridge · Version diff**) or a board-pack markdown. Three things
+product line · Cash flow · Assumptions · Driver bridge · Version diff**) or a board-pack markdown.
+The **Cash flow** sheet takes its content from a `cash=` *argument* like everything else here, so
+the module still reads no dataset, and it prints every `caveat` next to the figures rather than
+leaving them to a covering email — it is the sheet a board is most likely to misread as a bank
+balance, and it is not one. Three more things
 there are deliberate: the **Assumptions sheet carries `source_url` / `retrieved_at` / `locked_at` per
 driver** and lists the drivers the scenario *didn't* shock — that provenance is the reason to export
 from this tool rather than from a spreadsheet, so do not tidy those columns away. `openpyxl` is
@@ -309,11 +321,67 @@ rather than failing to import `main.py`. And `export.bridge_rows` deliberately d
 drivers into "Other drivers" the way `tools._ebitda_bridge_points` does for the chart: a spreadsheet
 has no point budget, and a board pack that hides a line is worse than a long one.
 
+### EBITDA is not cash
+
+[app/cash.py](app/cash.py) is the fourth pure leaf and imports **nothing** — not even `budget.py`.
+It exists because a budget can be entirely right about EBITDA and still miss the thing that kills
+companies: the receivables and inventory behind the extra revenue have to be funded before the
+margin arrives. Two functions, and the split matters:
+
+- **`working_capital_days` MEASURES DSO/DIO/DPO** off `data/working_capital.parquet` (monthly
+  receivables, inventory, payables and cash balances) — average balance × Σdays ÷ Σflow over a
+  trailing window. This is the same discipline as `driver_exposure` reading qty-per-tonne off the
+  bill of materials rather than guessing an elasticity: **a working-capital day nobody measured is an
+  assumption with no source.** The CFO can still override one, and then it is labelled a *decision*
+  everywhere it appears (`days.basis` → `measured` | `stated` | `measured + stated`). DPO is measured
+  against COGS because there is no purchases dataset, and that approximation is named in `caveats`
+  rather than buried.
+- **`project_cashflow` turns a scenario's `by_month` into a monthly cash profile.** Balances are
+  `flow/days × the day count`, so they carry the scenario's own revenue and cost *shape* — which is
+  what makes a forward-basis budget produce a genuinely different cash profile from a flat one. Then
+  `free_cash_flow = ebitda − working_capital_swing − tax − capex`, with the swing signed off
+  `WC_COMPONENTS` (receivables and inventory rising consume cash; payables rising release it) so
+  there is one place that convention lives.
+
+Three properties are load-bearing and [tests/test_cash_flow.py](tests/test_cash_flow.py) pins them:
+
+- **It closes.** Σ free cash flow == closing cash − opening cash (`check_residual`, the same
+  discipline as the variance and EBITDA bridges), *and* the year's working-capital swing equals the
+  closing balances less the opening ones. A cash plan that cannot be pointed at a balance-sheet
+  movement is one nobody can defend.
+- **Nothing is invented, and the gaps are stated.** `tax_rate_pct=None` means no tax is deducted and
+  a caveat says so — a guessed tax rate moves a cash trough further than most of the assumptions this
+  app guards. `min_cash_eur=None` means no floor is tested rather than a floor at zero. Omitted
+  opening balances are implied from month one (so the first month shows no artificial step) and the
+  result declares it. **There is no depreciation, interest, debt or dividend dataset**, so what comes
+  out is free cash flow *before financing* — never net income, never a bank balance — and every
+  caller prints that. Same rule as the missing payroll dataset.
+- **`cash_conversion_pct` is `None`, never 0, when EBITDA is nil** — "the ratio is undefined" and
+  "none of it converts" are different answers, exactly as with `driver_status`'s `forward_12m`.
+
+`tools.cash_flow_projection` is the wiring: it resolves each input **argument → profile → measured**,
+reads `capex_plan` for the scenario's own year, and offers one genuine lever —
+`include_proposed_capex: false` defers the projects marked `proposed`, and committed capex is not a
+lever so it does not pretend otherwise. Neither `working_capital` nor `capex_plan` is model-writable;
+they are read-only datasets, unlike the two behind the trust boundary above.
+
+`GET /api/cash` is a thin route onto that same tool — the second-door rule again, so the figure on the
+Budget page and the figure in an answer cannot disagree — and it returns `available: false` with a
+reason instead of a 4xx, because "we have not measured your working capital yet" is a state the page
+renders as a prompt, not a failure. The cash inputs live on the **company profile**
+(`working_capital`: the three day counts, opening cash, cash tax rate, minimum cash, note), where
+every field defaults to `None` = *not stated*, and `POST /api/profile/working-capital` is ungated with
+the rest of `/api/profile*` because those figures change mid-round and re-opening the setup wizard to
+edit one would be absurd.
+
 ### Setup gate
 
 Almost every route depends on `require_setup` and 409s with `{"error": "setup_incomplete"}` until the
-CFO confirms a company profile. `/api/settings`, `/api/profile*` and `/api/budgetplan*` stay
-**ungated** so the settings panel, the setup wizard and the Budget tab work while gated. On the
+CFO confirms a company profile. `/api/settings`, `/api/profile*` (including
+`/api/profile/working-capital`) and `/api/budgetplan*` stay **ungated** so the settings panel, the
+setup wizard and the Budget tab work while gated. `/api/cash` is the exception on that page and is
+**gated**, because it reads the scenario engine and the datasets; the cash strip therefore just does
+not render until setup is done, the same way BOM mode does not offer itself. On the
 frontend, `profile` gates every route except `#/setup` and `#/budget`. Startup report generation is
 gated on both the API key and `setup_complete()`.
 
@@ -354,6 +422,17 @@ There is one budget now. What survives is the *engine*, not the separateness:
   they do — the mode follows the data, not the gate.
 - **Numbers are computed, prose is not.** The model writes only the 2–4 sentence read (cached on
   `fingerprint()`, falling back to `templated_narrative()` when the API is unreachable).
+- **The cash strip is the page's one gated block** and is not part of `derive()` at all: it reads
+  `/api/cash` (the active scenario's cash profile) into `#bo-cash`, showing free cash flow, the low
+  point against the CFO's floor, the cash conversion cycle with its `basis`, twelve bars of closing
+  cash with the floor drawn across them, and the four bridge steps. Two rules in there: the **body and
+  the form render into separate hosts** (`#bo-cash-body` / `#bo-cash-form-host`) so toggling "defer
+  the proposed capex" cannot wipe half-typed values out of the form — the problem `renderLockPanel`
+  solves with `lockFormOpen`, solved here by never re-rendering the form; and **the bars and the floor
+  line share one positioning box** (`.bo-cash-bars`), because `bottom: N%` and `height: N%` measured
+  against different boxes put a covenant line a few pixels off where the arithmetic put it. An empty
+  cash form field means *not stated*, and its placeholder carries the measured figure so the field
+  says what leaving it blank does.
 - **There is no chat loop here any more.** `stream_chat` and `/api/budgetplan/chat*` are gone. A page
   whose cost lines name real drivers has no business answering questions about them without the
   tools, so every "ask" affordance hands off through `askFromBudget()` in app.js — the same
@@ -456,8 +535,8 @@ Pure functions get tests; `main.py` routes, the SSE layer, the streaming shell o
 anything touching the network deliberately do not. `tests/` covers the variance/sensitivity/scenario
 maths, the opex bridge, the provenance guards, block classification, rule boundaries, alert dedup,
 schedule math, the model-capability registry, the version diff and approval state machine, both
-export formats, the forward-curve guards and per-month pricing, and the BOM materialisation's
-reconciliation to the P&L.
+export formats, the forward-curve guards and per-month pricing, the BOM materialisation's
+reconciliation to the P&L, and the cash projection's additivity, sign conventions and measured days.
 
 Tests that need data `monkeypatch.setattr` the module-level path constants (`tools.DATA_DIR`,
 `drivers.PRICES_FILE`, `scenarios.SCENARIOS_FILE`, …) at a `tmp_path` and write **CSV** fixtures —
@@ -474,3 +553,15 @@ there"), and **no payroll dataset at all** — the agent must say so rather than
 Unit price and unit cost are not stored; they are derived as revenue/volume and cogs/volume in
 `tools.py` so there is one source of truth. Prices are stored in each driver's **own quote currency**
 and converted via the `eur_usd` driver, making FX real arithmetic the model must delegate.
+
+The cash hooks work the same way. DSO drifts out from 44 to 53 days across the history — a leak worth
+about a month of EBITDA that a P&L never shows and that has to be *measured* to be found. In the
+budget year the extruder line is paid for in February and April, so the plan is fine on EBITDA
+(€11.6M) and still breaches the €3.0M facility floor in three months. The point of the shape is that
+the two `proposed` capex projects land in September and November: **deferring them does not fix the
+trough**, and the only lever that reaches April is collections. "The capex you can defer is after the
+problem" is a better demo than a lever that always works. `working_capital.cash_eur` is *walked* month
+by month off EBITDA, the working-capital swing and capex — with `FINANCING_OUTFLOW_SHARE` of EBITDA
+leaving as debt service and distributions, which is both what keeps the balance realistic and the
+honest reason the projection is labelled before-financing: those outflows are in the observed history
+and there is no dataset that would let them be continued.

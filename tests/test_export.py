@@ -18,7 +18,7 @@ from app import export
 
 openpyxl = pytest.importorskip("openpyxl")
 
-SHEETS = ["Summary", "Monthly P&L", "By product line", "Assumptions",
+SHEETS = ["Summary", "Monthly P&L", "By product line", "Cash flow", "Assumptions",
           "Driver bridge", "Version diff"]
 
 DRIVERS = [
@@ -101,10 +101,34 @@ DIFF = {
 }
 
 
-def scenario_pack():
+CASH = {
+    "days": {"dso_days": 51.9, "dio_days": 35.2, "dpo_days": 40.1,
+             "cash_conversion_cycle_days": 47.0, "basis": "measured",
+             "stated": [], "measured_from": "2026-01..2026-12"},
+    "totals": {"ebitda_eur": 11_591_244.0, "working_capital_change_eur": 737_457.0,
+               "tax_eur": 2_781_899.0, "capex_eur": 6_020_000.0,
+               "free_cash_flow_eur": 2_051_888.0, "opening_cash_eur": 3_790_364.0,
+               "closing_cash_eur": 5_842_252.0, "cash_conversion_pct": 17.7},
+    "months": [{"month": "2027-01", "ebitda_eur": 894_477.0,
+                "working_capital_change_eur": -922_074.0, "tax_eur": 214_674.0,
+                "capex_eur": 0.0, "free_cash_flow_eur": 1_601_877.0,
+                "closing_cash_eur": 5_392_241.0}],
+    "trough": {"month": "2027-04", "closing_cash_eur": 2_580_000.0},
+    "min_cash_eur": 3_000_000.0, "months_below_minimum": ["2027-02", "2027-04"],
+    "breaches_minimum": True, "tax_rate_pct": 24.0,
+    "capex": {"total_eur": 6_020_000.0, "committed_eur": 5_180_000.0,
+              "proposed_eur": 840_000.0, "proposed_included": True,
+              "projects": [{"month": "2027-02", "project": "Extruder line (phase 1)",
+                            "category": "capacity", "status": "committed",
+                            "amount_eur": 1_750_000.0}]},
+    "caveats": ["This is free cash flow before financing: interest and debt are not modelled."],
+}
+
+
+def scenario_pack(cash=None):
     return export.scenario_pack(SCENARIO, drivers_snapshot=DRIVERS,
                                 locked_at="2026-11-12T10:00:00+00:00",
-                                company="Delta Feeds NV")
+                                company="Delta Feeds NV", cash=cash)
 
 
 def version_pack():
@@ -144,8 +168,56 @@ def test_filenames_are_safe_to_write_to_disk():
 
 # ---------- The workbook ----------
 
-def test_the_workbook_has_the_six_sheets():
+def test_the_workbook_has_the_seven_sheets():
     assert load(scenario_pack()).sheetnames == SHEETS
+
+
+def test_the_cash_sheet_carries_the_days_their_basis_and_the_trough():
+    ws = load(scenario_pack(cash=CASH))["Cash flow"]
+    values = cells(ws)
+    assert "51.9" in values and "47" in values
+    # Whether the days were measured or decided is this sheet's provenance, the
+    # same argument the Assumptions sheet makes for a driver price.
+    assert "measured" in values
+    assert "2027-04" in values
+    assert "2027-02, 2027-04" in values
+
+
+def test_the_cash_sheet_states_the_before_financing_limitation():
+    values = cells(load(scenario_pack(cash=CASH))["Cash flow"])
+    assert any("not modelled" in v for v in values)
+
+
+def test_the_capital_plan_is_listed_project_by_project():
+    values = cells(load(scenario_pack(cash=CASH))["Cash flow"])
+    assert "Extruder line (phase 1)" in values and "committed" in values
+
+
+def test_a_pack_with_no_cash_profile_says_why_rather_than_showing_zeros():
+    ws = load(scenario_pack())["Cash flow"]
+    assert "working_capital" in str(ws["A1"].value)
+
+
+def test_a_version_freezes_its_own_cash_profile():
+    """A version's cash comes from its snapshot, never from today's measurement —
+    the same rule as its driver provenance."""
+    pack = export.version_pack(dict(VERSION, cash_snapshot=CASH),
+                               company="Delta Feeds NV")
+    assert pack["cash"]["days"]["dso_days"] == 51.9
+    assert export.version_pack(VERSION)["cash"] is None
+
+
+def test_the_board_pack_reports_cash_with_its_caveats():
+    text = export.board_pack_markdown(scenario_pack(cash=CASH))
+    assert "## Cash" in text
+    assert "2027-04" in text
+    assert "3,000,000 € minimum" in text
+    assert "DSO 51.9" in text
+    assert "before financing" in text
+
+
+def test_the_board_pack_omits_the_cash_section_when_there_is_none():
+    assert "## Cash" not in export.board_pack_markdown(scenario_pack())
 
 
 def test_every_assumed_driver_arrives_with_its_source_and_retrieval_date():

@@ -40,6 +40,9 @@
     configVars: [],      // the config screen's working copy
     resetArmed: false,
     mixLabels: [],       // cost-mix segment labels, applied as titles after render
+    cash: null,          // the whole GET /api/cash payload, or null when gated
+    cashProposed: true,  // include the capex still marked proposed
+    cashBarTitles: [],   // cash-bar titles, applied as properties after render
   };
 
   const $ = id => document.getElementById(id);
@@ -128,6 +131,22 @@
     return (state.data && state.data.drivers && state.data.drivers[id]) || null;
   }
   function bomAvailable() { return !!(state.data && state.data.bom_available); }
+
+  // The cash profile lives behind a GATED route, unlike everything else on this
+  // page: it reads the scenario engine and the datasets, which only exist after
+  // setup. A 409 therefore means "not yet", not "broken" — state.cash stays null
+  // and the section simply does not render, the same way BOM mode does not offer
+  // itself until the datasets are there. The mode follows the data.
+  async function loadCash() {
+    try {
+      const resp = await fetch("/api/cash?include_proposed_capex="
+                               + (state.cashProposed ? "true" : "false"));
+      state.cash = resp.ok ? await resp.json() : null;
+    } catch {
+      state.cash = null;
+    }
+    return state.cash;
+  }
   // Every "ask" leaves this page for the main agent. Guarded on setup because
   // the sessions API is gated: offering a button that 409s is worse than saying
   // why it is not there.
@@ -280,6 +299,14 @@
             <p class="bo-read is-loading" id="bo-read">Reading the numbers…</p>
           </section>
 
+          <!-- Cash. Empty until renderCash() decides there is something to show:
+               the route is gated, so on a fresh install this stays an empty
+               section rather than an error the CFO cannot act on. -->
+          <section class="bo-cash hidden" id="bo-cash">
+            <div class="bo-cash-body" id="bo-cash-body"></div>
+            <div id="bo-cash-form-host"></div>
+          </section>
+
           <div class="bo-section-head">
             <h2>What moves the ${escapeHtml(String(t.budget_year))} budget</h2>
             <p class="bo-section-note">Ranked by materiality — share of the cost base × expected change</p>
@@ -316,6 +343,7 @@
 
     renderRows();
     renderNarrative();
+    renderCash();
     renderAskRail();
     wireOverview();
   }
@@ -463,6 +491,273 @@
     }
     el.classList.remove("is-loading");
     if (btn) btn.disabled = false;
+  }
+
+  // ============================================================
+  // Cash — the one thing a budget can be entirely right about and still miss
+  // ============================================================
+  //
+  // Everything here is computed by app/cash.py through the SAME
+  // cash_flow_projection the agent calls, so the number on this page and the
+  // number in an answer cannot disagree. Two rules the markup follows:
+  //
+  //   * The body and the form render into separate hosts. Toggling "defer the
+  //     proposed capex" re-renders the body only, so it cannot wipe half-typed
+  //     values out of the form — the same problem renderLockPanel solves with
+  //     lockFormOpen, solved here by never re-rendering the form at all.
+  //   * A day count is labelled measured or stated wherever it appears. It is
+  //     the whole provenance of the section: a measurement is a fact off the
+  //     balance sheet, a stated day is the CFO deciding something.
+
+  async function renderCash({ reload = true } = {}) {
+    const section = $("bo-cash");
+    if (!section) return;
+    if (reload) await loadCash();
+    const cash = state.cash;
+    if (!cash) { section.classList.add("hidden"); return; }
+    section.classList.remove("hidden");
+    renderCashBody();
+    if (!$("bo-cash-form")) renderCashForm();
+    // With no profile there is nothing to render but the fix, so the form opens
+    // itself rather than hiding behind a button the empty state does not draw.
+    if (!cash.available) {
+      const form = $("bo-cash-form");
+      if (form) form.classList.remove("hidden");
+    }
+  }
+
+  function renderCashBody() {
+    const host = $("bo-cash-body");
+    const cash = state.cash;
+    if (!host || !cash) return;
+    const ccy = currency();
+
+    if (!cash.available) {
+      // Not a failure: "we have not measured your working capital yet" is a
+      // state, and the fix is the form immediately below.
+      host.innerHTML = `<div class="bo-cash-head">
+          <span class="bo-cash-label">Cash</span>
+          <span class="bo-cash-basis">not yet measurable</span>
+        </div>
+        <p class="bo-cash-empty">${escapeHtml(cash.error
+          || "The cash profile needs either a working-capital history or your own "
+           + "collection, inventory and payment terms.")}</p>`;
+      return;
+    }
+
+    const t = cash.totals || {};
+    const days = cash.days || {};
+    const trough = cash.trough || {};
+    const breach = !!cash.breaches_minimum;
+    const stated = (days.stated || []).length;
+    const basisNote = days.basis === "measured"
+      ? `measured from ${escapeHtml(String(days.measured_from || "your balance sheet"))}`
+      : days.basis === "stated" ? "the terms you stated"
+      : `measured, with ${stated} you stated`;
+
+    host.innerHTML = `
+      <div class="bo-cash-head">
+        <span class="bo-cash-label">Cash ${escapeHtml(String(cash.year || ""))}</span>
+        <span class="bo-cash-basis">${basisNote}</span>
+      </div>
+
+      <div class="bo-cash-metrics">
+        <div class="bo-metric">
+          <span class="bo-metric-label">Free cash flow</span>
+          <span class="bo-metric-value">${escapeHtml(signedMoney(t.free_cash_flow_eur, ccy))}</span>
+          <span class="bo-metric-foot">on ${escapeHtml(money(t.ebitda_eur, ccy))} of EBITDA${
+            t.cash_conversion_pct == null ? ""
+              : ` · ${num(t.cash_conversion_pct).toFixed(0)}% converts`}</span>
+        </div>
+        <div class="bo-metric" data-breach="${breach}">
+          <span class="bo-metric-label">Cash low point</span>
+          <span class="bo-metric-value">${escapeHtml(money(trough.closing_cash_eur, ccy))}</span>
+          <span class="bo-metric-foot">${escapeHtml(String(trough.month || "—"))}${
+            cash.min_cash_eur == null ? ""
+              : breach ? ` · below your ${escapeHtml(money(cash.min_cash_eur, ccy))} floor`
+                       : ` · clears your ${escapeHtml(money(cash.min_cash_eur, ccy))} floor`}</span>
+        </div>
+        <div class="bo-metric">
+          <span class="bo-metric-label">Cash conversion cycle</span>
+          <span class="bo-metric-value">${num(days.cash_conversion_cycle_days).toFixed(0)} days</span>
+          <span class="bo-metric-foot">DSO ${num(days.dso_days).toFixed(0)} ·
+            DIO ${num(days.dio_days).toFixed(0)} · DPO ${num(days.dpo_days).toFixed(0)}</span>
+        </div>
+      </div>
+
+      ${cashChart(cash, ccy)}
+
+      <div class="bo-cash-steps">${[
+        ["EBITDA", t.ebitda_eur],
+        ["Working capital", -num(t.working_capital_change_eur)],
+        ["Cash tax", -num(t.tax_eur)],
+        ["Capex", -num(t.capex_eur)],
+      ].map(([label, value]) => `<span class="bo-cash-step">
+          <span class="bo-cash-step-label">${escapeHtml(label)}</span>
+          <span class="bo-cash-step-value">${escapeHtml(signedMoney(value, ccy))}</span>
+        </span>`).join("")}</div>
+
+      <div class="bo-cash-actions">
+        <label class="bo-cash-toggle">
+          <input type="checkbox" id="bo-cash-defer" ${state.cashProposed ? "" : "checked"}>
+          <span>Defer the capex still marked proposed${
+            cash.capex && cash.capex.proposed_eur
+              ? ` (${escapeHtml(money(cash.capex.proposed_eur, ccy))})` : ""}</span>
+        </label>
+        ${canAsk() ? `<button class="bo-linkish" id="bo-cash-ask" type="button">Ask about the
+          low point</button>` : ""}
+        <button class="bo-linkish" id="bo-cash-edit" type="button">Cash assumptions</button>
+      </div>
+
+      <p class="bo-cash-caveat">${escapeHtml((cash.caveats || [])[0] || "")}</p>`;
+
+    // Titles are user-independent here, but they are still assigned as
+    // properties rather than interpolated — one rule, no exceptions.
+    host.querySelectorAll(".bo-cash-bar").forEach((el, i) => {
+      el.title = state.cashBarTitles[i] || "";
+    });
+    wireCashBody();
+  }
+
+  // Twelve bars of closing cash, with the floor drawn across them. This is the
+  // shape a P&L cannot show: EBITDA can be flat while cash dips under the line
+  // in one month because the capex and the working-capital build land together.
+  function cashChart(cash, ccy) {
+    const months = cash.months || [];
+    if (!months.length) return "";
+    const peak = Math.max(...months.map(m => num(m.closing_cash_eur)), 1);
+    const floor = cash.min_cash_eur;
+    const below = new Set(cash.months_below_minimum || []);
+    state.cashBarTitles = months.map(m =>
+      `${m.month}: ${money(m.closing_cash_eur, ccy)} closing`);
+
+    const floorLine = floor == null ? "" :
+      `<span class="bo-cash-floor" style="bottom:${
+        Math.max(0, Math.min(100, num(floor) / peak * 100)).toFixed(2)}%"></span>`;
+
+    // The bars and the floor share one positioning context, so `bottom: N%` on
+    // the floor and `height: N%` on a bar resolve against the SAME box. With the
+    // axis inside that box they did not, and the line sat a few pixels above
+    // where the arithmetic put it — which on a covenant line is not cosmetic.
+    return `<div class="bo-cash-chart">
+      <span class="bo-cash-bars">
+        ${floorLine}
+        ${months.map(m => `<span class="bo-cash-bar" data-breach="${below.has(m.month)}"
+          style="height:${Math.max(1, num(m.closing_cash_eur) / peak * 100).toFixed(2)}%"></span>`
+        ).join("")}
+      </span>
+      <span class="bo-cash-axis">
+        <span>${escapeHtml(String((months[0] || {}).month || ""))}</span>
+        <span>${escapeHtml(String((months[months.length - 1] || {}).month || ""))}</span>
+      </span>
+    </div>`;
+  }
+
+  function wireCashBody() {
+    const defer = $("bo-cash-defer");
+    if (defer) defer.addEventListener("change", async () => {
+      state.cashProposed = !defer.checked;
+      defer.disabled = true;
+      await renderCash();                 // body only — the form is left alone
+    });
+    const ask = $("bo-cash-ask");
+    if (ask) ask.addEventListener("click", () => askAboutCash());
+    const edit = $("bo-cash-edit");
+    if (edit) edit.addEventListener("click", () => {
+      const form = $("bo-cash-form");
+      if (form) {
+        form.classList.toggle("hidden");
+        if (!form.classList.contains("hidden")) form.querySelector("input").focus();
+      }
+    });
+  }
+
+  // The cash inputs. Every one is optional, and empty means "not stated" rather
+  // than zero — a blank DSO is measured off the balance sheet, a blank tax rate
+  // means no tax is deducted and the projection says so. The placeholders carry
+  // the measured figure so the CFO can see what they are overriding.
+  function renderCashForm() {
+    const host = $("bo-cash-form-host");
+    const cash = state.cash;
+    if (!host || !cash) return;
+    const wc = cash.working_capital || {};
+    const days = cash.days || {};
+    const measured = f => (days[f] == null ? "measured" : `measured: ${num(days[f]).toFixed(0)}`);
+    const value = v => (v == null ? "" : String(v));
+
+    const fields = [
+      ["dso_days", "Days sales outstanding", measured("dso_days")],
+      ["dio_days", "Days inventory outstanding", measured("dio_days")],
+      ["dpo_days", "Days payable outstanding", measured("dpo_days")],
+      ["opening_cash_eur", "Opening cash", "from your balance sheet"],
+      ["tax_rate_pct", "Cash tax rate (%)", "not stated — no tax deducted"],
+      ["min_cash_eur", "Minimum cash / facility floor", "none tested"],
+    ];
+
+    host.innerHTML = `<form class="bo-cash-form hidden" id="bo-cash-form">
+      <p class="bo-cash-form-note">Leave a field empty to measure it from your own balance
+         sheet, or to leave it out of the projection entirely. A number you type here is a
+         decision, and it is labelled as one wherever it appears.</p>
+      <div class="bo-cash-grid">${fields.map(([id, label, hint]) => `
+        <label class="bo-field"><span>${escapeHtml(label)}</span>
+          <input type="number" step="any" id="bo-wc-${escapeAttr(id)}"
+                 placeholder="${escapeAttr(hint)}"></label>`).join("")}
+      </div>
+      <label class="bo-field bo-cash-note-field"><span>Note</span>
+        <input type="text" id="bo-wc-note" maxlength="280"></label>
+      <div class="bo-cash-form-actions">
+        <button class="bo-send" type="submit">Save cash assumptions</button>
+        <span class="bo-cash-form-status" id="bo-wc-status"></span>
+      </div>
+    </form>`;
+
+    // Values assigned after insertion, never interpolated into value="…".
+    fields.forEach(([id]) => { $(`bo-wc-${id}`).value = value(wc[id]); });
+    $("bo-wc-note").value = wc.note || "";
+    $("bo-cash-form").addEventListener("submit", submitCashForm);
+  }
+
+  async function submitCashForm(e) {
+    e.preventDefault();
+    const status = $("bo-wc-status");
+    const payload = { note: $("bo-wc-note").value.trim() };
+    ["dso_days", "dio_days", "dpo_days", "opening_cash_eur", "tax_rate_pct",
+     "min_cash_eur"].forEach(id => {
+      const raw = $(`bo-wc-${id}`).value.trim();
+      // An empty field is sent as null — the CFO deliberately clearing it back
+      // to "not stated" — while the backend's exclude_unset keeps anything this
+      // form does not send.
+      payload[id] = raw === "" ? null : Number(raw);
+    });
+    status.textContent = "Saving…";
+    try {
+      const resp = await fetch("/api/profile/working-capital", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(String(resp.status));
+      await renderCash();
+      renderCashForm();
+      const form = $("bo-cash-form");
+      if (form) form.classList.remove("hidden");
+      $("bo-wc-status").textContent = "Saved.";
+    } catch {
+      status.textContent = "Could not save. The figures on this page are unchanged.";
+    }
+  }
+
+  // Its own hand-off rather than ask(), which prefixes every question with "use
+  // budget_outlook to read it" — the wrong tool for a cash question, and telling
+  // the agent to reach for two is how it reaches for neither.
+  function askAboutCash() {
+    const cash = state.cash;
+    if (!cash || !cash.available || !canAsk()) return;
+    const trough = cash.trough || {};
+    askFromBudget(
+      `Cash on the ${cash.year} budget bottoms out at `
+      + `${money(trough.closing_cash_eur, currency())} in ${trough.month}. Use `
+      + `cash_flow_projection: what is driving that month, does it clear the minimum, `
+      + `and what would actually fix it?`);
   }
 
   // ============================================================

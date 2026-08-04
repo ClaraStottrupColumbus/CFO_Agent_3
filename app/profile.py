@@ -22,6 +22,23 @@ DEMO_PROFILE_FILE = DATA_DIR / "demo_profile.json"
 
 DRIVER_CATEGORIES = ("ingredient", "logistics", "energy", "packaging", "fx", "labour", "other")
 
+# The cash inputs, and every one of them defaults to None — which means "not
+# stated", never zero. That distinction is the whole design of this block:
+#
+#   * A day count of None is measured from the `working_capital` dataset. A
+#     number the CFO typed OVERRIDES that measurement, because stating a day
+#     count is a decision ("we are going to collect faster"), not an
+#     observation — and cash.working_capital_days labels which it was.
+#   * `tax_rate_pct` of None means no cash tax is deducted and the projection
+#     says so. A guessed tax rate moves a cash trough further than most of the
+#     assumptions this app guards, so it is never inferred.
+#   * `min_cash_eur` of None means no floor is tested, rather than a floor at
+#     zero — a projection cannot report a breach of a covenant nobody stated.
+WORKING_CAPITAL_FIELDS = ("dso_days", "dio_days", "dpo_days", "opening_cash_eur",
+                          "tax_rate_pct", "min_cash_eur")
+
+DEFAULT_WORKING_CAPITAL: dict = {f: None for f in WORKING_CAPITAL_FIELDS} | {"note": ""}
+
 DEFAULT_PROFILE: dict = {
     "version": 1,
     "setup_complete": False,
@@ -33,6 +50,7 @@ DEFAULT_PROFILE: dict = {
     "product_lines": [],
     "markets": [],
     "cost_drivers": [],
+    "working_capital": dict(DEFAULT_WORKING_CAPITAL),
     "proposal": None,
 }
 
@@ -133,6 +151,45 @@ def _fraction(value) -> float:
         return max(0.0, min(1.0, float(value)))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _clean_working_capital(raw, fallback: dict | None = None) -> dict:
+    """The cash block, cleaned. Anything unparseable becomes None — "not stated"
+    — rather than 0, because a zero DSO and an unmeasured DSO are different
+    claims and only one of them is a decision.
+
+    Days and cash floors are clamped to sane ranges rather than rejected: this
+    is a form field, and a 400 on a typo would lose the rest of what the CFO
+    entered. Percentages above 100 are not rates, so they clamp.
+    """
+    base = dict(fallback or DEFAULT_WORKING_CAPITAL)
+    if not isinstance(raw, dict):
+        return base
+    limits = {"dso_days": (0.0, 365.0), "dio_days": (0.0, 365.0),
+              "dpo_days": (0.0, 365.0), "tax_rate_pct": (0.0, 100.0)}
+    out = dict(base)
+    for field in WORKING_CAPITAL_FIELDS:
+        if field not in raw:
+            continue
+        value = raw.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            out[field] = None
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            out[field] = None
+            continue
+        if number != number:                        # NaN
+            out[field] = None
+            continue
+        lo, hi = limits.get(field, (None, None))
+        if lo is not None:
+            number = max(lo, min(hi, number))
+        out[field] = number
+    if "note" in raw:
+        out["note"] = " ".join(str(raw.get("note") or "").split())[:280]
+    return out
 
 
 def _clean_named(items, extra_key: str | None = None) -> list[dict]:
@@ -258,9 +315,33 @@ def confirm_profile(edited: dict) -> dict:
         profile["product_lines"] = _clean_named(edited.get("product_lines"))
         profile["markets"] = _clean_named(edited.get("markets"), extra_key="currency")
         profile["cost_drivers"] = cleaned
+        profile["working_capital"] = _clean_working_capital(
+            edited.get("working_capital"), profile.get("working_capital"))
         profile["setup_complete"] = True
         _write(profile)
         return profile
+
+
+def set_working_capital(raw: dict) -> dict:
+    """Persist the cash inputs on their own.
+
+    Separate from `confirm_profile` on purpose: DSO, capex funding and a cash
+    floor change during a budget round, and re-opening the whole setup wizard to
+    change one of them would be absurd. Same reasoning as `set_description`, and
+    the route is ungated for the same reason the rest of /api/profile* is.
+    """
+    with _lock:
+        profile = _read()
+        profile["working_capital"] = _clean_working_capital(
+            raw, profile.get("working_capital"))
+        _write(profile)
+        return profile
+
+
+def working_capital(profile: dict | None = None) -> dict:
+    """The cash block, always fully keyed, so callers need no `.get` defaults."""
+    p = profile or get_profile()
+    return _clean_working_capital(p.get("working_capital"))
 
 
 def set_description(text: str) -> dict:
@@ -304,6 +385,7 @@ def public_view(profile: dict | None = None) -> dict:
         "product_lines": p.get("product_lines") or [],
         "markets": p.get("markets") or [],
         "cost_drivers": p.get("cost_drivers") or [],
+        "working_capital": working_capital(p),
         "proposal": p.get("proposal"),
         "updated_at": p.get("updated_at"),
     }

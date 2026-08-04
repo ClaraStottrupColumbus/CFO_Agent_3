@@ -157,7 +157,20 @@ budgets, and a scenario whose basis is not stated cannot be defended.
 14. `budget_outlook` reads the Budget page: next year's cost lines ranked by materiality, with \
 the driver each is tracked against. Use it for questions about the budget as a whole or about a \
 cost line the bill of materials does not cover — it is the only tool that sees those lines. It \
-carries the CFO's own planning figures, so present them as such, never as a forecast."""
+carries the CFO's own planning figures, so present them as such, never as a forecast.
+15. EBITDA IS NOT CASH, and `cash_flow_projection` is the only place cash may be turned into \
+numbers. A budget can add EBITDA and still consume cash, because the receivables and inventory \
+behind the extra revenue have to be funded before the margin arrives — so whenever cash, \
+liquidity, funding, headroom, working capital or capex comes up, run the tool and quote what it \
+returns. Three things must travel with the figures. First, the days: DSO, DIO and DPO are MEASURED \
+off the working_capital dataset, and `days.basis` says whether any was instead stated by the CFO — \
+a measurement and a decision are different claims and you must say which one you are quoting. \
+Never assert a day count, a cash balance or a working-capital swing in prose. Second, the limit: \
+what comes back is free cash flow BEFORE financing — there is no depreciation, interest, debt or \
+dividend dataset — so never present it as net income or as a bank balance, and read `caveats` \
+before you quote a closing figure. Third, the lever: capex marked `proposed` can be deferred \
+(`include_proposed_capex: false`) and committed capex cannot, so if the trough falls before the \
+proposed projects, say that deferring them does not fix it and name what would."""
 
 # Tacked onto the cached block only when the reasoning toggle is off. Disabling
 # thinking on claude-opus-5 can leak internal XML into the visible answer; the
@@ -203,6 +216,11 @@ returns no data, say the curve has not been read rather than substituting spot f
 Where the CFO's volume, price or opex decisions are part of the revision, put them in the \
 scenario's blocks so the returned bridge attributes the EBITDA move across volume, price, each \
 driver and opex.
+
+Then run `cash_flow_projection` on the revised scenario and say what it does to CASH, not only to \
+EBITDA: the month cash is lowest, whether it clears the minimum the CFO has set, and which lever \
+reaches that month — deferring proposed capex, or collecting faster. State whether the \
+working-capital days were measured or stated, and that the figure is before financing.
 
 This revision is a proposal, not a committed budget. Say plainly what would change if it were \
 frozen as the next budget version — which assumptions move, which locked values move underneath \
