@@ -31,6 +31,7 @@
     lastRowFocus: null,
     configVars: [],      // the config screen's working copy
     resetArmed: false,
+    mixLabels: [],       // cost-mix segment labels, applied as titles after render
   };
 
   const $ = id => document.getElementById(id);
@@ -66,6 +67,36 @@
   const ARROWS = { up: "↑", down: "↓", flat: "→" };
   const WORDS = { up: "up", down: "down", flat: "flat" };
 
+  // The same threshold derive() uses for a row's direction (budgetplan.py
+  // FLAT_EPS_PCT), applied to the header figures so a budget that hasn't moved
+  // says "flat" instead of pct()'s misleading "+0.0%".
+  const FLAT_EPS_PCT = 0.05;
+  function direction(value) {
+    const v = Number(value) || 0;
+    if (Math.abs(v) < FLAT_EPS_PCT) return "flat";
+    return v > 0 ? "up" : "down";
+  }
+
+  // A trend badge: glyph + word + figure, on one neutral translucent pill. No
+  // colour, for the reason above.
+  function badge(value, unit = "%") {
+    const dir = direction(value);
+    const figure = dir === "flat" ? "" :
+      ` ${pct(value).replace("%", unit === "pp" ? "pp" : "%")}`;
+    return `<span class="bo-metric-badge" data-direction="${dir}">
+      <span class="bo-metric-arrow" aria-hidden="true">${ARROWS[dir]}</span>
+      <span>${WORDS[dir]}${escapeHtml(figure)}</span></span>`;
+  }
+
+  // Clamp a percentage to a meter's 0–100 track. A negative operating margin is
+  // real and must not render as a bar hanging off the left of its own track.
+  function meterPct(value) {
+    return Math.max(0, Math.min(100, Number(value) || 0));
+  }
+
+  function num(value) { return Number(value) || 0; }
+  function year(value) { return value == null ? "" : String(value); }
+
   // ---------- Data ----------
 
   async function load() {
@@ -98,6 +129,47 @@
     renderOverview();
   }
 
+  // What the cost base is actually made of, as one segmented bar. It reads off
+  // the same `ranked` rows the list below is built from, so the header and the
+  // body tell one story rather than two — and it answers "where does the money
+  // go" before the reader has scrolled. Five segments at most: past that the
+  // slivers are too thin to hit or to label honestly.
+  const MIX_MAX = 4;
+
+  function costMix(d, t) {
+    const total = num(t.cost_next);
+    if (!total) return "";
+    const rows = d.ranked.slice().sort((a, b) => num(b.next_amount) - num(a.next_amount));
+    const top = rows.slice(0, MIX_MAX);
+    const restAmount = rows.slice(MIX_MAX)
+      .reduce((sum, r) => sum + num(r.next_amount), 0);
+
+    const segs = top.map((r, i) => ({
+      label: r.label || r.id,
+      share: num(r.next_amount) / total * 100,
+      tone: i,
+    }));
+    if (restAmount > 0) {
+      segs.push({ label: `${rows.length - MIX_MAX} other`, share: restAmount / total * 100, tone: MIX_MAX });
+    }
+
+    // Segment labels are user text and a title="" is an attribute, which
+    // escapeHtml does not make safe (it leaves quotes alone — see the note at the
+    // top of this file). They are stashed here and assigned as properties in
+    // wireOverview instead. data-tone and the widths are our own numbers.
+    state.mixLabels = segs.map(s => s.label);
+
+    return `<div class="bo-mix">
+      <span class="bo-mix-label">Cost base ${escapeHtml(year(t.budget_year))} · what it's made of</span>
+      <span class="bo-mix-bar">${segs.map(s =>
+        `<span class="bo-mix-seg" data-tone="${s.tone}" style="width:${s.share.toFixed(2)}%"></span>`
+      ).join("")}</span>
+      <span class="bo-mix-legend">${segs.map(s =>
+        `<span class="bo-mix-tag"><span class="bo-mix-swatch" data-tone="${s.tone}"></span>${
+          escapeHtml(s.label)} <span class="bo-mix-share">${s.share.toFixed(0)}%</span></span>`).join("")}</span>
+    </div>`;
+  }
+
   // ============================================================
   // Overview
   // ============================================================
@@ -121,6 +193,8 @@
     const industry = (state.data.industries || [])
       .find(i => i.id === company.industry);
 
+    const by = escapeHtml(year(t.budget_year));
+
     view.innerHTML = `
       <div class="bo-shell">
         <div class="bo-main">
@@ -130,28 +204,61 @@
               <span class="bo-dot">/</span>
               <span>${escapeHtml(industry ? industry.label : "")}</span>
               <span class="bo-dot">/</span>
-              <span>${escapeHtml(String(t.budget_year))} budget</span>
+              <span>${by} budget</span>
+            </div>
+
+            <div class="bo-metrics">
+              <div class="bo-metric">
+                <span class="bo-metric-label">Revenue ${by}</span>
+                <span class="bo-metric-value">${escapeHtml(money(t.revenue_next, t.currency))}</span>
+                ${badge(t.revenue_change_pct)}
+                <span class="bo-meter" role="presentation">
+                  <span class="bo-meter-fill" style="width:${meterPct(
+                    num(t.revenue_next) ? num(t.revenue_current) / num(t.revenue_next) * 100 : 0)}%"></span>
+                </span>
+                <span class="bo-metric-foot">from ${escapeHtml(money(t.revenue_current, t.currency))} in ${escapeHtml(year(t.current_year))}</span>
+              </div>
+
+              <div class="bo-metric">
+                <span class="bo-metric-label">Cost base ${by}</span>
+                <span class="bo-metric-value">${escapeHtml(money(t.cost_next, t.currency))}</span>
+                ${badge(t.cost_change_pct)}
+                <span class="bo-meter" role="presentation">
+                  <span class="bo-meter-fill" style="width:${meterPct(
+                    num(t.revenue_next) ? num(t.cost_next) / num(t.revenue_next) * 100 : 0)}%"></span>
+                </span>
+                <span class="bo-metric-foot">${escapeHtml(signedMoney(t.cost_delta, t.currency))} · ${
+                  meterPct(num(t.revenue_next) ? num(t.cost_next) / num(t.revenue_next) * 100 : 0).toFixed(0)
+                }% of revenue</span>
+              </div>
+
+              <div class="bo-metric">
+                <span class="bo-metric-label">Operating margin</span>
+                <span class="bo-metric-value">${num(t.margin_pct_next).toFixed(1)}%</span>
+                ${badge(t.margin_delta_pp, "pp")}
+                <span class="bo-meter" role="presentation">
+                  <span class="bo-meter-fill" style="width:${meterPct(t.margin_pct_next)}%"></span>
+                  <span class="bo-meter-tick" style="left:${meterPct(t.margin_pct_current)}%"
+                        title="${num(t.margin_pct_current).toFixed(1)}% today"></span>
+                </span>
+                <span class="bo-metric-foot">was ${num(t.margin_pct_current).toFixed(1)}% in ${escapeHtml(year(t.current_year))}</span>
+              </div>
+            </div>
+
+            ${costMix(d, t)}
+          </section>
+
+          <!-- The model's read, moved off the gradient and onto the cream: it is
+               prose, and prose is easier to trust at body size on a light
+               surface than as a display-serif headline in white. Both ids are
+               load-bearing — renderNarrative() and wireOverview() find the
+               paragraph and the button by id and are otherwise untouched. -->
+          <section class="bo-readout">
+            <div class="bo-readout-head">
+              <span class="bo-readout-label">The read</span>
+              <button class="bo-regen" id="bo-regen" type="button">Rewrite this read</button>
             </div>
             <p class="bo-read is-loading" id="bo-read">Reading the numbers…</p>
-            <div class="bo-stats">
-              <div class="bo-stat">
-                <span class="bo-stat-label">Revenue ${escapeHtml(String(t.budget_year))}</span>
-                <span class="bo-stat-value">${escapeHtml(money(t.revenue_next, t.currency))}</span>
-                <span class="bo-stat-sub">${escapeHtml(pct(t.revenue_change_pct))} on ${escapeHtml(String(t.current_year))}</span>
-              </div>
-              <div class="bo-stat">
-                <span class="bo-stat-label">Cost base ${escapeHtml(String(t.budget_year))}</span>
-                <span class="bo-stat-value">${escapeHtml(money(t.cost_next, t.currency))}</span>
-                <span class="bo-stat-sub">${escapeHtml(pct(t.cost_change_pct))} · ${escapeHtml(signedMoney(t.cost_delta, t.currency))}</span>
-              </div>
-              <div class="bo-stat">
-                <span class="bo-stat-label">Operating margin</span>
-                <span class="bo-stat-value">${t.margin_pct_next.toFixed(1)}%</span>
-                <span class="bo-stat-sub">${escapeHtml(pct(t.margin_delta_pp))
-                  .replace("%", "pp")} from ${t.margin_pct_current.toFixed(1)}%</span>
-              </div>
-            </div>
-            <button class="bo-regen" id="bo-regen" type="button">Rewrite this read</button>
           </section>
 
           <div class="bo-section-head">
@@ -234,6 +341,10 @@
 
   function wireOverview() {
     $("bo-regen").addEventListener("click", () => renderNarrative({ force: true }));
+    // Assigned as a property, never interpolated into the markup: see costMix.
+    document.querySelectorAll("#budget-view .bo-mix-seg").forEach((el, i) => {
+      el.title = (state.mixLabels || [])[i] || "";
+    });
     $("bo-composer").addEventListener("submit", e => {
       e.preventDefault();
       const input = $("bo-input");

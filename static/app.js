@@ -1,13 +1,17 @@
 // app.js — Client logic for the CFO Finance Agent demo.
-// Hash-routed SPA. There is no launcher screen: a bare `#/` renders the chat,
-// via the same shared feature view that serves #/chat, #/chat/{id}, weekly
-// (#/weekly) and monthly (#/monthly) reports. Everything deeper lives behind the
-// header nav, which route() — the single place that decides chrome — shows on
-// every route except #/setup and Budget Outlook's first run. Conversations and
-// reports are persisted server-side as "sessions"; this file lists them in the
-// sidebar, loads them on demand, and streams new turns from
-// /api/sessions/{id}/chat (SSE). The settings panel handles model selection, the
-// scheduled-refresh controls, and the raw-debug view.
+// Hash-routed SPA. A bare `#/` is Home: the shared feature view wearing the
+// .is-home modifier — no sidebar, no header, composer centred — where a question
+// is asked and answered without leaving the page. `#/chat` is Ask, the archive of
+// past conversations; `#/chat/{id}` opens one in the ordinary thread view, the
+// same one that serves weekly (#/weekly) and monthly (#/monthly) reports.
+// Home and the thread view share one DOM subtree and therefore one composer, one
+// sendMessage and one stream renderer; only CSS differs. Everything deeper lives
+// behind the header nav, which route() — the single place that decides chrome —
+// shows on every route except #/setup and Budget Outlook's first run.
+// Conversations and reports are persisted server-side as "sessions"; this file
+// lists them in the sidebar and in the archive, loads them on demand, and streams
+// new turns from /api/sessions/{id}/chat (SSE). The settings panel handles model
+// selection, the scheduled-refresh controls, and the raw-debug view.
 
 const featureView = document.getElementById("feature-view");
 const dataView = document.getElementById("data-view");
@@ -17,6 +21,7 @@ const bootView = document.getElementById("boot-view");
 const setupView = document.getElementById("setup-view");
 const driversView = document.getElementById("drivers-view");
 const scenariosView = document.getElementById("scenarios-view");
+const askView = document.getElementById("ask-view");
 const budgetView = document.getElementById("budget-view");
 const budgetConfigView = document.getElementById("budget-config-view");
 const schedulerLink = document.getElementById("scheduler-link");
@@ -34,7 +39,6 @@ const composer = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send-btn");
 const settingsPanel = document.getElementById("settings-panel");
-const schedulerBadge = document.getElementById("scheduler-badge");
 const sidebarTitleEl = document.getElementById("sidebar-title");
 const sessionListEl = document.getElementById("session-list");
 const newSessionBtn = document.getElementById("new-session-btn");
@@ -61,6 +65,11 @@ const view = {
   parentId: null,     // the report id, when mode === "child"
   parent: null,       // the loaded parent report (for the context banner)
   streaming: false,
+  // Home is `kind: "chat", mode: "chat"` with a different skin, so the streaming
+  // path can't tell them apart — and mustn't have to. This flag is the one thing
+  // that differs: it tells sendMessage to clear the hero the first time a
+  // question is asked. Cleared by renderFeature and renderAsk.
+  isHome: false,
 };
 
 // noun / periodNoun exist because the strings "Weekly"/"Monthly" and
@@ -68,7 +77,9 @@ const view = {
 // them now reads from here, or new labels leak "Weekly report" into a
 // Market-scan banner.
 const KIND_META = {
-  chat:    { heading: "Ask", noun: "Chat", periodNoun: "",
+  // heading is "Conversation", not "Ask": Ask is now the archive at #/chat, and
+  // this is what one conversation out of it looks like.
+  chat:    { heading: "Conversation", noun: "Chat", periodNoun: "",
              sub: "Every figure carries its source — a dataset file, or a page with the date it was read.",
              sidebar: "Conversations", newLabel: "+ New question",
              placeholder: "What does soymeal at €412/t do to next year's gross margin?" },
@@ -608,9 +619,14 @@ async function apiGetSession(id) {
   return resp.json();
 }
 
-async function apiCreateSession(kind, parentId) {
+// `title` is optional and only used by the scenario builder: run_session_turn
+// auto-titles conversations from their first message, but not report kinds, so
+// a `monthly` session created here would sit in the Revisions list as another
+// indistinguishable "Monthly report".
+async function apiCreateSession(kind, parentId, title) {
   const body = { kind };
   if (parentId) body.parent_id = parentId;
+  if (title) body.title = title;
   const resp = await fetch("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -625,9 +641,13 @@ async function apiDeleteSession(id) {
 }
 
 async function apiGenerateReport(kind) {
-  const resp = await fetch(`/api/sessions/report/${kind}/generate`, { method: "POST" });
+  // POST /api/reports/{kind} — main.py:420. This used to point at
+  // /api/sessions/report/{kind}/generate, which no route has ever served, so
+  // "Generate this week's report" 404'd silently behind a generic message.
+  const resp = await fetch(`/api/reports/${kind}`, { method: "POST" });
   const data = await resp.json();
-  if (!resp.ok) throw new Error(data.error || `Generation failed (${resp.status})`);
+  if (!resp.ok) throw new Error((data.detail && data.detail.error) || data.error
+                                || `Generation failed (${resp.status})`);
   return data;
 }
 
@@ -1006,6 +1026,14 @@ async function readSSE(resp, onEvent) {
 
 async function sendMessage(text, attachments) {
   attachments = attachments || [];
+  // On Home the first question turns the greeting into a thread, in place: the
+  // hero goes, and .has-thread flips #messages back to a scrolling column. No
+  // navigation — resolveTargetSession's replaceState fires no hashchange, so the
+  // conversation stays on this screen while still being recoverable on reload.
+  if (view.isHome) {
+    messagesEl.querySelector(".home-hero")?.remove();
+    featureView.classList.add("has-thread");
+  }
   const targetId = await resolveTargetSession();
 
   if (pendingAlertId) {
@@ -1119,16 +1147,170 @@ function renderAttachments() {
 // ---------- New-session button (Chat only; reports create threads per-folder) ----------
 
 newSessionBtn.addEventListener("click", () => {
-  if (view.kind === "chat") location.hash = "#/chat";   // fresh unsaved chat
+  if (view.kind === "chat") goHome();   // a fresh question starts on Home
 });
+// Same intent from the archive's toolbar.
+document.getElementById("ask-new").addEventListener("click", goHome);
 
 // ---------- Router ----------
 
 const ALL_VIEWS = [bootView, setupView, featureView, dataView,
                    schedulerView, alertsView, driversView, scenariosView,
-                   budgetView, budgetConfigView];
+                   askView, budgetView, budgetConfigView];
 function showOnly(viewEl) {
   ALL_VIEWS.forEach(v => v.classList.toggle("hidden", v !== viewEl));
+}
+
+// ---------- Home (`#/`) ----------
+//
+// The landing screen is #feature-view with .is-home on it, not a second view.
+// sendMessage, resolveTargetSession, createStreamRenderer, readSSE and the
+// attachment code all close over the module-level #composer / #input / #messages
+// singletons; a separate home view would mean parameterising every one of them,
+// which is a lot of risk for a layout change. So Home is a skin: same DOM, same
+// composer, same stream, different CSS.
+
+const HOME_SUGGESTIONS = [
+  "What's moved in my cost base since we locked the budget?",
+  "Which assumption is costing me the most next year?",
+  "Where is next year's budget most exposed?",
+];
+
+function homeHero() {
+  // GET /api/profile returns the company as a nested object (profile.py:303).
+  const name = ((profile && profile.company) || {}).name || "";
+  return `<div class="home-hero">
+    <p class="home-eyebrow">${escapeHtml(name || "Budget desk")}</p>
+    <h2 class="home-greeting">What would you like to know?</h2>
+    <p class="home-sub">Ask about next year's budget, the assumptions under it, or what
+      has moved since you locked them. Every figure comes back with its source.</p>
+    <div class="home-suggestions">${HOME_SUGGESTIONS.map(q =>
+      `<button type="button" class="home-suggestion">${escapeHtml(q)}</button>`).join("")}</div>
+  </div>`;
+}
+
+function renderHome() {
+  view.kind = "chat";
+  view.mode = "chat";
+  view.sessionId = null;
+  view.parentId = null;
+  view.parent = null;
+  view.isHome = true;
+
+  showOnly(featureView);
+  featureView.classList.add("is-home");
+  featureView.classList.remove("has-thread");
+  input.placeholder = KIND_META.chat.placeholder;
+  pendingAttachments = [];       // don't carry staged files across views
+  renderAttachments();
+  messagesEl.innerHTML = homeHero();
+
+  // A suggestion just fills the composer and submits it, so there is exactly one
+  // send path in this file.
+  messagesEl.querySelectorAll(".home-suggestion").forEach(b =>
+    b.addEventListener("click", () => {
+      input.value = b.textContent;
+      composer.requestSubmit();
+    }));
+
+  // A question handed over by an alert, a driver or a scenario: send it now that
+  // the composer is up. sendMessage → resolveTargetSession creates the session
+  // lazily, exactly as it does for a typed question.
+  const pending = pendingHomeMessage;
+  pendingHomeMessage = null;
+  if (pending) sendMessage(pending, []);
+  else input.focus();
+}
+
+// `location.hash = "#/"` fires no hashchange when the hash is already `#/`, so
+// the four hand-offs into Home would silently do nothing from the landing page.
+function goHome() {
+  if (location.hash.replace(/^#\/?/, "") === "") {
+    updateNav("home");
+    renderHome();
+    return;
+  }
+  location.hash = "#/";
+}
+
+// ---------- Ask (`#/chat`) — the conversation archive ----------
+
+let askSessions = [];        // last fetch, kept so the search filters without refetching
+
+async function renderAsk() {
+  showOnly(askView);
+  // Stays "chat" because sessionRow's click handler builds `#/${view.kind}/{id}`
+  // — the archive navigates into the ordinary thread view.
+  view.kind = "chat";
+  view.mode = "chat";
+  view.sessionId = null;
+  view.parentId = null;
+  view.parent = null;
+  view.isHome = false;
+
+  const body = document.getElementById("ask-body");
+  const search = document.getElementById("ask-search");
+  body.innerHTML = `<p class="empty">Loading…</p>`;
+  try {
+    const data = await apiListSessions("chat");
+    // The sidebar leans on server ordering; here it is worth being explicit,
+    // because the archive is the screen people scan for "the one from Tuesday".
+    askSessions = (data.sessions || []).slice()
+      .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+  } catch {
+    body.innerHTML = `<p class="empty">Could not load conversations.</p>`;
+    return;
+  }
+  renderAskList();
+  search.oninput = renderAskList;
+}
+
+function renderAskList() {
+  const body = document.getElementById("ask-body");
+  const q = (document.getElementById("ask-search").value || "").trim().toLowerCase();
+  const items = q
+    ? askSessions.filter(s => (s.title || "").toLowerCase().includes(q))
+    : askSessions;
+
+  if (!askSessions.length) {
+    body.innerHTML = `<p class="empty">No conversations yet.
+      <a href="#/">Ask your first question</a> and it will be kept here.</p>`;
+    return;
+  }
+  if (!items.length) {
+    body.innerHTML = `<p class="empty">Nothing matches “${escapeHtml(q)}”.</p>`;
+    return;
+  }
+  const grid = document.createElement("div");
+  grid.className = "card-grid";
+  items.forEach(s => grid.appendChild(askCard(s)));
+  body.innerHTML = "";
+  body.appendChild(grid);
+}
+
+function askCard(s) {
+  const card = document.createElement("article");
+  card.className = "card ask-card";
+  const turns = Math.floor((s.message_count || 0) / 2);
+  card.innerHTML = `
+    <div class="ask-card-head">
+      <h4>${escapeHtml(s.title || "Untitled")}</h4>
+      <button class="ask-del" title="Delete" aria-label="Delete this conversation">×</button>
+    </div>
+    <p class="ask-card-meta">${escapeHtml(fmtWhen(s.updated_at))}</p>
+    <div class="ask-card-foot">
+      <span class="chip">${turns} exchange${turns === 1 ? "" : "s"}</span>
+      <span class="ask-open">Open →</span>
+    </div>`;
+  card.addEventListener("click", () => { location.hash = `#/chat/${s.id}`; });
+  card.querySelector(".ask-del").addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm("Delete this conversation?")) return;
+    await apiDeleteSession(s.id);
+    askSessions = askSessions.filter(x => x.id !== s.id);
+    renderAskList();
+  });
+  return card;
 }
 
 async function renderFeature(kind, sessionId) {
@@ -1136,9 +1318,13 @@ async function renderFeature(kind, sessionId) {
   view.sessionId = sessionId || null;
   view.parentId = null;
   view.parent = null;
+  view.isHome = false;
   const meta = KIND_META[kind];
 
   showOnly(featureView);
+  // Same element as Home — take the skin off, or the thread view renders with no
+  // sidebar and a vertically centred composer.
+  featureView.classList.remove("is-home", "has-thread");
   featureHeading.textContent = meta.heading;
   featureSub.textContent = meta.sub;
   sidebarTitleEl.textContent = meta.sidebar;
@@ -1240,7 +1426,13 @@ function scheduleReportPoll(kind) {
 // One place decides chrome. Called for every route, including the ones whose
 // render functions never touched the switcher (drivers, scenarios, budget) and
 // so used to inherit whichever pill was highlighted last.
+// A kind with no pill of its own, highlighting the pill it now lives under.
+// Reading a budget revision at #/monthly/{id} should light Scenarios, because
+// that is where the link to it came from and where Back leads.
+const NAV_ALIAS = { monthly: "scenarios" };
+
 function updateNav(kind) {
+  kind = NAV_ALIAS[kind] || kind;
   // Hidden only where the links would be traps: the setup wizard (every target
   // 409s until the profile is confirmed) and Budget Outlook's first run.
   const firstRunBudget = kind === "budget" && !BudgetPlan.isConfigured();
@@ -1656,7 +1848,7 @@ function investigateAlert(a) {
   pendingHomeMessage = `Investigate this alert: ${a.title} (rule ${a.rule_id}, observed value ` +
     `${a.metric_value} vs threshold ${a.threshold}, period ${a.period}). Verify the figures, ` +
     `explain the drivers and the recent trend, and recommend actions.`;
-  location.hash = "#/chat";
+  goHome();
 }
 
 document.getElementById("alerts-read-all").addEventListener("click", async () => {
@@ -1706,9 +1898,9 @@ function route() {
     location.replace("#/setup");
     return;
   }
-  // A bare `#/` is the chat, so it is also what an unrecognised kind falls
-  // through to below — and what the nav highlights here.
-  updateNav(kind || "chat");
+  // A bare `#/` is Home, so it is also what an unrecognised kind falls through
+  // to below — and what the nav highlights here.
+  updateNav(kind || "home");
 
   if (kind === "budget") {
     BudgetPlan.route(id);          // id is "config" or undefined
@@ -1717,8 +1909,19 @@ function route() {
   } else if (kind === "drivers") {
     renderDrivers();
   } else if (kind === "scenarios") {
-    renderScenarios(id);
-  } else if (kind === "chat" || kind === "weekly" || kind === "monthly") {
+    renderScenarios();
+  } else if (kind === "chat") {
+    // Ask is the archive; a specific conversation opens in the thread view.
+    if (id) renderFeature("chat", id);
+    else renderAsk();
+  } else if (kind === "monthly") {
+    // Budget revision has no tab of its own — it lives under Scenarios, which is
+    // what a revision produces. An individual transcript still opens in the
+    // ordinary thread view, so nothing already written becomes unreachable.
+    // replace, not assign: Back must not bounce into a route that redirects.
+    if (id) renderFeature("monthly", id);
+    else location.replace("#/scenarios");
+  } else if (kind === "weekly") {
     renderFeature(kind, id);
   } else if (kind === "data") {
     renderData();
@@ -1727,9 +1930,11 @@ function route() {
   } else if (kind === "alerts") {
     renderAlerts();
   } else {
-    // `#/` and anything unrecognised: the chat. renderFeature only rewrites the
-    // hash on the report branch, so `#/` stays `#/` while the chat renders.
-    renderFeature("chat", id);
+    // `#/` and anything unrecognised: Home. Nothing here rewrites the hash, so
+    // `#/` stays `#/` while Home renders — and keeps saying `#/` right up until
+    // the first question, when resolveTargetSession replaces it with the created
+    // session id (no hashchange, so no re-render).
+    renderHome();
   }
 }
 
@@ -1760,13 +1965,14 @@ function applySettings(data) {
   updateAlertsUi(data.alerts);
 }
 
+// The interval used to also read as a header badge. It is status nobody acts on
+// from the header, and the controls for it are here — so it reads in one place,
+// beside the switch that changes it.
 function updateSchedulerUi(s) {
   const last = s.last_refresh_utc ? new Date(s.last_refresh_utc).toLocaleTimeString() : "not yet";
   refreshStatus.textContent = s.enabled
-    ? `Last refresh: ${last} · next in ~${s.next_refresh_in_seconds}s`
+    ? `Every ${s.interval_seconds}s · last refresh ${last} · next in ~${s.next_refresh_in_seconds}s`
     : `Paused · last refresh: ${last}`;
-  schedulerBadge.textContent = s.enabled ? `refresh: every ${s.interval_seconds}s` : "refresh: off";
-  schedulerBadge.classList.toggle("off", !s.enabled);
 }
 
 async function loadSettings() {
@@ -2213,12 +2419,23 @@ async function refreshDrivers() {
   catch { return; }
   if (driversView.classList.contains("hidden")) return;   // navigated away mid-fetch
 
+  // The counts as status pills, in their own panel. Same numbers as the old
+  // ` · `-joined sentence; the state that needs acting on is now findable at a
+  // glance instead of being the fourth clause of a line of prose. Zero counts
+  // stay omitted — absence is the calm state here as it is on the cards.
   const s = data.summary;
-  const bits = [`${s.total} drivers`, `${s.fresh} verified`];
-  if (s.stale) bits.push(`${s.stale} stale`);
-  if (s.never_verified) bits.push(`${s.never_verified} could not be verified`);
-  if (s.drifted) bits.push(`${s.drifted} drifted`);
-  document.getElementById("drivers-summary").textContent = bits.join(" · ");
+  const stats = [
+    { label: `${s.total} driver${s.total === 1 ? "" : "s"}`, cls: "never" },
+    { label: `${s.fresh} verified`, cls: "ok" },
+  ];
+  if (s.stale) stats.push({ label: `${s.stale} stale`, cls: "running" });
+  if (s.never_verified) stats.push({ label: `${s.never_verified} could not be verified`, cls: "error" });
+  if (s.drifted) stats.push({ label: `${s.drifted} drifted`, cls: "error" });
+  document.getElementById("drivers-summary").innerHTML = `
+    <div class="panel panel-stats">
+      <div class="stat-strip">${stats.map(x =>
+        `<span class="status-chip ${x.cls}">${escapeHtml(x.label)}</span>`).join("")}</div>
+    </div>`;
 
   const body = document.getElementById("drivers-body");
   if (!data.drivers.length) {
@@ -2231,16 +2448,24 @@ async function refreshDrivers() {
   data.drivers.forEach(d => (groups[d.category || "other"] ||= []).push(d));
   body.innerHTML = "";
   // Grouped by category: a CFO thinks "my ingredient basket", not "my
-  // alphabetical list".
+  // alphabetical list". Each category is its own .panel, so where one basket
+  // ends and the next begins is a boundary you can see rather than infer from
+  // the gap between two headings.
   Object.keys(groups).sort().forEach(cat => {
-    const h = document.createElement("h3");
-    h.className = "section-head";
-    h.textContent = cat;
-    body.appendChild(h);
+    const panel = document.createElement("section");
+    panel.className = "panel";
+    const stale = groups[cat].filter(d => d.verify_status !== "fresh").length;
+    panel.innerHTML = `
+      <div class="panel-head">
+        <h3>${escapeHtml(cat)}</h3>
+        <span class="chip">${groups[cat].length} driver${groups[cat].length === 1 ? "" : "s"}${
+          stale ? ` · ${stale} to verify` : ""}</span>
+      </div>`;
     const grid = document.createElement("div");
     grid.className = "card-grid";
     groups[cat].forEach(d => grid.appendChild(driverCard(d)));
-    body.appendChild(grid);
+    panel.appendChild(grid);
+    body.appendChild(panel);
   });
 
   clearInterval(driverPollTimer);
@@ -2330,32 +2555,217 @@ function driverCard(d) {
     pendingHomeMessage = `Tell me about ${d.name || d.driver_id}: where it stands now against ` +
       `what we locked into the budget, what it's worth to next year's EBITDA, and whether I ` +
       `should re-lock it.`;
-    location.hash = "#/chat";
+    goHome();
   });
   return card;
 }
 
 // ==========================================================================
-// #/scenarios — read / compare / activate / delete only. No authoring form, ever.
+// #/scenarios — compare, activate, delete, and BUILD.
+//
+// This page absorbed Budget revision. A revision exists to produce a scenario,
+// so the two were one idea behind two tabs. Creating still runs through the
+// agent — `build_budget_scenario` is what persists a scenario, and there is
+// still no form that writes one directly — but the trigger now lives here
+// instead of requiring the CFO to know to ask for it inside a monthly report.
 // ==========================================================================
+
+// The seeded prompt for a build. Composed client-side, like every other seeded
+// prompt in this file (the driver, scenario and alert hand-offs) — the server
+// needs no new route, and the whole feature is one `monthly` session with one
+// chat turn.
+function scenarioBuildPrompt(description) {
+  return `Build a budget scenario from this description:\n\n"${description}"\n\n` +
+    `Check where the relevant drivers stand with driver_status, then call ` +
+    `build_budget_scenario with the assumptions this implies, giving it a short ` +
+    `recognisable name. Do NOT make it active — the CFO activates scenarios ` +
+    `themselves.\n\nThen explain briefly: what you assumed and why, what it does to ` +
+    `next year's revenue, EBITDA and margin against the locked budget, and which ` +
+    `single assumption the answer is most sensitive to.`;
+}
 
 async function renderScenarios() {
   showOnly(scenariosView);
-  const body = document.getElementById("scenarios-body");
-  let data;
-  try { data = await (await fetch("/api/scenarios")).json(); }
-  catch { body.innerHTML = `<p class="empty">Could not load scenarios.</p>`; return; }
+  resetScenarioComposer();
+  await refreshScenarios();
+}
 
-  if (!data.scenarios.length) {
-    body.innerHTML = `<p class="empty">No scenarios yet. Ask for one in a budget revision —
-      "what if freight stays where it is all year?" — and it'll be saved here.</p>`;
+// Fetch both lists and paint the body. Separate from renderScenarios because a
+// finished build re-paints without re-running showOnly or resetting a composer
+// the user may still be reading.
+async function refreshScenarios() {
+  const body = document.getElementById("scenarios-body");
+  if (!body.hasChildNodes()) body.innerHTML = `<p class="empty">Loading…</p>`;
+
+  // Settled independently: a failed revisions fetch must not blank the
+  // scenarios, which are the point of the page.
+  const [scenarioRes, revisionRes] = await Promise.allSettled([
+    fetch("/api/scenarios").then(r => r.json()),
+    apiListSessions("monthly"),
+  ]);
+
+  if (scenarioRes.status !== "fulfilled") {
+    body.innerHTML = `<p class="empty">Could not load scenarios.</p>`;
     return;
   }
+  const scenarios = scenarioRes.value.scenarios || [];
+  const revisions = revisionRes.status === "fulfilled"
+    ? (revisionRes.value.sessions || []).filter(s => !s.parent_id)
+    : [];
+
+  body.innerHTML = "";
+  if (!scenarios.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.innerHTML = `No scenarios yet. Use <strong>+ New scenario</strong> above —
+      describe what it assumes ("freight stays where it is all year") and the agent
+      will build it, or ask for one inside any conversation.`;
+    body.appendChild(empty);
+  } else {
+    // The active scenario is the one the budget is currently being read against;
+    // the rest are alternatives. That is a real distinction, so it gets a real
+    // boundary rather than a 4px rule on one card in a flat grid.
+    const active = scenarios.filter(s => s.active);
+    const saved = scenarios.filter(s => !s.active);
+    if (active.length) {
+      body.appendChild(scenarioPanel("Active", active,
+        "What the budget is currently read against."));
+    }
+    if (saved.length) {
+      body.appendChild(scenarioPanel(active.length ? "Alternatives" : "Saved scenarios", saved,
+        "Activate one to read the budget against it instead."));
+    }
+  }
+
+  if (revisions.length) body.appendChild(revisionsPanel(revisions));
+}
+
+// Past budget revisions. The scheduled `budget_revision` task keeps producing
+// these and the startup generator writes one per month; they stay readable in
+// the ordinary thread view at #/monthly/{id}, which is why that route survives
+// the tab going away.
+function revisionsPanel(items) {
+  const panel = document.createElement("section");
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h3>Revisions</h3>
+      <p class="panel-note">Full budget revisions — the monthly re-forecast, and every scenario built here.</p>
+    </div>`;
   const grid = document.createElement("div");
   grid.className = "card-grid";
-  data.scenarios.forEach(s => grid.appendChild(scenarioCard(s)));
-  body.innerHTML = "";
-  body.appendChild(grid);
+  items
+    .slice()
+    .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
+    .forEach(s => {
+      const card = document.createElement("article");
+      card.className = "card revision-card";
+      const turns = Math.floor((s.message_count || 0) / 2);
+      card.innerHTML = `
+        <h4>${escapeHtml(s.title || s.period || "Budget revision")}</h4>
+        <p class="driver-meta">${escapeHtml(fmtWhen(s.updated_at))}</p>
+        <div class="ask-card-foot">
+          <span class="chip">${turns} exchange${turns === 1 ? "" : "s"}</span>
+          <span class="ask-open">Open →</span>
+        </div>`;
+      card.addEventListener("click", () => { location.hash = `#/monthly/${s.id}`; });
+      grid.appendChild(card);
+    });
+  panel.appendChild(grid);
+  return panel;
+}
+
+// ---------- The build composer ----------
+
+let scenarioStreaming = false;
+
+function resetScenarioComposer() {
+  if (scenarioStreaming) return;         // a build survives a re-render mid-run
+  document.getElementById("scenario-new").classList.add("hidden");
+  document.getElementById("scenario-stream").classList.add("hidden");
+  document.getElementById("scenario-stream").innerHTML = "";
+  document.getElementById("scenario-error").classList.add("hidden");
+  document.getElementById("scenario-form").classList.remove("hidden");
+  document.getElementById("scenario-desc").value = "";
+}
+
+document.getElementById("scenario-new-btn").addEventListener("click", () => {
+  const panel = document.getElementById("scenario-new");
+  panel.classList.remove("hidden");
+  document.getElementById("scenario-desc").focus();
+});
+
+document.getElementById("scenario-cancel").addEventListener("click", () => {
+  if (scenarioStreaming) return;         // don't strand a running turn
+  scenarioStreaming = false;
+  resetScenarioComposer();
+});
+
+document.getElementById("scenario-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (scenarioStreaming) return;
+  const desc = document.getElementById("scenario-desc").value.trim();
+  const err = document.getElementById("scenario-error");
+  if (desc.length < 10) {
+    // Inline, never alert() — same reasoning as the setup wizard.
+    err.textContent = "Say a little more about what this scenario assumes.";
+    err.classList.remove("hidden");
+    return;
+  }
+  err.classList.add("hidden");
+
+  const submitBtn = e.target.querySelector("button[type=submit]");
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Building…";
+  scenarioStreaming = true;
+
+  const wrap = document.getElementById("scenario-stream");
+  wrap.classList.remove("hidden");
+  wrap.innerHTML = "";
+  addUserMessage(wrap, desc, []);
+  const bubble = addAssistantMessage(wrap);
+  // The same reveal loop on a different container — which is why it was
+  // extracted. NOT sendMessage: that closes over #composer / #input / #messages
+  // and belongs to the feature view.
+  const stream = createStreamRenderer(wrap, bubble);
+
+  try {
+    const session = await apiCreateSession("monthly", null,
+      desc.length > 52 ? desc.slice(0, 52).trimEnd() + "…" : desc);
+    const resp = await fetch(`/api/sessions/${session.id}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: scenarioBuildPrompt(desc), attachments: [] }),
+    });
+    await readSSE(resp, stream.handleEvent);
+  } catch (ex) {
+    stream.fail(ex.message);
+  } finally {
+    stream.finish();
+    scenarioStreaming = false;
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Build scenario";
+  }
+
+  // Whatever the turn did, re-read the store: the scenario appears if
+  // build_budget_scenario ran, and the revision appears either way. Guarded on
+  // the view because a long build can outlive the user's patience for this page.
+  if (!scenariosView.classList.contains("hidden")) await refreshScenarios();
+});
+
+function scenarioPanel(title, items, note) {
+  const panel = document.createElement("section");
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h3>${escapeHtml(title)}</h3>
+      <p class="panel-note">${escapeHtml(note)}</p>
+    </div>`;
+  const grid = document.createElement("div");
+  grid.className = "card-grid";
+  items.forEach(s => grid.appendChild(scenarioCard(s)));
+  panel.appendChild(grid);
+  return panel;
 }
 
 function scenarioCard(s) {
@@ -2382,20 +2792,23 @@ function scenarioCard(s) {
       <button class="btn-ghost sc-ask">Ask about this</button>
       ${s.active ? "" : '<button class="btn-ghost sc-delete">Delete</button>'}
     </div>`;
+  // refreshScenarios, not renderScenarios: re-painting the list must not reset
+  // an open composer or a build the user is still reading.
   const act = card.querySelector(".sc-activate");
   if (act) act.addEventListener("click", async () => {
     await fetch(`/api/scenarios/${s.id}/activate`, { method: "POST" });
-    renderScenarios();
+    refreshScenarios();
   });
   const del = card.querySelector(".sc-delete");
   if (del) del.addEventListener("click", async () => {
+    if (!confirm(`Delete the "${s.name}" scenario?`)) return;
     await fetch(`/api/scenarios/${s.id}`, { method: "DELETE" });
-    renderScenarios();
+    refreshScenarios();
   });
   card.querySelector(".sc-ask").addEventListener("click", () => {
     pendingHomeMessage = `Walk me through the "${s.name}" scenario: what it assumes, ` +
       `what it does to next year's EBITDA, and how it compares to what we locked.`;
-    location.hash = "#/chat";
+    goHome();
   });
   return card;
 }

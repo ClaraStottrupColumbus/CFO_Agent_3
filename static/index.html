@@ -1,20 +1,23 @@
 <!-- index.html — CFO Finance Agent demo UI.
-     A hash-routed single page. `#/` is the chat itself: the shared feature view,
-     with a sidebar of past sessions and a message pane. Everything deeper —
-     market scan, budget revision, drivers, scenarios, budget outlook, scheduler,
-     data ingestion — is reached from the header nav, which route() shows on every
-     screen except the setup wizard and Budget Outlook's first run. Conversations
-     and reports are persisted server-side, so they survive reloads and restarts.
-     The settings side panel (gear icon) stays available across all views. -->
+     A hash-routed single page. `#/` is Home: the shared feature view worn as a
+     centred, sidebar-less chat (#feature-view.is-home), where a question is asked
+     and answered in place. `#/chat` is Ask, the archive of past conversations;
+     opening one from there returns to the ordinary thread view with its sidebar.
+     Everything deeper — market scan, budget revision, drivers, scenarios, budget
+     outlook, scheduler, data ingestion — is reached from the header nav, which
+     route() shows on every screen except the setup wizard and Budget Outlook's
+     first run. Conversations and reports are persisted server-side, so they
+     survive reloads and restarts. The settings side panel (gear icon) stays
+     available across all views. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CFO Finance Agent</title>
-  <link rel="stylesheet" href="/static/columbus-tokens.css?v=18">
-  <link rel="stylesheet" href="/static/style.css?v=18">
-  <link rel="stylesheet" href="/static/budget.css?v=18">
+  <link rel="stylesheet" href="/static/columbus-tokens.css?v=20">
+  <link rel="stylesheet" href="/static/style.css?v=20">
+  <link rel="stylesheet" href="/static/budget.css?v=20">
 </head>
 <body>
   <header>
@@ -28,15 +31,19 @@
       </a>
     </div>
     <!-- The single way into everything deeper. route() owns both its visibility
-         and the active pill — every tab carries data-kind so all six can light up.
+         and the active pill — every tab carries data-kind so all six can light
+         up. Home is data-kind="home", which is what route() passes for a bare
+         `#/`; Ask is the conversation archive, not a fresh chat. There is no
+         Budget revision tab: a revision exists to produce a scenario, so both
+         live under Scenarios and NAV_ALIAS points the `monthly` kind at it.
          #budget-link keeps its id only as the anchor for the note below; its
          styling comes from .topic-switcher a like every other tab. -->
     <nav id="topic-switcher" class="topic-switcher hidden" aria-label="Switch section">
-      <a href="#/chat" data-kind="chat">Ask</a>
+      <a href="#/" data-kind="home">Home</a>
+      <a href="#/chat" data-kind="chat" title="Every question you've asked">Ask</a>
       <a href="#/weekly" data-kind="weekly">Market scan</a>
-      <a href="#/monthly" data-kind="monthly">Budget revision</a>
       <a href="#/drivers" data-kind="drivers" title="Budget drivers — what you know about the world">Drivers</a>
-      <a href="#/scenarios" data-kind="scenarios" title="Saved budget scenarios">Scenarios</a>
+      <a href="#/scenarios" data-kind="scenarios" title="Budget scenarios and the revisions that built them">Scenarios</a>
       <!-- In the header, not inside a view: the header sits outside .view, so
            this stays reachable while the profile gate holds the rest of the app
            on #/setup — which is the point of Budget Outlook's independent gate. -->
@@ -45,7 +52,9 @@
     <div class="header-right">
       <a id="scheduler-link" href="#/scheduler" title="Scheduler — autonomous tasks the agent runs for you">Scheduler</a>
       <a id="data-link" href="#/data" title="Data ingestion — the datasets behind every answer">Data ingestion</a>
-      <span id="scheduler-badge" class="badge" title="Scheduled data refresh status">refresh: …</span>
+      <!-- The refresh-interval badge that used to sit here now reads in
+           Settings → Scheduled data refresh, where the controls for it already
+           are. It was status nobody acts on from the header. -->
       <button id="alerts-btn" title="Alerts" aria-label="Alerts">
         <svg class="icon" width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 5c-7.2 0-13 5.8-13 13v9l-4 6v3h34v-3l-4-6v-9c0-7.2-5.8-13-13-13Z"/><path d="M19 39a5 5 0 0 0 10 0Z"/></svg>
         <span id="alerts-badge" class="alerts-badge hidden"></span>
@@ -76,14 +85,54 @@
    </div>
   </main>
 
+  <!-- Scenarios, which absorbed Budget revision: a revision exists to produce a
+       scenario, so building one and comparing them are the same screen. The
+       composer runs a real budget-revision turn in a `monthly` session — the
+       agent's build_budget_scenario tool is what persists the result. -->
   <main id="scenarios-view" class="view hidden">
    <div class="page-inner">
-    <header class="page-head">
-      <p class="eyebrow">Scenarios</p>
-      <h2>What the budget could be</h2>
-      <p class="page-sub">Scenarios are created in conversation, during a revision. This is where you compare and activate them.</p>
+    <header class="page-head scenarios-head">
+      <div>
+        <p class="eyebrow">Scenarios</p>
+        <h2>What the budget could be</h2>
+        <p class="page-sub">Describe what a scenario assumes and the agent builds it — re-running next year's budget on those assumptions, with its working shown.</p>
+      </div>
+      <button id="scenario-new-btn" class="btn-primary" type="button">+ New scenario</button>
     </header>
+
+    <section id="scenario-new" class="panel scenario-new hidden">
+      <div class="panel-head">
+        <h3>New scenario</h3>
+        <button id="scenario-cancel" class="btn-ghost" type="button">Cancel</button>
+      </div>
+      <form id="scenario-form">
+        <label class="field-label" for="scenario-desc">What does this scenario assume?</label>
+        <textarea id="scenario-desc" rows="3" placeholder="Sea freight stays at today's rate for all of 2027, and we pass half of it through in price."></textarea>
+        <p class="hint">One or two sentences. Name the drivers that move and by how much, if you know.</p>
+        <p id="scenario-error" class="error-text hidden"></p>
+        <button type="submit" class="btn-primary">Build scenario</button>
+      </form>
+      <div id="scenario-stream" class="scenario-stream hidden"></div>
+    </section>
+
     <div id="scenarios-body"></div>
+   </div>
+  </main>
+
+  <!-- Ask: the archive. Not a chat — the searchable record of every conversation,
+       each row a way back into #/chat/{id}, which is the ordinary thread view. -->
+  <main id="ask-view" class="view hidden">
+   <div class="page-inner">
+    <header class="page-head">
+      <p class="eyebrow">Ask</p>
+      <h2>Every question you've asked</h2>
+      <p class="page-sub">Search past conversations — each one keeps the figures it quoted and the sources behind them.</p>
+    </header>
+    <div class="ask-toolbar">
+      <input id="ask-search" type="search" placeholder="Search conversations…" autocomplete="off" aria-label="Search conversations">
+      <button id="ask-new" class="btn-primary" type="button">+ New question</button>
+    </div>
+    <div id="ask-body"></div>
    </div>
   </main>
 
@@ -93,8 +142,10 @@
   <main id="budget-view" class="view hidden"></main>
   <main id="budget-config-view" class="view hidden"></main>
 
-  <!-- Feature view: shared by chat / weekly / monthly, and the landing screen —
-       route() sends a bare `#/` here as chat. -->
+  <!-- Feature view: shared by chat / weekly / monthly, and by Home — route() sends
+       a bare `#/` here too, wearing the .is-home modifier that drops the sidebar
+       and the header and centres the composer. Same DOM, same composer, so the
+       whole streaming path is untouched by which of the two is showing. -->
   <div id="feature-view" class="view hidden">
     <aside id="sidebar">
       <button id="new-session-btn" class="primary-btn">+ New chat</button>
@@ -281,7 +332,7 @@
 
   <!-- budget.js BEFORE app.js: it only declares window.BudgetPlan, while app.js
        ends by calling boot() → route(), which needs it to already exist. -->
-  <script src="/static/budget.js?v=18"></script>
-  <script src="/static/app.js?v=18"></script>
+  <script src="/static/budget.js?v=20"></script>
+  <script src="/static/app.js?v=20"></script>
 </body>
 </html>

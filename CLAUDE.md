@@ -2,6 +2,42 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Booting the agent (quick start)
+
+One command, from the repo root — the whole app (API + SPA) is a single uvicorn process:
+
+```bash
+.venv/bin/uvicorn app.main:app --port 8323 --reload
+```
+
+Then open **http://127.0.0.1:8323/** — `/` serves the SPA, which lands on Home: a centred chat that
+keeps its conversation in place. Ready when the log says `Application startup complete.`
+
+Preconditions, in the order they bite:
+
+1. **`.venv` exists** — not committed. If missing:
+   `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+2. **`.env` has `ANTHROPIC_API_KEY`** — the only required env var, read at import time by
+   `app.main`, and never overriding a value already exported in the shell. If missing:
+   `cp .env.example .env` and fill it in. The server still starts without it; the agent turns fail.
+3. **`data/` is populated** — if datasets are missing, `.venv/bin/python -m app.generate_data`
+   (seeded, deterministic).
+
+Port **8323** is the convention (Agent 1 = 8321, Agent 2 = 8322). Run it backgrounded with output
+to a log file; `--reload` picks up `app/` edits, but **not** `static/` cache-busting — see the
+`?v=N` rule below.
+
+Smoke-check without a browser:
+
+```bash
+curl -s http://127.0.0.1:8323/api/profile          # {"setup_complete": true, ...}
+curl -s "http://127.0.0.1:8323/api/sessions?kind=chat"
+```
+
+If `setup_complete` is `false`, every gated route 409s with `{"error": "setup_incomplete"}` and the
+SPA lands on `#/setup` — that is the setup gate working, not a bug. `/api/settings`,
+`/api/profile*` and `/api/budgetplan*` stay reachable regardless.
+
 ## What this is
 
 A CFO **budgeting** agent: it builds, defends and revises next year's budget by holding cost-driver
@@ -102,6 +138,14 @@ whose first user message is a preset prompt (`WEEKLY_PROMPT` / `MONTHLY_PROMPT`)
 generation, report follow-ups, scheduled prompts, the setup proposal stream and ordinary chat all run
 through one function, `reporting.run_session_turn`. Child chats under a report carry `parent_id`.
 
+The `monthly` kind has **no tab of its own**. A budget revision exists to produce a scenario, so both
+live under `#/scenarios`: "+ New scenario" creates a `monthly` session, streams one turn seeded with a
+client-composed build prompt, and the agent's `build_budget_scenario` tool persists the result. Past
+revisions — including everything the scheduled `budget_revision` task writes — list in the Revisions
+panel and open at `#/monthly/{id}` in the ordinary thread view. `#/monthly` with no id
+`location.replace`s to `#/scenarios`, and `NAV_ALIAS` points the kind at the Scenarios pill. Nothing
+about the kind changed server-side; this is a navigation merge only.
+
 UI-only message fields (`attachments`, `text`, `charts`, `reasoning`, per-message `sources`) are
 persisted but stripped before the API call.
 
@@ -119,8 +163,12 @@ correctness-critical and commented as such:
   it as "finished" silently truncates a research turn with no error. Bounded by `MAX_CONTINUATIONS`.
 - A round with **no local tool uses** must break before appending a user turn, or it POSTs
   `content: []` → 400. `MAX_TOOL_TURNS` counts only rounds that ran ≥1 local tool.
-- `MODEL_CAPS` derives tool version, thinking mode and effort support **per model**, and
-  `AVAILABLE_MODELS` is derived from it, so a model cannot reach the picker without capability data.
+- `MODEL_CAPS` derives tool version, thinking mode, effort and **`fallbacks`** support per model.
+  `AVAILABLE_MODELS` is the subset whose `fallbacks` is true — not the whole registry — because the
+  loop sends `betas` + `fallbacks` on every request, so a model that cannot accept them cannot be
+  offered. That was a real 400 on every turn for anyone who picked sonnet; the fix is that the picker
+  is derived from what the request actually sends, so it is unrepresentable rather than merely fixed.
+  Any new model-dependent request field must be gated on a cap the same way, or it recurs.
   `web_search` and `web_fetch` carry separate version keys deliberately (pre-4.6 dates differ).
 
 Also: `build_system` splits the system prompt into a **cached** block (static prompt + stable company
@@ -228,16 +276,33 @@ then attach listeners; a changed list is re-rendered wholesale. Charts are hand-
 (`CHART_COLORS` is validated for lightness/chroma/CVD/contrast — do not reorder). Liveness comes from
 polling timers, not websockets; `route()` is the single place navigation clears them.
 
-There is **no launcher screen**: a bare `#/` falls through to `renderFeature("chat", id)`, so the
-landing page *is* the chat, reusing `#feature-view` unchanged (`renderFeature` only rewrites the hash
-on the report branch, so `#/` stays `#/`). `#topic-switcher` is therefore the app's one navigation
-surface, and **`route()` is the only place that decides nav chrome** — one `updateNav(kind || "chat")`
-call after the profile gate sets both visibility and the active tab. Render functions must not touch
-the switcher themselves; that is exactly how `#/drivers` and `#/scenarios` used to inherit whichever
-pill was highlighted last. `updateNav` hides the nav only where its links would be traps: `#/setup`
-(everything else 409s until the profile is confirmed) and Budget Outlook's first run, read through the
-synchronous `BudgetPlan.isConfigured()` — safe because `boot()` awaits `BudgetPlan.load()` before the
-first `route()`.
+A bare `#/` is **Home** (`renderHome`) — and so is any unrecognised kind. Home is *not* a second view:
+it is `#feature-view` wearing `.is-home`, which hides the sidebar and the header and centres the
+composer. That matters, because `sendMessage`, `resolveTargetSession`, `createStreamRenderer` and the
+attachment code all close over the module-level `#composer` / `#input` / `#messages` singletons; a
+separate home view would mean parameterising every one of them. Only two things differ at runtime:
+`view.isHome`, and the two lines at the top of `sendMessage` that drop the `.home-hero` and add
+`.has-thread` on the first question. Nothing navigates — `resolveTargetSession`'s `replaceState`
+fires no `hashchange`, so the conversation continues on Home while staying recoverable on reload.
+`renderFeature` must strip `is-home`/`has-thread`, or the thread view renders with no sidebar.
+
+`#/chat` is **Ask**, the conversation archive (`#ask-view`, `renderAsk`) — a searchable grid of past
+chats, not a fresh one. `#/chat/{id}` opens one in the ordinary thread view. Anything that means "ask
+a new question" (`+ New question`, an alert investigation, a driver or scenario hand-off) goes through
+`goHome()`, which exists because `location.hash = "#/"` fires no event when the hash is already `#/`.
+
+`#topic-switcher` is the app's one navigation surface, and **`route()` is the only place that decides
+nav chrome** — one `updateNav(kind || "home")` call after the profile gate sets both visibility and the
+active tab. Render functions must not touch the switcher themselves; that is exactly how `#/drivers`
+and `#/scenarios` used to inherit whichever pill was highlighted last. `updateNav` hides the nav only
+where its links would be traps: `#/setup` (everything else 409s until the profile is confirmed) and
+Budget Outlook's first run, read through the synchronous `BudgetPlan.isConfigured()` — safe because
+`boot()` awaits `BudgetPlan.load()` before the first `route()`.
+
+`.card` (the surface under every driver, scenario and archived conversation) and `.panel` (the
+cream-50 module container they group into) live in `style.css`. Three surfaces separate by lightness
+alone — cream canvas, cream-50 panel, white card — so section boundaries need no rules drawn between
+them.
 
 `createStreamRenderer(container, bubble, opts)` is the extracted streaming reveal loop, shared by
 chat, the setup wizard and the reasoning disclosure. Its 130 ms cadence, `max(14, backlog/5)` batch

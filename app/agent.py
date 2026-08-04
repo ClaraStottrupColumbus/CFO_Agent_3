@@ -43,16 +43,27 @@ from .tools import TOOL_DEFINITIONS, execute_tool
 
 MODEL_CAPS = {
     "claude-opus-5": {"web_search": "20260209", "web_fetch": "20260209",
-                      "thinking": "adaptive", "effort": True, "thinking_default_on": True},
+                      "thinking": "adaptive", "effort": True, "thinking_default_on": True,
+                      "fallbacks": True},
     "claude-sonnet-5": {"web_search": "20260209", "web_fetch": "20260209",
-                        "thinking": "adaptive", "effort": True, "thinking_default_on": True},
+                        "thinking": "adaptive", "effort": True, "thinking_default_on": True,
+                        "fallbacks": False},
     "claude-opus-4-8": {"web_search": "20260209", "web_fetch": "20260209",
-                        "thinking": "adaptive", "effort": True, "thinking_default_on": False},
+                        "thinking": "adaptive", "effort": True, "thinking_default_on": False,
+                        "fallbacks": False},
 }
 
 # Derived from the registry, so a model can never reach the picker without
-# capability data behind it.
-AVAILABLE_MODELS = list(MODEL_CAPS)
+# capability data behind it — and, since the loop sends `fallbacks` on every
+# request, without the capability to ACCEPT every parameter we send. `fallbacks`
+# was the one model-dependent field that wasn't derived, and the result was a
+# 400 on every turn for whoever picked sonnet:
+#     'claude-sonnet-5' does not support the `fallbacks` parameter.
+# Deriving availability from the requirement is what makes that unrepresentable
+# rather than merely fixed. If a model without server-side fallback routing is
+# wanted in the picker later, gate lines in build-the-request on this cap too;
+# do not widen this list on its own.
+AVAILABLE_MODELS = [m for m, caps in MODEL_CAPS.items() if caps["fallbacks"]]
 DEFAULT_MODEL = "claude-opus-5"
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -377,7 +388,11 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
         yield {"type": "done"}
         return
 
-    if model not in MODEL_CAPS:
+    # AVAILABLE_MODELS, not MODEL_CAPS: the registry describes models we know
+    # about, the list describes models this loop can legally call. A settings
+    # file written before a model left the picker still names it, so the coercion
+    # has to happen here, at the point of use, and not only in config._normalise.
+    if model not in AVAILABLE_MODELS:
         model = DEFAULT_MODEL
     caps = MODEL_CAPS[model]
     effort = clamp_effort(effort, reasoning)
@@ -404,15 +419,20 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
         "system": system,
         "tools": tools,
         "thinking": thinking,
-        # betas + fallbacks are accepted only on the beta messages endpoint, so
-        # this whole loop runs through client.beta.messages.stream. The header
-        # and parameter form are paired: server-side-fallback-2026-07-01 goes
-        # with the SCALAR fallbacks="default"; the older array form needs
-        # -2026-06-01. Crossing them is a 400. "default" routes by refusal
-        # category and needs no maintenance when a pinned model is retired.
-        "betas": [FALLBACK_BETA],
-        "fallbacks": "default",
     }
+    # betas + fallbacks are accepted only on the beta messages endpoint, so this
+    # whole loop runs through client.beta.messages.stream. The header and
+    # parameter form are paired: server-side-fallback-2026-07-01 goes with the
+    # SCALAR fallbacks="default"; the older array form needs -2026-06-01.
+    # Crossing them is a 400. "default" routes by refusal category and needs no
+    # maintenance when a pinned model is retired.
+    #
+    # Gated on the cap like every other model-dependent field below — as an
+    # unconditional literal this 400'd on any model but opus-5, which is exactly
+    # what AVAILABLE_MODELS now prevents from being selectable.
+    if caps.get("fallbacks"):
+        request["betas"] = [FALLBACK_BETA]
+        request["fallbacks"] = "default"
     if caps.get("effort"):
         request["output_config"] = {"effort": effort}
 

@@ -13,9 +13,12 @@ from app.agent import (AVAILABLE_MODELS, DEFAULT_MODEL, EFFORT_LEVELS, MODEL_CAP
 # ---------- Constraint 1: the picker cannot offer a model that cannot research ----------
 
 def test_available_models_is_derived_from_the_registry():
-    # One registry, so a model can never appear in the picker without caps.
-    assert AVAILABLE_MODELS == list(MODEL_CAPS)
-    assert DEFAULT_MODEL in MODEL_CAPS
+    # One registry, so a model can never appear in the picker without caps —
+    # and it is a SUBSET, not the whole registry: a model we know about is not
+    # automatically one the loop can call.
+    assert set(AVAILABLE_MODELS) <= set(MODEL_CAPS)
+    assert AVAILABLE_MODELS, "the picker must offer at least one model"
+    assert DEFAULT_MODEL in AVAILABLE_MODELS
 
 
 def test_haiku_is_not_offered():
@@ -30,6 +33,27 @@ def test_every_offered_model_can_research_and_think_and_take_effort(model):
     assert caps["web_search"] and caps["web_fetch"]
     assert caps["thinking"] == "adaptive"
     assert caps["effort"] is True
+
+
+@pytest.mark.parametrize("model", AVAILABLE_MODELS)
+def test_every_offered_model_accepts_the_fallbacks_parameter(model):
+    """run_agent sends `betas` + `fallbacks` on every request, so an offered
+    model that cannot take them 400s on the FIRST turn, for every user, with
+    'does not support the `fallbacks` parameter'.
+
+    This is the assertion whose absence let that ship: `fallbacks` was the one
+    model-dependent request field not derived from the registry, so the picker
+    happily offered two models that could not receive it.
+    """
+    assert MODEL_CAPS[model]["fallbacks"] is True
+
+
+@pytest.mark.parametrize("model", sorted(MODEL_CAPS))
+def test_every_model_in_the_registry_declares_fallbacks(model):
+    # Missing rather than False is the dangerous case: caps.get("fallbacks")
+    # would read as falsy and quietly drop server-side routing on a model that
+    # supports it, which nothing would ever surface.
+    assert isinstance(MODEL_CAPS[model]["fallbacks"], bool)
 
 
 @pytest.mark.parametrize("model", AVAILABLE_MODELS)

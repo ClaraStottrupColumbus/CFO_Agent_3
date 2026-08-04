@@ -46,17 +46,24 @@ body {
 
 /* ---------------- Header ---------------- */
 
+/* A three-column grid, not flex + space-between: space-between only centres the
+   switcher when the title and the header-right group happen to be the same
+   width, which they never are — it sat right and wrapped. `1fr auto 1fr`
+   centres it on the PAGE regardless of what flanks it. */
 header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  /* Six nav tabs plus the header-right pills overflow below ~700px. Wrapping,
-     rather than a breakpoint, keeps every link reachable at any width. */
-  flex-wrap: wrap;
-  row-gap: 0.6rem;
+  gap: var(--space-4);
   padding: 0.8rem 1.4rem;
   background: var(--surface);
   border-bottom: 1px solid var(--border-subtle);
+}
+/* Below this the three groups cannot share a row. Give the switcher its own,
+   still centred, rather than letting it wrap to one side. */
+@media (max-width: 1180px) {
+  header { grid-template-columns: 1fr auto; row-gap: 0.6rem; }
+  #topic-switcher { grid-column: 1 / -1; grid-row: 2; justify-self: center; }
 }
 
 .header-title { display: flex; align-items: center; gap: 0.8rem; }
@@ -87,7 +94,7 @@ h1 {
 }
 .subtitle { margin: 0; font-size: 0.78rem; color: var(--fg-3); }
 
-.header-right { display: flex; align-items: center; gap: 0.8rem; }
+.header-right { display: flex; align-items: center; gap: 0.8rem; justify-self: end; }
 
 /* Data ingestion & Scheduler — persistent header links next to settings */
 #data-link, #scheduler-link {
@@ -1143,20 +1150,71 @@ details.reasoning.is-live .reasoning-spinner {
 @media (max-width: 900px) { .driver-row { grid-template-columns: 1fr 1fr; } }
 
 /* ---------- Drivers page ---------- */
-.driver-summary {
-  font-size: .9rem; margin: 0 0 20px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
+/* Now a wrapper for the .panel-stats strip, not a line of text of its own. */
+.driver-summary { margin: 0; }
+/* The surface every driver, scenario and archived conversation sits on. It was
+   missing: app.js has always set `class="card driver-card"`, but nothing defined
+   `.card`, so these pages rendered as bare flex columns on the cream canvas and
+   the 4px status rules below hung off nothing. Same recipe as .data-card /
+   .task-card / .alert-card, which is what makes the app read as one system. */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-6);
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow var(--duration-base) var(--ease-out),
+              border-color var(--duration-base) var(--ease-out);
 }
+.card:hover { box-shadow: var(--shadow-sm); }
+
+/* A module container, one level up from .card: cream-50 between the cream canvas
+   and the white cards, so three surfaces separate by lightness alone and the
+   section boundaries need no rules drawn between them. */
+.panel {
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  margin-bottom: var(--space-8);
+}
+.panel:last-child { margin-bottom: 0; }
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.panel-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-h4);
+  letter-spacing: var(--tracking-tight);
+  text-transform: capitalize;
+}
+.panel-note { margin: 0; font-size: var(--fs-body-sm); color: var(--fg-3); }
+
+/* The summary strip at the top of #/drivers: counts as status pills rather than
+   a ` · `-joined sentence, so the one number that matters is findable. */
+.panel-stats { padding: var(--space-4) var(--space-5); }
+.stat-strip { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.stat-strip .status-chip { font-variant-numeric: tabular-nums; }
+
 .card-grid {
-  display: grid; gap: 16px; margin-bottom: 26px;
+  display: grid; gap: 16px;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 .driver-card, .scenario-card { display: flex; flex-direction: column; gap: 10px; }
 /* Reuses the .alert-card.unread device — four pixels, so it stays inside the
-   orange budget. */
-.driver-card.is-stale { border-left: 4px solid var(--cta); }
-.scenario-card.is-active { border-left: 4px solid var(--accent); }
+   orange budget. Now that .card gives a 1px border on every side, these override
+   one edge of it; the padding compensates so the text baseline doesn't shift. */
+.driver-card.is-stale { border-left: 4px solid var(--cta); padding-left: calc(var(--space-6) - 3px); }
+.scenario-card.is-active { border-left: 4px solid var(--accent); padding-left: calc(var(--space-6) - 3px); }
 .driver-head { display: flex; align-items: baseline; gap: 10px; justify-content: space-between; }
 .driver-head h4 { margin: 0; font-size: 1rem; }
 .is-active-chip { background: var(--accent-soft); }
@@ -1233,7 +1291,235 @@ details.reasoning.is-live .reasoning-spinner {
 
 /* The new pages follow the data page's own pattern: a flex .view wrapping a
    centred inner column, rather than fighting `.view { display: flex }`. */
-#setup-view, #drivers-view, #scenarios-view {
+#setup-view, #drivers-view, #scenarios-view, #ask-view {
   align-items: flex-start; justify-content: center; overflow-y: auto;
 }
 .page-inner { max-width: 1000px; width: 100%; padding: 2.2rem 1.5rem 3rem; margin: 0 auto; }
+
+/* ---------------- Home (`#/`) ----------------
+   Home is #feature-view with .is-home on it — the same DOM, the same composer,
+   the same stream renderer. Only these rules differ, which is what keeps the
+   landing screen from becoming a second implementation of the chat.
+   .has-thread is added by sendMessage on the first question: it hands #messages
+   back its scroll and pins the column to the top, so the conversation grows
+   downward in place instead of the composer drifting with it. */
+
+#feature-view.is-home #sidebar,
+#feature-view.is-home #feature-header { display: none; }
+
+#feature-view.is-home #feature-main {
+  max-width: 760px;
+  justify-content: center;
+  padding: var(--space-6) var(--space-6) var(--space-8);
+}
+#feature-view.is-home #messages {
+  flex: 0 1 auto;
+  overflow: visible;
+  padding-bottom: 0;
+}
+#feature-view.is-home.has-thread #feature-main { justify-content: flex-start; }
+#feature-view.is-home.has-thread #messages {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 0.6rem;
+}
+
+/* The composer is the page's centre of gravity on Home, so it loses the divider
+   it wears in the thread view and gains a surface of its own. */
+#feature-view.is-home #composer {
+  border-top: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xs);
+  padding: 0.7rem 0.8rem;
+  margin-top: var(--space-6);
+}
+#feature-view.is-home #composer input { border-color: transparent; background: transparent; }
+#feature-view.is-home #composer input:focus { box-shadow: none; }
+
+.home-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-3);
+  padding: var(--space-8) 0 var(--space-2);
+}
+.home-eyebrow {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin: 0;
+}
+.home-greeting {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-display-sm);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--tracking-tight);
+  color: var(--fg-1);
+  margin: 0;
+}
+.home-sub {
+  font-size: var(--fs-body);
+  color: var(--fg-3);
+  line-height: var(--lh-relaxed);
+  max-width: 52ch;
+  margin: 0;
+}
+.home-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+/* The .chip recipe made interactive — a suggestion only fills the composer and
+   submits it, so it stays visually a tag rather than competing with the CTA. */
+.home-suggestion {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  font-weight: var(--fw-medium);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 0;
+  border-radius: var(--radius-pill);
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--duration-fast) var(--ease-out),
+              box-shadow var(--duration-fast) var(--ease-out);
+}
+.home-suggestion:hover {
+  background: #CDD8FC;
+  box-shadow: inset 0 0 0 1px rgba(1, 1, 144, 0.25);
+}
+
+/* ---------------- Ask (`#/chat`) — the conversation archive ---------------- */
+
+.ask-toolbar {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  margin-bottom: var(--space-6);
+}
+#ask-search {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  padding: 0.6rem 1rem;
+}
+#ask-search:focus {
+  outline: none;
+  border-color: var(--columbus-navy);
+  box-shadow: 0 0 0 2px rgba(1, 1, 144, 0.18);
+}
+.ask-toolbar .btn-primary { flex-shrink: 0; }
+
+.ask-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+.ask-card-head { display: flex; align-items: flex-start; gap: var(--space-2); justify-content: space-between; }
+.ask-card-head h4 {
+  margin: 0;
+  font-size: var(--fs-h6);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-normal);
+  /* Titles are model-written and run long — two lines, then ellipsis. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ask-del {
+  flex-shrink: 0;
+  background: none; border: none; cursor: pointer;
+  color: var(--fg-3); font-size: 1.1rem; line-height: 1;
+  padding: 0 0.2rem; opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.ask-card:hover .ask-del { opacity: 1; }
+.ask-del:hover { color: var(--bad); }
+.ask-card-meta { margin: 0; font-size: var(--fs-body-sm); color: var(--fg-3); }
+.ask-card-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-2); margin-top: auto; padding-top: var(--space-2);
+}
+.ask-open {
+  font-size: var(--fs-body-sm);
+  font-weight: var(--fw-medium);
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.ask-card:hover .ask-open,
+.revision-card:hover .ask-open { opacity: 1; }
+
+/* ---------------- Scenarios: the build composer ---------------- */
+
+/* The page head now carries a CTA, so it stops being a plain block. */
+.page-head.scenarios-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-6);
+  max-width: none;
+  flex-wrap: wrap;
+}
+.scenarios-head > div { max-width: 70ch; }
+.scenarios-head .btn-primary { flex-shrink: 0; margin-top: 0.4rem; }
+
+.scenario-new.hidden { display: none; }
+.scenario-new .panel-head { margin-bottom: var(--space-4); }
+#scenario-form { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
+#scenario-desc {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  line-height: var(--lh-relaxed);
+  color: var(--fg-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 0.7rem 0.9rem;
+  resize: vertical;
+}
+#scenario-desc:focus {
+  outline: none;
+  border-color: var(--columbus-navy);
+  box-shadow: 0 0 0 2px rgba(1, 1, 144, 0.18);
+}
+#scenario-form .hint { margin: 0; }
+#scenario-form .btn-primary { margin-top: var(--space-2); }
+
+/* The build streams here, in the panel, using the same reveal loop and the same
+   bubble styling as the chat — so a scenario being built reads as the
+   conversation it actually is. */
+.scenario-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.scenario-stream.hidden { display: none; }
+.scenario-stream .bubble { max-width: 100%; }
+
+.revision-card { display: flex; flex-direction: column; gap: var(--space-2); cursor: pointer; }
+.revision-card h4 { margin: 0; font-size: var(--fs-h6); font-weight: var(--fw-medium); }
+.revision-card .ask-card-foot { margin-top: auto; }

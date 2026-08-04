@@ -9,11 +9,12 @@
 #   * execute_task derived the report kind via ttype.split("_")[0], which no
 #     longer works now the task types are driver_scan / budget_revision.
 #     Replaced with an explicit TASK_KIND map.
-#   * A per-task `model` override is added so assumption_refresh can run cheaply
-#     on claude-sonnet-5 while driver_scan runs on claude-opus-5. It is VALIDATED
-#     against MODEL_CAPS: this is the one place a model id enters the system
-#     without passing through the settings picker, so it is the one place a
-#     hand-edited tasks.json could reintroduce an unusable model.
+#   * A per-task `model` override exists so a task can pin a model that differs
+#     from the configured one. It is VALIDATED against AVAILABLE_MODELS — not
+#     MODEL_CAPS, which merely describes models we know about: this is the one
+#     place a model id enters the system without passing through the settings
+#     picker, so it is the one place a hand-edited tasks.json could reintroduce
+#     a model run_agent cannot legally call.
 
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import alerts, drivers, generate_data, reporting, store
-from .agent import MODEL_CAPS, ASSUMPTION_REFRESH_PROMPT
+from .agent import AVAILABLE_MODELS, ASSUMPTION_REFRESH_PROMPT
 
 TASKS_FILE = Path(__file__).resolve().parent.parent / "data" / "tasks.json"
 
@@ -89,9 +90,12 @@ def default_tasks() -> list[dict]:
         task("Monthly budget revision", "budget_revision",
              {"mode": "monthly", "day_of_month": 3, "time": "07:00"}),
         # Decouples "keep the data fresh" from "write a report", so the refresh
-        # runs daily and cheaply while the narrative runs weekly.
+        # runs daily and cheaply while the narrative runs weekly. No model
+        # override: it used to pin claude-sonnet-5, which cannot take the
+        # `fallbacks` parameter run_agent sends, so this job 400'd every morning
+        # regardless of the configured model. It inherits the configured one now.
         task("Assumption refresh", "assumption_refresh",
-             {"mode": "daily", "time": "06:00"}, model="claude-sonnet-5"),
+             {"mode": "daily", "time": "06:00"}),
         task("Drift scan", "drift_scan", {"mode": "interval", "interval_seconds": 3600}),
     ]
 
@@ -175,8 +179,8 @@ def _validate_model(value) -> str | None:
     """
     if value in (None, "", "default"):
         return None
-    if value not in MODEL_CAPS:
-        raise ValueError(f"Unknown model '{value}'. Valid: {', '.join(MODEL_CAPS)}.")
+    if value not in AVAILABLE_MODELS:
+        raise ValueError(f"Unknown model '{value}'. Valid: {', '.join(AVAILABLE_MODELS)}.")
     return value
 
 
@@ -371,7 +375,10 @@ def _params_for(task: dict, params: dict) -> dict:
     failing the run."""
     out = dict(params)
     override = task.get("model")
-    if override and override in MODEL_CAPS:
+    # AVAILABLE_MODELS, not MODEL_CAPS: a model the registry merely knows about
+    # is not one run_agent can call. Validating against the registry is how a
+    # stored override for a retired model used to reach the API and 400.
+    if override and override in AVAILABLE_MODELS:
         out["model"] = override
     out["reasoning"] = bool(task.get("reasoning", False))
     return out

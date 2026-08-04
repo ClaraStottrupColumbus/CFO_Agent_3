@@ -58,65 +58,202 @@
 }
 .bo-eyebrow .bo-dot { opacity: 0.45; }
 
-.bo-read {
-  font-family: var(--font-display);
-  font-weight: var(--fw-regular);
-  font-size: var(--fs-display-sm);
+/* Three metric cards, translucent on the gradient. They replace a stat strip of
+   label/value/sub text triples: same three figures, but each now carries its own
+   trend badge and a meter, so the header is read at a glance instead of parsed.
+   The card surfaces are white at 8–10% — enough to separate from the gradient at
+   both ends of it without introducing a colour that isn't in the tokens. */
+.bo-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--space-5);
+}
+.bo-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+}
+.bo-metric-label {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--columbus-blue-light);
+}
+.bo-metric-value {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
   line-height: var(--lh-snug);
-  letter-spacing: var(--tracking-tight);
-  margin: 0;
-  max-width: 34ch;
   color: var(--white);
 }
-.bo-read.is-loading { opacity: 0.55; }
 
-/* Three figures under the read, separated by hairlines rather than boxed —
-   a stat strip, not a card grid. */
-.bo-stats {
+/* Direction lives in the glyph and the word. The pill is the same neutral
+   translucent white on all three cards, up or down: a rising cost is bad and a
+   rising margin is good, so a colour here would be lying on one of them. */
+.bo-metric-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-body-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--white);
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-pill);
+  padding: 0.18rem 0.6rem;
+}
+.bo-metric-arrow { font-size: 0.9em; opacity: 0.9; }
+
+/* The inverse of .bo-bar below: same 6px pill track, white-on-navy instead of
+   navy-on-cream. */
+.bo-meter {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.18);
+  margin-top: var(--space-1);
+}
+.bo-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--columbus-blue-light);
+  min-width: 2px;
+}
+/* Where the figure stands today, so the fill reads as movement, not a level. */
+.bo-meter-tick {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  border-radius: var(--radius-pill);
+  background: var(--white);
+  opacity: 0.75;
+}
+.bo-metric-foot {
+  font-size: var(--fs-caption);
+  color: rgba(255, 255, 255, 0.72);
+  font-variant-numeric: tabular-nums;
+}
+
+/* What the cost base is made of, as one segmented bar with a pill legend. It
+   previews the ranked list immediately below, so the hero introduces the page
+   rather than summarising it a second way. */
+.bo-mix {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-8);
+  flex-direction: column;
+  gap: var(--space-3);
   margin-top: var(--space-8);
   padding-top: var(--space-6);
   border-top: 1px solid rgba(255, 255, 255, 0.22);
 }
-.bo-stat { min-width: 150px; }
-.bo-stat-label {
-  display: block;
+.bo-mix-label {
   font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   color: var(--columbus-blue-light);
-  margin-bottom: var(--space-1);
 }
-.bo-stat-value {
-  display: block;
-  font-size: var(--fs-h3);
-  font-weight: var(--fw-medium);
-  font-variant-numeric: tabular-nums;
-  line-height: var(--lh-snug);
+.bo-mix-bar {
+  display: flex;
+  width: 100%;
+  height: 12px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.14);
 }
-.bo-stat-sub {
-  display: block;
+.bo-mix-seg { display: block; height: 100%; min-width: 2px; }
+.bo-mix-legend { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-5); }
+.bo-mix-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   font-size: var(--fs-body-sm);
-  color: rgba(255, 255, 255, 0.72);
-  font-variant-numeric: tabular-nums;
-  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.86);
 }
+.bo-mix-swatch {
+  width: 10px; height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.bo-mix-share { font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.6); }
 
+/* Segment tones step down the navy ramp already in the tokens, so they separate
+   by lightness — legible on the gradient at both ends, and safe for CVD, because
+   nothing here is distinguished by hue alone (every segment is also labelled). */
+.bo-mix-seg[data-tone="0"], .bo-mix-swatch[data-tone="0"] { background: var(--columbus-blue-light); }
+.bo-mix-seg[data-tone="1"], .bo-mix-swatch[data-tone="1"] { background: var(--columbus-peach); }
+.bo-mix-seg[data-tone="2"], .bo-mix-swatch[data-tone="2"] { background: var(--navy-300); }
+.bo-mix-seg[data-tone="3"], .bo-mix-swatch[data-tone="3"] { background: var(--navy-100); }
+.bo-mix-seg[data-tone="4"], .bo-mix-swatch[data-tone="4"] { background: rgba(255, 255, 255, 0.34); }
+
+/* ---------------- The read ---------------- */
+
+/* Off the gradient and onto the cream: a white card between the hero and the
+   ranked list. Prose at body size on a light surface, not a display-serif
+   headline in white — which is what made the old header a wall of text. */
+.bo-readout {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+  padding: var(--space-6);
+  margin: var(--space-8) var(--space-12) 0;
+}
+.bo-readout-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+.bo-readout-label {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.bo-read {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-h4);
+  line-height: var(--lh-normal);
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+  max-width: 62ch;
+  color: var(--fg-1);
+}
+.bo-read.is-loading { opacity: 0.55; }
+
+/* Navy-outlined now that it sits on cream — still not orange, which this page
+   spends only on its two primary CTAs. */
 .bo-regen {
-  margin-top: var(--space-6);
+  flex-shrink: 0;
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.38);
-  color: var(--white);
+  border: 0;
+  box-shadow: inset 0 0 0 1px rgba(1, 1, 144, 0.35);
+  color: var(--columbus-navy);
   font-family: inherit;
   font-size: var(--fs-body-sm);
+  font-weight: var(--fw-medium);
   padding: 0.4rem 0.9rem;
   border-radius: var(--radius-pill);
   cursor: pointer;
-  transition: background var(--duration-fast) var(--ease-out);
+  transition: background var(--duration-fast) var(--ease-out),
+              box-shadow var(--duration-fast) var(--ease-out);
 }
-.bo-regen:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
+.bo-regen:hover:not(:disabled) {
+  background: var(--navy-100);
+  box-shadow: inset 0 0 0 1px var(--columbus-navy);
+}
 .bo-regen:disabled { opacity: 0.5; cursor: default; }
 
 /* ---------------- Ranked variables ---------------- */
@@ -704,10 +841,14 @@
     padding-left: var(--space-6);
     padding-right: var(--space-6);
   }
+  /* The readout is a card, so its inset is a margin rather than padding. */
+  .bo-readout { margin-left: var(--space-6); margin-right: var(--space-6); }
 }
 
 @media (max-width: 700px) {
   .bo-row { grid-template-columns: 1.8rem minmax(0, 1fr); }
   .bo-figures { grid-column: 2; text-align: left; }
-  .bo-read { font-size: var(--fs-h2); }
+  .bo-metrics { grid-template-columns: minmax(0, 1fr); }
+  .bo-read { font-size: var(--fs-h5); }
+  .bo-readout-head { flex-wrap: wrap; }
 }
