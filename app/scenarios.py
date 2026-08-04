@@ -17,6 +17,8 @@ import time
 import uuid
 from pathlib import Path
 
+from . import budget
+
 SCENARIOS_FILE = Path(__file__).resolve().parent.parent / "data" / "scenarios.json"
 
 _lock = threading.Lock()
@@ -42,6 +44,12 @@ def _save_all(items: list[dict]) -> None:
 def list_scenarios() -> list[dict]:
     with _lock:
         items = _load_all()
+    # Normalise on READ, not just on write. Scenarios saved before the volume /
+    # price / opex blocks existed are flat {driver_id: pct} dicts; without this
+    # they would read as an empty drivers block and silently project the
+    # baseline — a re-run that looks like it worked and shows no shock at all.
+    for s in items:
+        s["assumptions"] = budget.normalise_assumptions(s.get("assumptions"))
     items.sort(key=lambda s: s.get("updated_at") or 0, reverse=True)
     return items
 
@@ -68,13 +76,18 @@ def save_scenario(fields: dict) -> dict:
         "name": name[:80],
         "note": fields.get("note") or None,
         "baseline": fields.get("baseline") or "budget",
-        "assumptions": dict(fields.get("assumptions") or {}),
+        "assumptions": budget.normalise_assumptions(fields.get("assumptions")),
+        # What the drivers were priced at before the percentages applied. Older
+        # records predate the field and are all locked-basis by construction.
+        "basis": fields.get("basis") or "locked",
         "price_pass_through": float(fields.get("price_pass_through") or 0.0),
         "opex_inflation_pct": float(fields.get("opex_inflation_pct") or 0.0),
         "totals": fields.get("totals") or {},
         "by_month": fields.get("by_month") or [],
         "by_product_line": fields.get("by_product_line") or [],
         "driver_impact_eur": fields.get("driver_impact_eur") or {},
+        "opex_bridge": fields.get("opex_bridge") or {},
+        "ebitda_bridge": fields.get("ebitda_bridge") or {},
         "driver_prices_used": fields.get("driver_prices_used") or {},
         "source_records": fields.get("source_records") or [],
         "created_at": now,
@@ -133,13 +146,16 @@ def delete_scenario(scenario_id: str) -> bool:
 def summary(scenario: dict) -> dict:
     """The compact shape the scenarios list view and the home screen render."""
     totals = scenario.get("totals") or {}
+    spec = budget.normalise_assumptions(scenario.get("assumptions"))
     return {
         "id": scenario.get("id"),
         "name": scenario.get("name"),
         "note": scenario.get("note"),
         "active": bool(scenario.get("active")),
+        "basis": scenario.get("basis") or "locked",
         "updated_at": scenario.get("updated_at"),
-        "assumption_count": len(scenario.get("assumptions") or {}),
+        # Across all four blocks — a volume-only scenario is not "0 assumptions".
+        "assumption_count": sum(len(v) for v in spec.values()),
         "revenue_eur": totals.get("revenue_eur"),
         "ebitda_eur": totals.get("ebitda_eur"),
         "ebitda_margin_pct": totals.get("ebitda_margin_pct"),

@@ -5,13 +5,16 @@
 # here is arithmetic the model must never do itself. That separation is what
 # makes the three test files in tests/ possible without touching disk or the SDK.
 #
-# Three things live here:
+# Four things live here:
 #   1. variance_decomposition — splits a revenue/cost delta into price, volume,
 #      mix and joint effects that sum EXACTLY to the total change.
 #   2. driver_exposure / sensitivity / breakeven_shock — what a ±X% move in an
 #      input price does to COGS and EBITDA, driven off the bill of materials
 #      rather than a guessed elasticity.
-#   3. project_pnl — the scenario engine: apply an assumption set to a baseline
+#   3. normalise_assumptions / opex_bridge — the assumption vocabulary: four
+#      blocks (drivers, volume, price, opex) and the cost-centre bridge that
+#      turns a driver shock into an opex growth rate.
+#   4. project_pnl — the scenario engine: apply an assumption set to a baseline
 #      and get a full monthly P&L projection back.
 
 from __future__ import annotations
@@ -20,6 +23,14 @@ from collections import OrderedDict
 
 # Below this, a denominator is treated as zero rather than divided by.
 EPS = 1e-9
+
+# The four assumption blocks a scenario is expressed in. A budget round talks
+# about volume and price long before it talks about chicken meal, so all four
+# are first-class rather than the drivers block alone.
+ASSUMPTION_BLOCKS = ("drivers", "volume", "price", "opex")
+
+# Wildcard key in the volume/price blocks: applies to every product line.
+ALL_LINES = "*"
 
 
 # --------------------------------------------------------------------------
@@ -268,30 +279,200 @@ def _clamp(v, lo: float, hi: float) -> float:
 
 
 # --------------------------------------------------------------------------
-# 3. The scenario engine
+# 3. The assumption vocabulary
+# --------------------------------------------------------------------------
+
+def normalise_assumptions(raw) -> dict:
+    """Lift any accepted assumption shape into the four-block canonical form.
+
+        {"drivers": {driver_id: pct}, "volume": {line: pct},
+         "price":   {line: pct},      "opex":   {driver_id | cost_centre: pct}}
+
+    A legacy flat `{driver_id: pct}` dict — every scenario written before the
+    blocks existed, and every caller that only shocks drivers — lifts into
+    `{"drivers": …}`. That is what lets `data/scenarios.json` keep working with
+    no migration step.
+
+    The two shapes are told apart by the *value*, not the key: a block's value
+    is a dict, a flat assumption's value is a number. A driver that happened to
+    be called `price` therefore still reads as a driver, so the discriminator
+    cannot be broken by naming a driver after a block.
+
+    Values that will not parse as numbers are dropped rather than raised on —
+    this runs on read, where a half-written file must not take the page down.
+    Callers that can teach the model (tools.py) validate strictly first.
+    """
+    out: dict[str, dict[str, float]] = {b: {} for b in ASSUMPTION_BLOCKS}
+    if not isinstance(raw, dict):
+        return out
+    structured = any(k in ASSUMPTION_BLOCKS and isinstance(v, dict) for k, v in raw.items())
+    if structured:
+        for block in ASSUMPTION_BLOCKS:
+            out[block] = _numeric_map(raw.get(block))
+    else:
+        out["drivers"] = _numeric_map(raw)
+    return out
+
+
+def _numeric_map(d) -> dict[str, float]:
+    if not isinstance(d, dict):
+        return {}
+    out: dict[str, float] = {}
+    for k, v in d.items():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def opex_bridge(opex_rows: list[dict], driver_assumptions: dict,
+                opex_overrides: dict, default_pct: float) -> dict:
+    """Move each opex cost centre by its own rate, and report the weighted total.
+
+    `opex_rows` — [{cost_centre, driver_id, amount_eur}, …]; duplicates (one row
+    per month) are summed per centre.
+
+    Per centre, the first of these that exists wins:
+
+      1. an explicit override keyed by cost centre  → basis "override"
+      2. an explicit override keyed by its driver   → basis "override"
+      3. that driver's percentage from the drivers block → basis "driver"
+      4. `default_pct` (the blanket opex inflation) → basis "default"
+
+    Step 3 is the point of the function: `opex_plan.csv` has carried a
+    `driver_id` column that drove nothing, so wage inflation reached the budget
+    as a hand-typed number while chicken meal went through the bill of
+    materials. Now both flow through the same machinery.
+
+    **Why only a weighted rate comes back out.** `opex_plan` is cut by cost
+    centre; `project_pnl`'s baseline opex comes from `budget_vs_actuals` cut by
+    product line. The two totals need not reconcile, and inventing a
+    reconciliation would be worse than not having one. So the weighted rate —
+    which is scale-free — is what gets applied to the baseline opex level, and
+    the per-centre detail is returned alongside so the narrative can say
+    "Production opex +€412k, all of it wage inflation." Do not "improve" this
+    into a direct substitution without solving the two-cuts problem first.
+
+    With no rows (or no opex value at all) the weighted rate is `default_pct`,
+    so a caller that knows nothing about cost centres gets exactly the old
+    blanket-percentage behaviour.
+    """
+    default_pct = float(default_pct or 0.0)
+    drivers_block = _numeric_map(driver_assumptions)
+    overrides = _numeric_map(opex_overrides)
+
+    # {cost_centre: [amount, driver_id]} — one row per month collapses to one.
+    centres: OrderedDict[str, list] = OrderedDict()
+    for row in opex_rows or []:
+        centre = row.get("cost_centre")
+        if centre is None:
+            continue
+        try:
+            amount = float(row.get("amount_eur") or 0.0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        did = row.get("driver_id")
+        did = None if did is None or str(did) in ("", "nan", "None") else str(did)
+        slot = centres.setdefault(str(centre), [0.0, did])
+        slot[0] += amount
+        if slot[1] is None:
+            slot[1] = did
+
+    lines = []
+    base_total = delta_total = 0.0
+    for centre, (amount, did) in centres.items():
+        if centre in overrides:
+            pct, basis = overrides[centre], "override"
+        elif did is not None and did in overrides:
+            pct, basis = overrides[did], "override"
+        elif did is not None and did in drivers_block:
+            pct, basis = drivers_block[did], "driver"
+        else:
+            pct, basis = default_pct, "default"
+        delta = amount * pct / 100.0
+        base_total += amount
+        delta_total += delta
+        lines.append({"cost_centre": centre, "driver_id": did, "basis": basis,
+                      "pct": pct, "base_eur": amount, "delta_eur": delta})
+
+    weighted = (delta_total / base_total * 100.0) if abs(base_total) > EPS else default_pct
+    return {
+        "by_cost_centre": lines,
+        "base_eur": base_total,
+        "delta_eur": delta_total,
+        "weighted_pct": weighted,
+        "default_pct": default_pct,
+    }
+
+
+# --------------------------------------------------------------------------
+# 4. The scenario engine
 # --------------------------------------------------------------------------
 
 def project_pnl(baseline_rows: list[dict], bom: list[dict], driver_prices: dict,
                 assumptions: dict, *, hedges: dict | None = None,
                 price_pass_through: float = 0.0,
-                opex_inflation_pct: float = 0.0) -> dict:
+                opex_inflation_pct: float = 0.0,
+                opex_rows: list[dict] | None = None,
+                driver_prices_by_month: dict | None = None) -> dict:
     """Apply an assumption set to a baseline and return a full monthly P&L.
 
     `baseline_rows`  — [{month, product_line, volume_tonnes, revenue_eur,
                          cogs_eur, opex_eur}, …]
     `bom`            — [{product_line, driver_id, qty_per_tonne}, …]
-    `driver_prices`  — {driver_id: baseline price}
-    `assumptions`    — {driver_id: pct change vs that baseline price}
+    `driver_prices`  — {driver_id: baseline price}. This is the price the
+                       baseline P&L was BUILT on — normally the locked value —
+                       and every driver delta is measured from it.
+    `assumptions`    — the four blocks, or a legacy flat {driver_id: pct}; see
+                       `normalise_assumptions`.
     `hedges`         — {driver_id: 0..1 coverage}; unhedged when absent.
+    `opex_rows`      — cost-centre rows for `opex_bridge`; without them opex
+                       moves by the blanket `opex_inflation_pct`.
+    `driver_prices_by_month` — optional {month: {driver_id: price}}: the price
+                       to APPLY in that month, in the same currency as
+                       `driver_prices`. This is how a forward curve enters the
+                       budget — the shock in month m becomes
+                       `curve(d, m) × (1 + pct/100)` against the locked price,
+                       so per-month seasonality falls out of the curve instead
+                       of being assumed. A month or driver the mapping does not
+                       cover falls back to `driver_prices`, i.e. no implied
+                       move, which is what makes it a pure extension: omit the
+                       argument and the arithmetic is unchanged.
 
-    Each driver's cost change is applied through the bill of materials, so the
-    projection responds to *what the products actually consume* rather than to a
-    blanket percentage. An all-zero assumption set reproduces the baseline
-    exactly — the property test_scenario_engine asserts first.
+    **Application order, per baseline row.** This sequence is the contract; the
+    tests in test_scenario_engine.py pin each step.
+
+    1. **Volume.** `volume' = volume × (1 + v/100)`. Revenue and COGS scale with
+       it — both are variable in tonnes — so gross margin *percent* is
+       unchanged by volume alone. Opex does **not** scale: it is period cost.
+    2. **Driver cost** through the bill of materials, on the *post-volume*
+       tonnage and net of hedge coverage. The price applied is the month's
+       entry in `driver_prices_by_month` where one exists, otherwise the
+       baseline price — so a driver moves on the curve, on the CFO's
+       percentage, or on both, and all three are one subtraction.
+    3. **Explicit price.** `revenue' += revenue_after_volume × (p/100)`.
+    4. **Pass-through τ, only on lines with no explicit price assumption.** τ
+       and an explicit price are two ways of saying the same thing — "we
+       recover cost in price" — so applying both would double-count recovery
+       and quietly overstate EBITDA. τ therefore means "automatic recovery
+       where the CFO has not priced deliberately". A `"*"` price entry, or an
+       explicit 0 (a decision to hold price), counts as deliberate.
+    5. **Opex** at the weighted rate from `opex_bridge`.
+
+    `ebitda = revenue − cogs − opex` holds on every row, and an all-zero
+    assumption set reproduces the baseline exactly — the property
+    test_scenario_engine asserts first.
     """
     hedges = hedges or {}
+    by_month_prices = driver_prices_by_month or {}
     tau = _clamp(price_pass_through, 0.0, 1.0)
-    opex_factor = 1.0 + float(opex_inflation_pct or 0.0) / 100.0
+    spec = normalise_assumptions(assumptions)
+    vol_block, price_block = spec["volume"], spec["price"]
+
+    bridge = opex_bridge(opex_rows or [], spec["drivers"], spec["opex"],
+                         float(opex_inflation_pct or 0.0))
+    opex_factor = 1.0 + bridge["weighted_pct"] / 100.0
 
     # qty_per_tonne lookup: {product_line: {driver_id: qty}}
     by_line: dict[str, dict[str, float]] = {}
@@ -304,6 +485,11 @@ def project_pnl(baseline_rows: list[dict], bom: list[dict], driver_prices: dict,
 
     rows_out = []
     driver_impact: dict[str, float] = {}
+    # EBITDA attribution, accumulated across rows. Each driver's entry is net of
+    # the τ recovery it triggers, so the four components sum to the total move.
+    eb_volume = eb_price = eb_opex = 0.0
+    eb_drivers: dict[str, float] = {}
+    baseline_ebitda = 0.0
 
     for row in baseline_rows or []:
         line = str(row.get("product_line"))
@@ -311,39 +497,77 @@ def project_pnl(baseline_rows: list[dict], bom: list[dict], driver_prices: dict,
         revenue = float(row.get("revenue_eur") or 0.0)
         cogs = float(row.get("cogs_eur") or 0.0)
         opex = float(row.get("opex_eur") or 0.0)
+        baseline_ebitda += revenue - cogs - opex
 
+        # 1. Volume scales tonnes, revenue and COGS together.
+        v_pct, _ = _line_pct(vol_block, line)
+        scale = 1.0 + v_pct / 100.0
+        new_volume = volume * scale
+        rev_v, cogs_v = revenue * scale, cogs * scale
+        eb_volume += (revenue - cogs) * (scale - 1.0)
+
+        # 2. Driver cost on the post-volume tonnage.
+        month_prices = by_month_prices.get(row.get("month")) or {}
         d_cogs = 0.0
+        row_drivers: dict[str, float] = {}
         for driver_id, qty in by_line.get(line, {}).items():
-            pct = float(assumptions.get(driver_id, 0.0) or 0.0)
-            if pct == 0.0 or qty == 0.0:
+            if qty == 0.0:
                 continue
-            price = float(driver_prices.get(driver_id, 0.0) or 0.0)
+            pct = float(spec["drivers"].get(driver_id, 0.0) or 0.0)
+            base_price = float(driver_prices.get(driver_id, 0.0) or 0.0)
+            # The percentage applies ON TOP of whatever price the month carries,
+            # and the delta is always measured back to the baseline price. With
+            # no curve the two are the same number and this reduces to
+            # base_price × pct/100, exactly as before.
+            applied = float(month_prices.get(driver_id, base_price) or 0.0)
+            effective = applied * (1.0 + pct / 100.0)
+            if effective == base_price:
+                continue
             unhedged = 1.0 - _clamp(hedges.get(driver_id, 0.0), 0.0, 1.0)
-            delta = (pct / 100.0) * qty * volume * price * unhedged
+            delta = (effective - base_price) * qty * new_volume * unhedged
             d_cogs += delta
+            row_drivers[driver_id] = row_drivers.get(driver_id, 0.0) + delta
             driver_impact[driver_id] = driver_impact.get(driver_id, 0.0) + delta
 
-        d_revenue = tau * d_cogs
-        new_revenue = revenue + d_revenue
-        new_cogs = cogs + d_cogs
+        # 3-4. Explicit price, and τ only where price was not set deliberately.
+        p_pct, priced = _line_pct(price_block, line)
+        d_rev_price = rev_v * p_pct / 100.0
+        tau_eff = 0.0 if priced else tau
+        d_rev_tau = tau_eff * d_cogs
+        eb_price += d_rev_price
+        for driver_id, delta in row_drivers.items():
+            eb_drivers[driver_id] = eb_drivers.get(driver_id, 0.0) - delta * (1.0 - tau_eff)
+
+        # 5. Opex at the bridged rate — untouched by volume.
+        new_revenue = rev_v + d_rev_price + d_rev_tau
+        new_cogs = cogs_v + d_cogs
         new_opex = opex * opex_factor
+        eb_opex -= new_opex - opex
+
         rows_out.append({
             "month": row.get("month"),
             "product_line": line,
-            "volume_tonnes": volume,
+            "volume_tonnes": new_volume,
             "revenue_eur": new_revenue,
             "cogs_eur": new_cogs,
             "opex_eur": new_opex,
             # Invariant asserted per row by test_scenario_engine.
             "ebitda_eur": new_revenue - new_cogs - new_opex,
             "gross_margin_eur": new_revenue - new_cogs,
-            "delta_cogs_eur": d_cogs,
-            "delta_revenue_eur": d_revenue,
+            "delta_cogs_eur": new_cogs - cogs,
+            "delta_revenue_eur": new_revenue - revenue,
+            "delta_volume_tonnes": new_volume - volume,
+            "volume_pct": v_pct,
+            "price_pct": p_pct,
+            "price_is_explicit": priced,
         })
 
     totals = _sum_rows(rows_out)
     by_month = _group_totals(rows_out, "month")
     by_line_totals = _group_totals(rows_out, "product_line")
+
+    components = eb_volume + eb_price + eb_opex + sum(eb_drivers.values())
+    baseline_volume = sum(float(r.get("volume_tonnes") or 0.0) for r in baseline_rows or [])
 
     return {
         "rows": rows_out,
@@ -351,10 +575,38 @@ def project_pnl(baseline_rows: list[dict], bom: list[dict], driver_prices: dict,
         "by_product_line": by_line_totals,
         "totals": totals,
         "driver_impact_eur": driver_impact,
-        "assumptions": dict(assumptions or {}),
+        "assumptions": spec,
         "price_pass_through": tau,
         "opex_inflation_pct": float(opex_inflation_pct or 0.0),
+        "opex_bridge": bridge,
+        "volume_delta_tonnes": totals["volume_tonnes"] - baseline_volume,
+        "ebitda_bridge": {
+            "baseline_ebitda_eur": baseline_ebitda,
+            "projected_ebitda_eur": totals["ebitda_eur"],
+            "volume_eur": eb_volume,
+            "price_eur": eb_price,
+            "opex_eur": eb_opex,
+            "drivers_eur": eb_drivers,
+            "total_eur": components,
+            # Always ~0 (float noise only), for the same reason
+            # variance_decomposition carries one: a change that breaks
+            # additivity fails loudly instead of drifting silently.
+            "check_residual": (totals["ebitda_eur"] - baseline_ebitda) - components,
+        },
     }
+
+
+def _line_pct(block: dict, line: str) -> tuple[float, bool]:
+    """(percentage, was it stated) for one product line, honouring the wildcard.
+
+    The boolean is presence, not non-zero: an explicit 0 on a price is the CFO
+    deciding to hold price, which must still suppress τ on that line.
+    """
+    if line in block:
+        return float(block[line]), True
+    if ALL_LINES in block:
+        return float(block[ALL_LINES]), True
+    return 0.0, False
 
 
 def _sum_rows(rows: list[dict]) -> dict:

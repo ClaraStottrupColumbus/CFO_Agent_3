@@ -8,5 +8,9 @@ pandas>=2.2.0
 pyarrow>=17.0.0
 numpy>=1.26.0
 
+# Excel export (app/export.py). Imported lazily inside workbook(), so an
+# install that predates this line loses one route rather than the whole app.
+openpyxl>=3.1.0
+
 # Dev / tests
 pytest>=8.0

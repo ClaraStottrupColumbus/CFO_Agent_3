@@ -99,6 +99,15 @@ function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// For interpolation INSIDE a quoted attribute — `value="${escapeAttr(x)}"`.
+// escapeHtml leaves quotes alone, which is fine in a text node and unsafe in an
+// attribute: a model-supplied name containing `" onfocus="…` closes the value
+// and opens a handler without ever needing a `<`. Text goes through escapeHtml,
+// attributes through this, and URLs through safeHttpUrl (see below).
+function escapeAttr(s) {
+  return escapeHtml(String(s)).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function renderMarkdown(text) {
   const lines = escapeHtml(text).split("\n");
   const out = [];
@@ -217,11 +226,11 @@ function normaliseSource(s) {
   return s || {};
 }
 
-// SECURITY: escapeHtml escapes & < > but NOT quotes, so interpolating a
-// model-supplied URL into href="${escapeHtml(url)}" is attribute injection —
-// and a javascript: URL survives it intact. Every web citation link is
-// therefore built imperatively with a protocol allowlist. Never innerHTML a
-// model-supplied URL anywhere in this codebase.
+// SECURITY: escaping is not enough for a URL. escapeAttr stops a model-supplied
+// value from closing the attribute, but a `javascript:` URL survives any amount
+// of escaping intact — it never needs a quote or a bracket. Every web citation
+// link is therefore built imperatively with a protocol allowlist. Never
+// innerHTML a model-supplied URL anywhere in this codebase.
 function safeHttpUrl(raw) {
   try {
     const u = new URL(raw);
@@ -564,7 +573,7 @@ function addChart(bubble, spec) {
     <figcaption class="chart-title">${escapeHtml(spec.title)}</figcaption>
     ${legend}
     <div class="chart-plot">
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeHtml(spec.title)}">${svg}
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeAttr(spec.title)}">${svg}
         <line class="chart-crosshair" y1="${padT}" y2="${padT + plotH}" stroke="${MUTED}" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
       </svg>
       <div class="chart-tooltip hidden"></div>
@@ -1222,8 +1231,18 @@ function renderHome() {
   else input.focus();
 }
 
+// The Budget page's only route into the agent. It lives here, not in budget.js,
+// because `pendingHomeMessage` and the lazy-session path are this file's — and
+// because naming the hand-off makes it obvious that the Budget tab has no chat
+// implementation of its own. It used to; a page whose cost lines name real
+// drivers has no business answering questions about them without the tools.
+function askFromBudget(question) {
+  pendingHomeMessage = question;
+  goHome();
+}
+
 // `location.hash = "#/"` fires no hashchange when the hash is already `#/`, so
-// the four hand-offs into Home would silently do nothing from the landing page.
+// the hand-offs into Home would silently do nothing from the landing page.
 function goHome() {
   if (location.hash.replace(/^#\/?/, "") === "") {
     updateNav("home");
@@ -1887,11 +1906,13 @@ function route() {
   // including after the CFO confirms. It fails as a hard lock-out that a smoke
   // test catches but cannot diagnose, so the name is kept identical end to end.
   //
-  // `budget` is exempt alongside `setup`. Budget Outlook reads no dataset and
-  // needs no company profile — it runs entirely off its own configuration and
-  // carries its own first-run gate (plan.configured, enforced in
-  // BudgetPlan.route). Its API routes are ungated for the same reason, so
-  // gating it here would lock out a working feature for no benefit.
+  // `budget` is exempt alongside `setup`. In simple mode the Budget page reads
+  // no dataset and needs no company profile — it runs entirely off its own
+  // configuration and carries its own first-run gate (plan.configured, enforced
+  // in BudgetPlan.route). Its API routes are ungated for the same reason, so
+  // gating it here would lock out a working feature for no benefit. BOM mode
+  // reads datasets that only exist after setup, so it simply does not offer
+  // itself until they do; the mode follows the data, not this gate.
   if (!profile?.setup_complete && kind !== "setup" && kind !== "budget") {
     // replace, not assign: a gated URL never enters history, so Back can't
     // bounce into it. No loop, because #/setup is itself ungated.
@@ -2281,13 +2302,13 @@ function renderSetupEditor() {
     <form id="profile-form" class="setup-form card">
       <div class="field-row">
         <label class="field"><span class="field-label">Company</span>
-          <input id="pf-name" value="${escapeHtml(company.name || "")}"></label>
+          <input id="pf-name" value="${escapeAttr(company.name || "")}"></label>
         <label class="field"><span class="field-label">Industry</span>
-          <input id="pf-industry" value="${escapeHtml(company.industry || "")}"></label>
+          <input id="pf-industry" value="${escapeAttr(company.industry || "")}"></label>
       </div>
       <div class="field-row">
         <label class="field"><span class="field-label">Currency</span>
-          <input id="pf-ccy" value="${escapeHtml(company.reporting_currency || "EUR")}" maxlength="3"></label>
+          <input id="pf-ccy" value="${escapeAttr(company.reporting_currency || "EUR")}" maxlength="3"></label>
         <label class="field"><span class="field-label">Budget year</span>
           <input id="pf-year" type="number" value="${company.budget_year || new Date().getFullYear() + 1}"></label>
       </div>
@@ -2319,12 +2340,12 @@ function driverRow(d) {
   const row = document.createElement("div");
   row.className = "driver-row";
   row.innerHTML = `
-    <input class="dr-id" placeholder="driver_id" value="${escapeHtml(d.driver_id || "")}">
-    <input class="dr-name" placeholder="Name" value="${escapeHtml(d.name || "")}">
+    <input class="dr-id" placeholder="driver_id" value="${escapeAttr(d.driver_id || "")}">
+    <input class="dr-name" placeholder="Name" value="${escapeAttr(d.name || "")}">
     <select class="dr-cat">${DRIVER_CATEGORIES.map(c =>
       `<option value="${c}"${c === (d.category || "other") ? " selected" : ""}>${c}</option>`).join("")}</select>
-    <input class="dr-unit" placeholder="EUR/t" value="${escapeHtml(d.unit || "")}">
-    <input class="dr-ccy" placeholder="EUR" maxlength="3" value="${escapeHtml(d.quote_currency || "EUR")}">
+    <input class="dr-unit" placeholder="EUR/t" value="${escapeAttr(d.unit || "")}">
+    <input class="dr-ccy" placeholder="EUR" maxlength="3" value="${escapeAttr(d.quote_currency || "EUR")}">
     <select class="dr-dir">
       <option value="up"${(d.adverse_direction || "up") === "up" ? " selected" : ""}>up hurts</option>
       <option value="down"${d.adverse_direction === "down" ? " selected" : ""}>down hurts</option>
@@ -2437,6 +2458,8 @@ async function refreshDrivers() {
         `<span class="status-chip ${x.cls}">${escapeHtml(x.label)}</span>`).join("")}</div>
     </div>`;
 
+  renderLockPanel(data);
+
   const body = document.getElementById("drivers-body");
   if (!data.drivers.length) {
     body.innerHTML = `<p class="empty">No drivers yet. Your budget rests on assumptions whether
@@ -2476,6 +2499,128 @@ function fmtNum(v, digits = 2) {
   if (v === null || v === undefined) return "—";
   return Number(v).toLocaleString(undefined,
     { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+// ---------- Locking, from the UI ----------
+//
+// POSTs to /api/assumptions/lock, which calls the SAME drivers.lock_assumptions
+// the model's tool calls — one implementation of the frozen position, two doors
+// to it. Locking REPLACES the whole set (that is the store's semantics, and it
+// is what keeps a locked position a position rather than an accumulation), so
+// the form lists every driver and posts all of them.
+
+let lockFormOpen = false;
+
+function renderLockPanel(data) {
+  // A verify run re-paints this view every 2s. Re-rendering an open form would
+  // wipe whatever the CFO is typing into it, so the open form is left alone.
+  if (lockFormOpen) return;
+  const wrap = document.getElementById("drivers-lock");
+  if (!data.drivers.length) { wrap.innerHTML = ""; return; }
+
+  const when = data.locked_at
+    ? `Locked ${escapeHtml(fmtWhen(Date.parse(data.locked_at) / 1000))}`
+    : "Nothing locked yet — the budget has no frozen position to drift from.";
+  wrap.innerHTML = `
+    <section class="panel lock-panel">
+      <div class="panel-head">
+        <h3>Locked assumptions</h3>
+        <button id="lock-open" class="btn-ghost" type="button">Lock assumptions</button>
+      </div>
+      <p class="panel-note">${when}</p>
+    </section>`;
+  document.getElementById("lock-open").addEventListener("click",
+    () => openLockForm(data));
+}
+
+function openLockForm(data) {
+  lockFormOpen = true;
+  clearInterval(driverPollTimer);          // don't fight the form for the DOM
+  const wrap = document.getElementById("drivers-lock");
+  const rows = data.drivers.map(d => `
+    <tr data-driver="${escapeAttr(d.driver_id)}">
+      <td>${escapeHtml(d.name || d.driver_id)}
+        <span class="unit">${escapeHtml(d.unit || "")}</span></td>
+      <td class="num">${fmtNum(d.latest_value)}</td>
+      <td><input class="lk-value" type="number" step="any" inputmode="decimal"
+                 value="${d.locked_value ?? d.latest_value ?? ""}"></td>
+      <td><input class="lk-why" type="text" placeholder="why this value"
+                 value="${escapeAttr(d.locked_rationale || "")}"></td>
+    </tr>`).join("");
+
+  wrap.innerHTML = `
+    <section class="panel lock-panel">
+      <div class="panel-head">
+        <h3>Lock assumptions</h3>
+        <button id="lock-cancel" class="btn-ghost" type="button">Cancel</button>
+      </div>
+      <p class="panel-note">These become the values the budget is read against, and
+        what drift is measured from. Locking replaces the whole set, so every driver
+        below is written — clear a value to leave that driver unlocked.</p>
+      <form id="lock-form">
+        <table class="mini-table lock-table">
+          <thead><tr><th>Driver</th><th>Latest observed</th><th>Lock at</th>
+            <th>Rationale</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <label class="field-label" for="lock-note">Note (optional)</label>
+        <input id="lock-note" type="text" placeholder="e.g. Board-approved September position">
+        <p id="lock-error" class="error-text hidden"></p>
+        <button type="submit" class="btn-primary">Lock these values</button>
+      </form>
+    </section>`;
+
+  document.getElementById("lock-cancel").addEventListener("click", () => {
+    lockFormOpen = false;
+    refreshDrivers();
+  });
+
+  document.getElementById("lock-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = document.getElementById("lock-error");
+    const assumptions = {};
+    wrap.querySelectorAll("tbody tr").forEach(tr => {
+      const raw = tr.querySelector(".lk-value").value.trim();
+      if (raw === "") return;                       // deliberately unlocked
+      const d = data.drivers.find(x => x.driver_id === tr.dataset.driver) || {};
+      // The source that travels with the lock is the page the LOCKED figure came
+      // from — the latest observation only if the CFO is locking that figure.
+      // Otherwise the export would print a URL that does not carry the number.
+      const held = d.locked_value !== null && d.locked_value !== undefined
+        && Number(raw) === Number(d.locked_value);
+      assumptions[tr.dataset.driver] = {
+        value: Number(raw), unit: d.unit,
+        source_url: (held ? d.locked_source_url : d.latest_source_url)
+          || d.latest_source_url || null,
+        rationale: tr.querySelector(".lk-why").value.trim() || null,
+      };
+    });
+    if (!Object.keys(assumptions).length) {
+      err.textContent = "Give at least one driver a value to lock.";
+      err.classList.remove("hidden");
+      return;
+    }
+    err.classList.add("hidden");
+    const btn = e.target.querySelector("button[type=submit]");
+    btn.disabled = true; btn.textContent = "Locking…";
+    try {
+      const resp = await fetch("/api/assumptions/lock", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assumptions, note: document.getElementById("lock-note").value.trim() || null }),
+      });
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => ({}));
+        throw new Error((detail.detail && detail.detail.error) || "Could not lock.");
+      }
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.classList.remove("hidden");
+      btn.disabled = false; btn.textContent = "Lock these values";
+      return;
+    }
+    lockFormOpen = false;
+    refreshDrivers();
+  });
 }
 
 function driverCard(d) {
@@ -2587,7 +2732,7 @@ function scenarioBuildPrompt(description) {
 async function renderScenarios() {
   showOnly(scenariosView);
   resetScenarioComposer();
-  await refreshScenarios();
+  await Promise.all([refreshScenarios(), refreshVersions()]);
 }
 
 // Fetch both lists and paint the body. Separate from renderScenarios because a
@@ -2750,7 +2895,9 @@ document.getElementById("scenario-form").addEventListener("submit", async (e) =>
   // Whatever the turn did, re-read the store: the scenario appears if
   // build_budget_scenario ran, and the revision appears either way. Guarded on
   // the view because a long build can outlive the user's patience for this page.
-  if (!scenariosView.classList.contains("hidden")) await refreshScenarios();
+  if (!scenariosView.classList.contains("hidden")) {
+    await Promise.all([refreshScenarios(), refreshVersions()]);
+  }
 });
 
 function scenarioPanel(title, items, note) {
@@ -2790,6 +2937,7 @@ function scenarioCard(s) {
     <div class="driver-actions">
       ${s.active ? "" : '<button class="btn-ghost sc-activate">Make active</button>'}
       <button class="btn-ghost sc-ask">Ask about this</button>
+      ${exportLinks(`/api/scenarios/${encodeURIComponent(s.id)}`)}
       ${s.active ? "" : '<button class="btn-ghost sc-delete">Delete</button>'}
     </div>`;
   // refreshScenarios, not renderScenarios: re-painting the list must not reset
@@ -2798,6 +2946,7 @@ function scenarioCard(s) {
   if (act) act.addEventListener("click", async () => {
     await fetch(`/api/scenarios/${s.id}/activate`, { method: "POST" });
     refreshScenarios();
+    refreshVersions();          // the freeze target is the active scenario
   });
   const del = card.querySelector(".sc-delete");
   if (del) del.addEventListener("click", async () => {
@@ -2811,4 +2960,273 @@ function scenarioCard(s) {
     goHome();
   });
   return card;
+}
+
+// ==========================================================================
+// Budget versions — freeze, submit, approve, diff, export
+//
+// A scenario is exploratory: it can be re-run against today's prices and
+// deleted. A version is the opposite — frozen, carrying a copy of the driver
+// provenance behind it, and the thing a board approves. Both live on this page
+// because the second is made out of the first.
+// ==========================================================================
+
+// Plain <a download> links, not fetch: the browser's own download UI is better
+// than anything worth writing here, and the routes answer with a filename.
+function exportLinks(base) {
+  const href = escapeAttr(base);
+  return `<a class="btn-ghost" href="${href}/export.xlsx" download>Excel</a>
+          <a class="btn-ghost" href="${href}/export.md" download>Board pack</a>`;
+}
+
+const VERSION_CHIP = { approved: "ok", submitted: "running", draft: "never",
+                       superseded: "never" };
+
+let freezeFormOpen = false;
+
+async function refreshVersions() {
+  const wrap = document.getElementById("versions-body");
+  let data;
+  try { data = await (await fetch("/api/budget/versions")).json(); }
+  catch { wrap.innerHTML = ""; return; }
+  if (scenariosView.classList.contains("hidden")) return;   // navigated away mid-fetch
+
+  const versions = data.versions || [];
+  const active = data.active_scenario;
+
+  const panel = document.createElement("section");
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h3>Budget versions</h3>
+      <button id="version-freeze-btn" class="btn-ghost" type="button"${
+        active ? "" : " disabled"}>Freeze as version</button>
+    </div>
+    <p class="panel-note">A version freezes a scenario together with the driver values
+      behind it — what they were, where each one was read from and when. That copy is
+      what gets approved, diffed and exported; later research cannot rewrite it.</p>
+    <form id="version-freeze" class="version-freeze hidden">
+      <label class="field-label" for="version-label">What to call this version</label>
+      <input id="version-label" type="text" maxlength="80"
+             value="${escapeAttr(active ? active.name : "")}">
+      <label class="field-label" for="version-note">Note (optional)</label>
+      <input id="version-note" type="text" placeholder="What changed since the last version">
+      <p class="hint">Freezes <strong>${escapeHtml(active ? active.name : "—")}</strong>,
+        the active scenario, as v${versions.length + 1}.</p>
+      <p id="version-error" class="error-text hidden"></p>
+      <button type="submit" class="btn-primary">Freeze this budget</button>
+    </form>`;
+
+  const list = document.createElement("div");
+  list.className = "card-grid";
+  if (!versions.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = active
+      ? "No versions yet. Freeze the active scenario once it is the budget you intend to defend."
+      : "No versions yet — build a scenario first, then freeze it.";
+    panel.appendChild(empty);
+  } else {
+    versions.forEach(v => list.appendChild(versionCard(v, data)));
+    panel.appendChild(list);
+  }
+
+  wrap.innerHTML = "";
+  wrap.appendChild(panel);
+
+  const form = document.getElementById("version-freeze");
+  document.getElementById("version-freeze-btn").addEventListener("click", () => {
+    freezeFormOpen = !freezeFormOpen;
+    form.classList.toggle("hidden", !freezeFormOpen);
+    if (freezeFormOpen) document.getElementById("version-label").focus();
+  });
+  if (freezeFormOpen) form.classList.remove("hidden");
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = document.getElementById("version-error");
+    const btn = e.target.querySelector("button[type=submit]");
+    btn.disabled = true; btn.textContent = "Freezing…";
+    try {
+      const resp = await fetch("/api/budget/versions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenario_id: active ? active.id : null,
+          label: document.getElementById("version-label").value.trim() || null,
+          note: document.getElementById("version-note").value.trim() || null,
+          created_by: data.default_approver || null,
+        }),
+      });
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => ({}));
+        throw new Error((detail.detail && detail.detail.error) || "Could not freeze.");
+      }
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.classList.remove("hidden");
+      btn.disabled = false; btn.textContent = "Freeze this budget";
+      return;
+    }
+    freezeFormOpen = false;
+    refreshVersions();
+  });
+}
+
+function versionCard(v, data) {
+  const card = document.createElement("article");
+  card.className = "card version-card" + (v.status === "approved" ? " is-approved" : "");
+  const eur = (x) => x === null || x === undefined ? "—"
+    : `€${(x / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`;
+  const provenance = v.approved_by
+    ? `Approved by ${escapeHtml(v.approved_by)} ${escapeHtml(fmtWhen(v.approved_at))}`
+    : v.submitted_by ? `Submitted by ${escapeHtml(v.submitted_by)}`
+    : `Created ${escapeHtml(fmtWhen(v.created_at))}`;
+
+  card.innerHTML = `
+    <div class="driver-head">
+      <h4>v${v.version_no} · ${escapeHtml(v.label || "Untitled")}</h4>
+      <span class="status-chip ${VERSION_CHIP[v.status] || "never"}">${escapeHtml(v.status)}</span>
+    </div>
+    ${v.note ? `<p class="page-sub">${escapeHtml(v.note)}</p>` : ""}
+    <dl class="driver-figures">
+      <div><dt>Revenue</dt><dd class="num">${eur(v.revenue_eur)}</dd></div>
+      <div><dt>EBITDA</dt><dd class="num">${eur(v.ebitda_eur)}</dd></div>
+      <div><dt>Margin</dt><dd class="num">${v.ebitda_margin_pct == null ? "—"
+        : fmtNum(v.ebitda_margin_pct, 1) + "%"}</dd></div>
+    </dl>
+    <p class="driver-meta">${escapeHtml(v.scenario_name || "scenario")} ·
+      ${v.assumption_count} assumption${v.assumption_count === 1 ? "" : "s"} ·
+      ${v.driver_count} driver${v.driver_count === 1 ? "" : "s"} priced</p>
+    <p class="driver-meta">${provenance}</p>
+    <div class="driver-actions">
+      ${v.status === "approved" ? "" : '<button class="btn-ghost vs-submit">Submit</button>'}
+      ${v.status === "approved" ? "" : '<button class="btn-ghost vs-approve">Approve</button>'}
+      <button class="btn-ghost vs-diff">What changed</button>
+      ${exportLinks(`/api/budget/versions/${encodeURIComponent(v.id)}`)}
+      ${v.status === "approved" || v.status === "superseded" ? ""
+        : '<button class="btn-ghost vs-delete">Discard</button>'}
+    </div>
+    <form class="version-approve hidden">
+      <label class="field-label">Approved by</label>
+      <input class="vs-approver" type="text" maxlength="80"
+             value="${escapeAttr(data.default_approver || "")}" placeholder="Your name">
+      <p class="hint">This app has no authentication. The name you type is an
+        <strong>attestation</strong> that you approved this budget — a record, not a
+        signature, and worth exactly what your process says it is.</p>
+      <p class="error-text hidden"></p>
+      <button type="submit" class="btn-primary">Approve v${v.version_no}</button>
+    </form>
+    <div class="version-diff hidden"></div>`;
+
+  const submit = card.querySelector(".vs-submit");
+  if (submit) submit.addEventListener("click", async () => {
+    await fetch(`/api/budget/versions/${v.id}/submit`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ by: data.default_approver || null }),
+    });
+    refreshVersions();
+  });
+
+  const approveBtn = card.querySelector(".vs-approve");
+  const approveForm = card.querySelector(".version-approve");
+  if (approveBtn) approveBtn.addEventListener("click", () => {
+    approveForm.classList.toggle("hidden");
+    if (!approveForm.classList.contains("hidden")) approveForm.querySelector("input").focus();
+  });
+  approveForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const by = approveForm.querySelector(".vs-approver").value.trim();
+    const err = approveForm.querySelector(".error-text");
+    if (!by) {
+      err.textContent = "Type the name this approval is attributed to.";
+      err.classList.remove("hidden");
+      return;
+    }
+    const supersedes = data.approved_id && data.approved_id !== v.id;
+    if (!confirm(`Approve v${v.version_no} as the budget?` +
+                 (supersedes ? " The currently approved version becomes superseded." : ""))) return;
+    err.classList.add("hidden");
+    const resp = await fetch(`/api/budget/versions/${v.id}/approve`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ by }),
+    });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      err.textContent = (detail.detail && detail.detail.error) || "Could not approve.";
+      err.classList.remove("hidden");
+      return;
+    }
+    refreshVersions();
+  });
+
+  const del = card.querySelector(".vs-delete");
+  if (del) del.addEventListener("click", async () => {
+    if (!confirm(`Discard v${v.version_no}? Its snapshot goes with it.`)) return;
+    await fetch(`/api/budget/versions/${v.id}`, { method: "DELETE" });
+    refreshVersions();
+  });
+
+  // Load-once-then-toggle, the same shape as the driver history panel.
+  card.querySelector(".vs-diff").addEventListener("click", async () => {
+    const panel = card.querySelector(".version-diff");
+    if (panel.dataset.loaded) { panel.classList.toggle("hidden"); return; }
+    panel.classList.remove("hidden");
+    panel.textContent = "Loading…";
+    try {
+      const resp = await fetch(`/api/budget/versions/${v.id}/diff`);
+      if (resp.status === 404) {
+        panel.textContent = "This is the first version — there is nothing earlier to compare it against.";
+        panel.dataset.loaded = "1";
+        return;
+      }
+      panel.innerHTML = renderVersionDiff(await resp.json());
+      panel.dataset.loaded = "1";
+    } catch { panel.textContent = "Could not load the comparison."; }
+  });
+  return card;
+}
+
+// What changed, in the three ways it gets asked: the assumptions the CFO
+// stated, the locked prices underneath them (which can move while the
+// assumptions stand still), and the EBITDA those two add up to.
+function renderVersionDiff(d) {
+  const eur = (x) => x === null || x === undefined ? "—"
+    : `${x < 0 ? "−" : ""}€${Math.abs(x).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  const blocks = { drivers: "driver price", volume: "volume", price: "selling price",
+                   opex: "opex" };
+  const changes = Object.entries(d.assumptions || {})
+    .flatMap(([block, rows]) => rows.map(r => ({ block, ...r })));
+
+  let html = `<p class="diff-head">v${d.from.version_no} → v${d.to.version_no} ·
+    EBITDA <span class="num">${eur(d.ebitda_delta_eur)}</span></p>`;
+
+  html += changes.length
+    ? `<table class="mini-table"><thead><tr><th>Assumption</th><th>Type</th>
+        <th>From</th><th>To</th></tr></thead><tbody>${changes.map(r =>
+        `<tr><td>${escapeHtml(r.key)}</td><td>${escapeHtml(blocks[r.block] || r.block)}</td>
+         <td class="num">${r.from_pct == null ? "—" : fmtNum(r.from_pct, 1) + "%"}</td>
+         <td class="num">${r.to_pct == null ? "—" : fmtNum(r.to_pct, 1) + "%"}</td></tr>`)
+        .join("")}</tbody></table>`
+    : `<p class="driver-meta">No assumption changed.</p>`;
+
+  if ((d.locked_values || []).length) {
+    html += `<p class="driver-meta">Re-locked between these versions</p>
+      <table class="mini-table"><thead><tr><th>Driver</th><th>From</th><th>To</th>
+      <th>Change</th></tr></thead><tbody>${d.locked_values.map(r =>
+      `<tr><td>${escapeHtml(r.name || r.driver_id)}</td>
+       <td class="num">${fmtNum(r.from_value, 1)}</td>
+       <td class="num">${fmtNum(r.to_value, 1)}</td>
+       <td class="num">${r.delta_pct == null ? "—"
+         : (r.delta_pct > 0 ? "+" : "") + fmtNum(r.delta_pct, 1) + "%"}</td></tr>`)
+      .join("")}</tbody></table>`;
+  }
+
+  const steps = (d.ebitda_bridge || []).filter(p => p.kind === "delta");
+  if (steps.length) {
+    html += `<p class="driver-meta">Where the move came from</p>
+      <table class="mini-table"><tbody>${steps.map(p =>
+      `<tr><td>${escapeHtml(p.label)}</td><td class="num">${eur(p.value)}</td></tr>`)
+      .join("")}</tbody></table>`;
+  }
+  return html;
 }

@@ -1523,3 +1523,54 @@ details.reasoning.is-live .reasoning-spinner {
 .revision-card { display: flex; flex-direction: column; gap: var(--space-2); cursor: pointer; }
 .revision-card h4 { margin: 0; font-size: var(--fs-h6); font-weight: var(--fw-medium); }
 .revision-card .ask-card-foot { margin-top: auto; }
+
+/* ---------- Locking, versions and diffs (Phase 2) ----------
+   No new surfaces: the lock panel and the version rail are .panel + .card like
+   every other list on these pages, so the three-lightness separation (cream
+   canvas / cream-50 panel / white card) keeps doing the work. Only the inputs
+   and the diff tables need rules of their own. */
+
+.lock-panel .panel-note { max-width: 70ch; }
+.lock-table { margin-bottom: var(--space-4); }
+.lock-table th { font-weight: var(--fw-medium); color: var(--fg-3); }
+.lock-table td { vertical-align: middle; }
+.lock-table input, .version-freeze input, .version-approve input {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 0.35rem 0.55rem;
+  width: 100%;
+  max-width: 26rem;
+}
+.lock-table input:focus, .version-freeze input:focus, .version-approve input:focus {
+  outline: none;
+  border-color: var(--columbus-navy);
+  box-shadow: 0 0 0 2px rgba(1, 1, 144, 0.18);
+}
+.lock-table .lk-value { max-width: 8rem; text-align: right; font-variant-numeric: tabular-nums; }
+#lock-note { max-width: 34rem; }
+#lock-form .btn-primary { margin-top: var(--space-3); }
+#lock-form .field-label { display: block; margin-top: var(--space-2); }
+
+.version-freeze { margin-top: var(--space-4); display: flex; flex-direction: column;
+  align-items: flex-start; gap: var(--space-1); }
+.version-freeze.hidden, .version-approve.hidden, .version-diff.hidden { display: none; }
+.version-freeze .btn-primary, .version-approve .btn-primary { margin-top: var(--space-3); }
+.version-freeze .hint, .version-approve .hint { margin: var(--space-2) 0 0; max-width: 52ch; }
+
+.version-card { display: flex; flex-direction: column; gap: 10px; }
+/* The approved version is the one the company is running on — the same 4px
+   accent rule the active scenario carries, for the same reason. */
+.version-card.is-approved { border-left: 4px solid var(--accent);
+  padding-left: calc(var(--space-6) - 3px); }
+.version-card .driver-meta { margin: 0; }
+.version-approve { display: flex; flex-direction: column; align-items: flex-start;
+  gap: var(--space-1); margin-top: var(--space-2); }
+
+.version-diff { margin-top: var(--space-2); font-size: .8rem; }
+.version-diff .mini-table { margin-bottom: var(--space-3); }
+.version-diff .driver-meta { margin: var(--space-3) 0 var(--space-1); }
+.diff-head { margin: 0 0 var(--space-2); font-size: .85rem; color: var(--fg-2); }

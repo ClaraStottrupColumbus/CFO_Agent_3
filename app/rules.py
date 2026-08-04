@@ -18,7 +18,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import budget, drivers, scenarios
-from .tools import _budget_year, _driver_eur_prices, _load
+from .tools import _budget_year, _driver_eur_prices, _load, _opex_plan_rows
 
 RULES_FILE = Path(__file__).resolve().parent.parent / "data" / "rules.json"
 
@@ -290,10 +290,20 @@ def _rerun_active_scenario() -> dict | None:
               dict(zip(catalog["driver_id"].astype(str), catalog["hedge_coverage"].astype(float))))
     tau = float(scenario.get("price_pass_through") or 0.0)
 
-    baseline = budget.project_pnl(baseline_rows, bom_rows, lock_prices, {},
-                                  hedges=hedges, price_pass_through=tau)
-    projected = budget.project_pnl(baseline_rows, bom_rows, lock_prices, moves,
-                                   hedges=hedges, price_pass_through=tau)
+    # Only the DRIVER block is replaced by what the market actually did. The
+    # CFO's volume, price and opex decisions are theirs and carry through, or
+    # the re-run would silently answer a different question from the scenario.
+    stored = budget.normalise_assumptions(scenario.get("assumptions"))
+    opex_rows = _opex_plan_rows(year)
+    opex_pct = float(scenario.get("opex_inflation_pct") or 0.0)
+    baseline = budget.project_pnl(baseline_rows, bom_rows, lock_prices,
+                                  {**stored, "drivers": {}}, hedges=hedges,
+                                  price_pass_through=tau, opex_rows=opex_rows,
+                                  opex_inflation_pct=opex_pct)
+    projected = budget.project_pnl(baseline_rows, bom_rows, lock_prices,
+                                   {**stored, "drivers": moves}, hedges=hedges,
+                                   price_pass_through=tau, opex_rows=opex_rows,
+                                   opex_inflation_pct=opex_pct)
     margin = projected["totals"].get("ebitda_margin_pct")
     if margin is None:
         return None

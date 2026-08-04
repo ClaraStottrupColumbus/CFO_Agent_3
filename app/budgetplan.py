@@ -1,24 +1,36 @@
-# budgetplan.py — "Budget Outlook": a self-contained, config-driven read on next
-# year's budget for ANY company.
+# budgetplan.py — "the Budget": ONE config-driven read on next year's budget,
+# in two input modes.
 #
-# Deliberately independent of everything the other three agents stand on:
+#   * BOM mode — `bill_of_materials` and `budget_vs_actuals` exist, so the
+#     variables are MATERIALISED from them: every ingredient priced through the
+#     bill of materials, every cost centre off the opex plan, each carrying the
+#     `driver_id` it came from. Provenance, locking, versioning and export all
+#     reach these lines through that id.
+#   * Simple mode — no datasets, so the user types the cost lines themselves,
+#     seeded from an industry default set. This is what lets the page work on a
+#     fresh install, and a `driver_id` can still be attached by hand, which is
+#     the migration path from one mode to the other.
 #
-#   * It reads NO dataset. Not drivers.parquet, not budget_vs_actuals.parquet,
-#     not locked_assumptions.json. Every number on the page comes from what the
-#     user typed on the configuration screen. That is what lets it work on a
-#     fresh install with no demo data and no company profile.
-#   * It has its OWN `configured` flag and is NOT behind main.require_setup, so
-#     it is reachable while the rest of the app is still gated on #/setup.
-#   * Its chat transcript lives in this module's own file rather than in
-#     store.py, so store.KINDS — and therefore the three existing agents — are
-#     untouched.
+# The engine is the same either way: `derive()` is pure, takes no I/O, and does
+# the whole page — ranking, deltas, totals, margin. Only the source of
+# `variables[]` differs. That is what "one budget model" means here; before
+# Phase 3 this module read no dataset at all and the app shipped two budgets for
+# two different companies.
 #
-# It imports `agent` only for `get_client()`. The model id is passed IN from
-# main.py rather than read from config.py, keeping the same injection discipline
-# that stops scheduler.py and reporting.py importing main.
+# It has its OWN `configured` flag and is NOT behind main.require_setup, so the
+# page is reachable while the rest of the app is still gated on #/setup — in
+# simple mode there is nothing for a profile to gate.
 #
-# All arithmetic is in `derive()`, which is pure and takes no I/O — the same
-# split that makes budget.py testable.
+# There is deliberately NO chat loop in here any more. It had its own small
+# streaming turn while it was tool-less and citation-less; now that its lines
+# carry driver ids, a question about one is a question about the real
+# watchlist, so the page hands off to `reporting.run_session_turn` like
+# everything else in the app. `budget_outlook` in tools.py is how the agent
+# reads this page.
+#
+# Dataset reads are imported lazily, inside the two functions that need them.
+# Everything above `derive()` stays importable with no pandas and no data
+# directory, which is what keeps tests/test_budget_plan.py fixture-free.
 
 from __future__ import annotations
 
@@ -30,7 +42,6 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Generator
 
 from .agent import get_client
 
@@ -49,9 +60,7 @@ FLAT_EPS_PCT = 0.05
 TOP_N = 8
 
 MAX_PCT = 100.0
-MAX_CHAT_MESSAGES = 40          # trimmed on write; the transcript is a rail, not an archive
 NARRATIVE_MAX_TOKENS = 400
-CHAT_MAX_TOKENS = 1200
 
 CATEGORIES = ("people", "materials", "logistics", "facilities",
               "technology", "commercial", "professional", "other")
@@ -430,6 +439,7 @@ def defaults_for(industry: str, revenue: float) -> list[dict]:
             "expected_change_pct": d["expected_change_pct"],
             "assumption": "",
             "default_note": d["default_note"],
+            "driver_id": None,
             "include": True,
         })
     return out
@@ -485,6 +495,7 @@ def derive(plan: dict) -> dict:
             "description": v.get("description") or spec.get("description") or "",
             "assumption": (v.get("assumption") or "").strip(),
             "default_note": v.get("default_note") or "",
+            "driver_id": v.get("driver_id") or None,
             "current_amount": current,
             "expected_change_pct": pct,
             "next_amount": nxt,
@@ -558,7 +569,8 @@ def fingerprint(plan: dict) -> str:
             [v.get("id"), v.get("label"),
              round(_f(v.get("current_amount")), 2),
              round(_f(v.get("expected_change_pct")), 4),
-             (v.get("assumption") or "").strip()]
+             (v.get("assumption") or "").strip(),
+             v.get("driver_id") or ""]
             for v in (plan.get("variables") or []) if v.get("include", True)
         ),
     }
@@ -599,6 +611,17 @@ def _clean_variable(raw: dict, seen: set[str]) -> dict | str:
         return (f"'{label}' has an expected change of {pct:g}%. "
                 f"Expected change must be between -{MAX_PCT:g}% and {MAX_PCT:g}%.")
 
+    # The link that makes this one budget model rather than two. A variable
+    # carrying a driver_id inherits that driver's locked value, its provenance,
+    # its place in a frozen version and its row in the export — none of which
+    # needed new machinery, only the id. Validated as a slug, not against the
+    # catalogue: in simple mode there may be no catalogue yet, and refusing an
+    # id the CFO is about to create would make the migration path unusable.
+    driver_id = str(raw.get("driver_id") or "").strip().lower()
+    if driver_id and not _ID_RE.match(driver_id):
+        return (f"'{label}' has an invalid driver link '{driver_id}'. Use lowercase "
+                f"letters, digits and underscores, or leave it empty.")
+
     return {
         "id": var_id,
         "label": label[:80],
@@ -608,6 +631,7 @@ def _clean_variable(raw: dict, seen: set[str]) -> dict | str:
         "expected_change_pct": round(pct, 4),
         "assumption": str(raw.get("assumption") or "").strip()[:600],
         "default_note": str(raw.get("default_note") or "")[:400],
+        "driver_id": driver_id or None,
         "include": bool(raw.get("include", True)),
     }
 
@@ -700,7 +724,6 @@ def default_plan() -> dict:
                      "revenue": 0.0, "revenue_change_pct": 0.0},
         "variables": [],
         "narrative": {"text": "", "generated_at": 0, "fingerprint": "", "model": ""},
-        "chat": [],
     }
 
 
@@ -750,25 +773,332 @@ def save_config(payload: dict) -> dict | str:
 
 
 def reset_plan() -> dict:
-    """Back to first-run: configuration, narrative AND chat all cleared."""
+    """Back to first-run: configuration and narrative both cleared."""
     with _lock:
         return _write(default_plan())
 
 
-def append_chat(role: str, text: str) -> dict:
-    with _lock:
-        plan = _read()
-        history = list(plan.get("chat") or [])
-        history.append({"role": role, "text": text, "ts": time.time()})
-        plan["chat"] = history[-MAX_CHAT_MESSAGES:]
-        return _write(plan)
+# --------------------------------------------------------------------------
+# BOM mode — the same variables, read out of the real datasets
+# --------------------------------------------------------------------------
+#
+# Everything below imports pandas-backed modules LAZILY. The engine above must
+# stay importable, and testable, with no data directory at all.
+
+# driver category (drivers.parquet) -> this module's variable category, so a
+# materialised line lands in the same taxonomy a hand-typed one does.
+_DRIVER_CATEGORIES = {
+    "ingredient": "materials", "packaging": "materials", "logistics": "logistics",
+    "energy": "facilities", "labour": "people", "fx": "other",
+}
+
+CONVERSION_ID = "conversion_overhead"
 
 
-def clear_chat() -> dict:
-    with _lock:
-        plan = _read()
-        plan["chat"] = []
-        return _write(plan)
+def _slug(text: str, prefix: str = "") -> str:
+    """A stable, _ID_RE-safe id from a free-text label (a cost-centre name)."""
+    body = re.sub(r"[^a-z0-9]+", "_", str(text).strip().lower()).strip("_") or "x"
+    out = f"{prefix}{body}"
+    if not out[:1].isalpha():
+        out = f"c_{out}"
+    return out[:49]
+
+
+def bom_available() -> bool:
+    """Is there a bill of materials and a budget to price it against?
+
+    This, not the company profile, is what picks the mode: a company that has
+    uploaded neither still gets a working budget page in simple mode.
+    """
+    try:
+        from . import tools
+    except Exception:
+        return False
+    for name in ("bill_of_materials", "budget_vs_actuals"):
+        try:
+            df, _ = tools._load(name)
+        except (FileNotFoundError, OSError, KeyError):
+            return False
+        if df.empty:
+            return False
+    return True
+
+
+def materialise_from_datasets(company: dict | None = None) -> dict | str:
+    """Build the whole configuration out of the datasets. A payload for
+    `save_config`, or a message the UI can show verbatim.
+
+    The two years are the closed year and the plan year, and every line is
+    computed for BOTH of them — the "expected change" the page ranks on is then
+    the budget's own step, not a percentage anybody typed. Three cuts make up
+    the cost base and together they reconcile to COGS + opex exactly:
+
+      * one variable per driver with a bill-of-materials position, valued as
+        qty-per-tonne × volume × price (the same `driver_exposure` the
+        sensitivity tool uses), so the number is read rather than assumed;
+      * the conversion residual — COGS minus those materials — which is what
+        keeps the total honest instead of quietly understating the cost base;
+      * one variable per opex cost centre, sized by its SHARE of the opex plan
+        applied to the P&L's opex level. `opex_plan` is cut by cost centre and
+        `budget_vs_actuals` by product line, and the two totals need not
+        reconcile; only the scale-free share crosses over, exactly as
+        `budget.opex_bridge` moves only a weighted rate across the same seam.
+    """
+    from . import budget as budget_mod
+    from . import drivers as drivers_mod
+    from . import tools
+
+    try:
+        bva, _ = tools._load("budget_vs_actuals")
+        bom, _ = tools._load("bill_of_materials")
+    except (FileNotFoundError, OSError, KeyError):
+        return ("No bill of materials or budget dataset is available, so the budget "
+                "cannot be built from your data. Configure the cost lines by hand instead.")
+    if bva.empty or bom.empty:
+        return ("The bill of materials or the budget dataset is empty, so there is nothing "
+                "to price. Configure the cost lines by hand instead.")
+
+    plan_year = tools._budget_year(bva)
+    closed = bva[bva["revenue_actual_eur"].notna()]
+    if closed.empty:
+        return (f"There are no closed months to compare {plan_year} against. "
+                f"Configure the cost lines by hand instead.")
+    base_year = str(closed["month"].max())[:4]
+    if base_year == plan_year:
+        return (f"{plan_year} is both the latest closed year and the plan year, so there is "
+                f"no year-on-year step to show. Configure the cost lines by hand instead.")
+
+    cur = closed[closed["month"].str.startswith(base_year)]
+    plan = bva[bva["month"].str.startswith(plan_year)]
+
+    def _sum(df, column):
+        return float(df[column].sum(min_count=1) or 0.0) if column in df.columns else 0.0
+
+    revenue_cur = _sum(cur, "revenue_actual_eur")
+    revenue_next = _sum(plan, "revenue_budget_eur")
+    cogs_cur, cogs_next = _sum(cur, "cogs_actual_eur"), _sum(plan, "cogs_budget_eur")
+    opex_cur, opex_next = _sum(cur, "opex_actual_eur"), _sum(plan, "opex_budget_eur")
+    if revenue_cur <= 0:
+        return (f"{base_year} has no actual revenue, so there is no baseline to budget "
+                f"from. Configure the cost lines by hand instead.")
+
+    bom_rows = [{"product_line": str(r["product_line"]), "driver_id": str(r["driver_id"]),
+                 "qty_per_tonne": float(r["qty_per_tonne"])} for _, r in bom.iterrows()]
+    vol_cur = _volumes(cur, "volume_tonnes_actual")
+    vol_next = _volumes(plan, "volume_tonnes_budget")
+
+    # Current-year prices are the mean EUR level actually paid across that year;
+    # plan-year prices are the LOCKED values the budget was frozen at. That is
+    # the honest pairing — it is precisely the step the budget took.
+    price_cur = _mean_eur_prices(base_year, drivers_mod, tools)
+    price_next = _locked_eur_prices(drivers_mod, tools)
+    status = {d["driver_id"]: d for d in drivers_mod.driver_status()}
+
+    variables = []
+    used_cur = used_next = 0.0
+    for did in sorted({r["driver_id"] for r in bom_rows}):
+        meta = status.get(did) or {}
+        a = budget_mod.driver_exposure(bom_rows, vol_cur, price_cur.get(did, 0.0), did)
+        b = budget_mod.driver_exposure(bom_rows, vol_next, price_next.get(did, 0.0), did)
+        if a <= 0 and b <= 0:
+            continue
+        used_cur += a
+        used_next += b
+        variables.append({
+            "id": did,
+            "label": meta.get("name") or did,
+            "category": _DRIVER_CATEGORIES.get(str(meta.get("category")), "materials"),
+            "description": (f"Priced through the bill of materials: quantity per tonne × "
+                            f"budgeted volume × the {plan_year} locked price, in "
+                            f"{meta.get('unit') or 'the driver unit'}."),
+            "current_amount": a,
+            "expected_change_pct": _pct_change(a, b),
+            "assumption": _driver_assumption(meta, plan_year),
+            "driver_id": did,
+            "include": True,
+        })
+
+    # The residual keeps the cost base equal to COGS. Floored at zero: a BOM
+    # that over-explains COGS is a data problem, not a negative cost line.
+    conv_cur, conv_next = max(0.0, cogs_cur - used_cur), max(0.0, cogs_next - used_next)
+    if conv_cur > 0 or conv_next > 0:
+        variables.append({
+            "id": CONVERSION_ID,
+            "label": "Conversion & plant overhead",
+            "category": "facilities",
+            "description": "What COGS carries beyond the bill of materials — labour on the "
+                           "line, maintenance and plant overhead. Derived as COGS minus the "
+                           "priced material inputs, so the cost base ties to the P&L.",
+            "current_amount": conv_cur,
+            "expected_change_pct": _pct_change(conv_cur, conv_next),
+            "assumption": "Derived, not assumed: the part of COGS the bill of materials "
+                          "does not explain.",
+            "driver_id": None,
+            "include": True,
+        })
+
+    variables.extend(_opex_variables(tools, status, base_year, plan_year,
+                                     opex_cur, opex_next))
+
+    prof = company or {}
+    return {
+        "company": {
+            "name": prof.get("name") or "",
+            "industry": prof.get("industry") or DEFAULT_INDUSTRY,
+            "size": prof.get("size") or "mid",
+            "currency": prof.get("currency") or "EUR",
+            "fiscal_year_start_month": prof.get("fiscal_year_start_month") or 1,
+        },
+        "baseline": {
+            "current_year": int(base_year),
+            "revenue": revenue_cur,
+            "revenue_change_pct": _pct_change(revenue_cur, revenue_next),
+        },
+        "variables": variables,
+    }
+
+
+def _volumes(df, column) -> dict:
+    if column not in df.columns:
+        return {}
+    grouped = df.groupby("product_line")[column].sum()
+    return {str(k): float(v) for k, v in grouped.items() if v == v}
+
+
+def _pct_change(current: float, nxt: float) -> float:
+    return ((nxt - current) / current * 100.0) if abs(current) > 1e-9 else 0.0
+
+
+def _mean_eur_prices(year: str, drivers_mod, tools) -> dict:
+    """Each driver's mean EUR price across one year — what was actually paid.
+
+    Converted month by month through that month's EUR/USD, so a year in which
+    the euro moved is priced correctly rather than at a year-end snapshot.
+    """
+    prices = drivers_mod.load_prices()
+    if prices.empty:
+        return {}
+    months = sorted({m for m in prices["month"].astype(str) if m.startswith(str(year))})
+    totals: dict[str, list] = {}
+    for month in months:
+        eur, _quote = tools._driver_eur_prices(month)
+        for did, value in eur.items():
+            slot = totals.setdefault(did, [0.0, 0])
+            slot[0] += float(value)
+            slot[1] += 1
+    return {d: total / count for d, (total, count) in totals.items() if count}
+
+
+def _locked_eur_prices(drivers_mod, tools) -> dict:
+    """The locked assumption set in EUR — the prices the plan year was frozen at."""
+    locked = drivers_mod.load_assumptions().get("assumptions") or {}
+    eur_now, quote_now = tools._driver_eur_prices()
+    fx = (locked.get("eur_usd") or {}).get("value") or quote_now.get("eur_usd") or 1.0
+    catalog = drivers_mod.load_catalog()
+    ccy = ({} if catalog.empty else
+           dict(zip(catalog["driver_id"].astype(str), catalog["quote_currency"].astype(str))))
+    out = dict(eur_now)
+    for did, entry in locked.items():
+        value = (entry or {}).get("value")
+        if value is None:
+            continue
+        out[str(did)] = (float(value) / fx
+                         if ccy.get(str(did)) == "USD" and did != "eur_usd" else float(value))
+    return out
+
+
+def _driver_assumption(meta: dict, plan_year: str) -> str:
+    """The sentence under a materialised cost line: what it is locked at, where
+    that came from, and — the point of the whole app — what the market has said
+    since. The forward is quoted as a CHALLENGE to the locked figure, never
+    silently substituted for it: the budget is what the CFO froze."""
+    if not meta:
+        return ""
+    parts = []
+    locked = meta.get("locked_value")
+    if locked is not None:
+        parts.append(f"Locked into the {plan_year} budget at "
+                     f"{locked:,.2f} {meta.get('unit') or ''}".rstrip())
+    drift = meta.get("drift_pct")
+    if drift is not None and abs(drift) >= 0.05:
+        parts.append(f"the latest observation is {drift:+.1f}% against that lock")
+    forward = meta.get("forward_vs_lock_pct")
+    if forward is not None and abs(forward) >= 0.05:
+        parts.append(f"the forward curve for the next 12 months averages "
+                     f"{forward:+.1f}% against it")
+    if meta.get("verify_status") == "never_verified":
+        parts.append("no price has been verified yet")
+    return ("; ".join(parts) + ".") if parts else ""
+
+
+def _opex_variables(tools, status: dict, base_year: str, plan_year: str,
+                    opex_cur: float, opex_next: float) -> list[dict]:
+    """One variable per cost centre, sized by SHARE of the opex plan.
+
+    See the docstring above for why only the share crosses the seam. With no
+    opex plan at all the whole opex level lands on a single line, which is
+    honest — that is exactly how much is known about it.
+    """
+    shares_cur, shares_next = {}, {}
+    linked: dict[str, str | None] = {}
+    labels: dict[str, str] = {}
+    try:
+        plan, _ = tools._load("opex_plan")
+    except (FileNotFoundError, OSError, KeyError):
+        plan = None
+    if plan is not None and not plan.empty:
+        column = ("amount_budget_eur" if "amount_budget_eur" in plan.columns else "amount_eur")
+        for year, sink in ((base_year, shares_cur), (plan_year, shares_next)):
+            rows = plan[plan["month"].astype(str).str.startswith(str(year))]
+            for _, r in rows.iterrows():
+                centre = str(r["cost_centre"])
+                sink[centre] = sink.get(centre, 0.0) + float(r[column] or 0.0)
+                did = r.get("driver_id")
+                labels[centre] = centre
+                linked.setdefault(centre, None if did != did or did in (None, "") else str(did))
+
+    if not shares_cur and not shares_next:
+        if opex_cur <= 0 and opex_next <= 0:
+            return []
+        return [{
+            "id": "operating_expenses", "label": "Operating expenses", "category": "other",
+            "description": "Period cost from the P&L. No cost-centre plan is available to "
+                           "break it down.",
+            "current_amount": opex_cur, "expected_change_pct": _pct_change(opex_cur, opex_next),
+            "assumption": "", "driver_id": None, "include": True,
+        }]
+
+    total_cur = sum(shares_cur.values()) or 1.0
+    total_next = sum(shares_next.values()) or 1.0
+    out = []
+    for centre in sorted(set(shares_cur) | set(shares_next)):
+        a = opex_cur * shares_cur.get(centre, 0.0) / total_cur
+        b = opex_next * shares_next.get(centre, 0.0) / total_next
+        if a <= 0 and b <= 0:
+            continue
+        did = linked.get(centre)
+        meta = status.get(did) or {}
+        out.append({
+            "id": _slug(centre, "opex_"),
+            "label": f"{labels.get(centre, centre)} (opex)",
+            "category": "people" if str(meta.get("category")) == "labour" else "other",
+            "description": (f"The {centre} cost centre's share of operating expenses, taken "
+                            f"from the opex plan and applied to the P&L's opex level."),
+            "current_amount": a,
+            "expected_change_pct": _pct_change(a, b),
+            "assumption": (_driver_assumption(meta, plan_year) if meta else ""),
+            "driver_id": did,
+            "include": True,
+        })
+    return out
+
+
+def rebuild_from_datasets(company: dict | None = None) -> dict | str:
+    """Materialise and save in one step — what the Budget page's rebuild does."""
+    payload = materialise_from_datasets(company)
+    if isinstance(payload, str):
+        return payload
+    return save_config(payload)
 
 
 # --------------------------------------------------------------------------
@@ -835,6 +1165,10 @@ def brief(plan: dict, derived: dict | None = None) -> str:
         note = r["assumption"] or r["default_note"]
         if note:
             lines.append(f"     assumption: {note}")
+        # Named so the reader can go and look at the locked value and its
+        # source, rather than treating the line as a number somebody typed.
+        if r.get("driver_id"):
+            lines.append(f"     tracked driver: {r['driver_id']}")
 
     excluded = [v for v in (plan.get("variables") or []) if not v.get("include", True)]
     if excluded:
@@ -889,8 +1223,8 @@ def explain_api_failure(exc: Exception) -> str:
     name = type(exc).__name__
     detail = str(exc)
     if "authentication" in detail.lower() or name == "AuthenticationError":
-        reason = ("The ANTHROPIC_API_KEY was rejected. Check the key in .env — chat "
-                  "cannot run until it is valid.")
+        reason = ("The ANTHROPIC_API_KEY was rejected. Check the key in .env — the "
+                  "written read cannot be generated until it is valid.")
     elif name in ("APIConnectionError", "APITimeoutError") or "connection" in detail.lower():
         reason = "Could not reach the API. Check your connection and try again."
     elif name == "RateLimitError":
@@ -961,133 +1295,3 @@ def ensure_narrative(plan: dict, model: str, *, force: bool = False) -> dict:
         _write(stored)
     return narrative
 
-
-CHAT_SYSTEM = """You are a budgeting adviser with exactly one job: helping this CFO think
-through their {budget_year} budget for {company}.
-
-The complete configuration is below. It is the single source of truth.
-
-SCOPE — this is a hard boundary.
-You answer questions about {company}'s {budget_year} budget: the variables in the
-brief, what drives them, what the assumptions imply, what to sanity-check, how a
-different assumption would change the picture, and how to present or defend the
-numbers.
-
-Anything else — other companies, prior-year accounting, tax filings, personal
-finance, investment advice, coding, general knowledge, current events, or small
-talk — is out of scope. Decline in ONE short sentence and redirect to something
-concrete you can help with from the brief. Do not answer partially, do not
-caveat at length, and do not apologise more than once.
-
-USING THE NUMBERS
-- Every figure you cite must come from the brief. Never invent, estimate or
-  recall a number that is not there.
-- The totals and deltas are already computed. Use them as given.
-- If the user asks "what if X changes to Y", you may compute that one arithmetic
-  step from the brief's figures and show your working in a sentence. Label it
-  clearly as a hypothetical, not as the configured plan.
-- If the brief genuinely does not contain what is needed, say so and name what
-  the CFO would have to add in configuration. Do not fill the gap with a
-  plausible figure.
-- These are planning assumptions the CFO entered, not a forecast or a market
-  view. Never present them as fact about the world.
-
-STYLE
-Direct and brief. Short paragraphs, light markdown, a list only when the content
-is genuinely a list. No headings on short answers. Lead with the answer.
-
---- CONFIGURATION ---
-{brief}
---- END CONFIGURATION ---"""
-
-
-def build_chat_system(plan: dict, derived: dict | None = None) -> str:
-    derived = derived or derive(plan)
-    company = (plan.get("company") or {}).get("name") or "this company"
-    return CHAT_SYSTEM.format(
-        company=company,
-        budget_year=derived["totals"]["budget_year"],
-        brief=brief(plan, derived),
-    )
-
-
-def starter_questions(plan: dict, derived: dict | None = None) -> list[str]:
-    """Three or four openers, built from THIS company's ranked variables so they
-    are answerable from the brief rather than generic prompts."""
-    derived = derived or derive(plan)
-    t = derived["totals"]
-    ranked = derived["ranked"]
-    if not ranked:
-        return ["What should I add to this budget?"]
-
-    questions = [f"What's driving the {t['budget_year']} cost increase?"
-                 if t["cost_delta"] > 0 else
-                 f"Why is the {t['budget_year']} cost base coming down?"]
-    questions.append(f"How exposed am I if {ranked[0]['label'].lower()} moves further than "
-                     f"{ranked[0]['expected_change_pct']:+.1f}%?")
-    if len(ranked) > 1:
-        questions.append(f"Which assumptions look weakest — {ranked[0]['label'].lower()} or "
-                         f"{ranked[1]['label'].lower()}?")
-    questions.append(f"What would it take to hold margin at "
-                     f"{t['margin_pct_current']:.1f}%?")
-    return questions[:4]
-
-
-def stream_chat(plan: dict, message: str, model: str) -> Generator[dict, None, None]:
-    """One scoped chat turn.
-
-    A deliberately small loop rather than agent.run_agent: this turn has no
-    tools, no thinking and no citations, so it needs none of that loop's tool
-    rounds, pause_turn handling or per-model capability logic — and reusing it
-    would have meant adding override parameters to the one piece of code in the
-    repo that most needs to stay as it is.
-
-    Yields a strict SUBSET of run_agent's documented vocabulary — `text`,
-    `error`, `done` — so the frontend's createStreamRenderer consumes it
-    unchanged. `error` is terminal and is always followed by `done`, matching
-    that contract.
-    """
-    text = (message or "").strip()
-    if not text:
-        yield {"type": "error", "message": "Empty message."}
-        yield {"type": "done"}
-        return
-
-    if not has_api_key():
-        yield {"type": "error",
-               "message": "No ANTHROPIC_API_KEY is set, so chat is unavailable. "
-                          "The budget figures on this page are computed locally and "
-                          "remain accurate."}
-        yield {"type": "done"}
-        return
-
-    # The new turn is NOT persisted yet. A failed call that had already stored it
-    # would leave a question with no answer in the transcript, and the next
-    # attempt would then send two user turns in a row.
-    plan = get_plan()
-    convo = [{"role": m["role"], "content": m["text"]}
-             for m in (plan.get("chat") or []) if m.get("text")]
-    convo.append({"role": "user", "content": text})
-
-    collected: list[str] = []
-    try:
-        client = get_client()
-        with client.messages.stream(
-            model=model,
-            max_tokens=CHAT_MAX_TOKENS,
-            system=build_chat_system(plan),
-            messages=convo,
-        ) as stream:
-            for chunk in stream.text_stream:
-                collected.append(chunk)
-                yield {"type": "text", "text": chunk}
-    except Exception as exc:
-        yield {"type": "error", "message": explain_api_failure(exc)}
-        yield {"type": "done"}
-        return
-
-    answer = "".join(collected).strip()
-    append_chat("user", text)
-    if answer:
-        append_chat("assistant", answer)
-    yield {"type": "done"}

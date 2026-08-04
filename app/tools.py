@@ -57,6 +57,13 @@ DATASETS = {
                        "quote currency, with source URL and revision.",
         "format": "parquet",
     },
+    "driver_forwards": {
+        "description": "Append-only forward curves: one row per curve_date x driver x "
+                       "quote_month, priced in the driver's own quote currency with the source "
+                       "URL it was read from. This is what a budget on basis 'forward' is "
+                       "built from — query it to see the shape of a curve month by month.",
+        "format": "parquet",
+    },
     "opex_plan": {
         "description": "Monthly operating cost per cost centre: amount, budget, headcount and "
                        "the driver it is linked to. Note: there is NO payroll or salary dataset.",
@@ -76,6 +83,20 @@ NUMERIC_COLUMNS = {
                           "opex_actual_eur", "opex_budget_eur"],
     "opex_plan": ["amount_eur", "amount_budget_eur", "headcount"],
     "driver_prices": ["price", "revision"],
+    "driver_forwards": ["price", "revision"],
+}
+
+# What a scenario prices its drivers at. The percentages in `assumptions` always
+# mean "versus the locked value" — the basis decides what the price they apply to
+# is, and every delta is still measured back to the locked baseline the budget
+# was built on, so the three are directly comparable.
+SCENARIO_BASES = {
+    "locked": "The values frozen into the budget. Percentages are the only movement.",
+    "spot": "Today's observed market prices, with your percentages on top — "
+            "'what does the budget look like if the market stays exactly here'.",
+    "forward": "The recorded forward curve month by month, with your percentages on "
+               "top. Monthly cost then carries the curve's own shape instead of a "
+               "flat annual assumption.",
 }
 
 BASIS_COLUMNS = {
@@ -214,6 +235,43 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "record_driver_forward",
+        "description": "Record a FORWARD PRICE CURVE you researched on the web — the prices the "
+                       "market is quoting for future months, which is what a budget should be "
+                       "built on rather than an extrapolation of the past. You MUST have fetched "
+                       "the page you cite with web_fetch in THIS turn; a URL you did not visit is "
+                       "refused. Record every month the page quotes in one call, in the driver's "
+                       "own quote currency, and do not convert or interpolate figures yourself.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "driver_id": {"type": "string", "description": "Must exist in the drivers dataset."},
+                "points": {
+                    "type": "array",
+                    "description": "The curve, one entry per quoted month, as read off the page.",
+                    "items": {"type": "object", "properties": {
+                        "quote_month": {"type": "string", "description": "The month the price is "
+                                                                        "quoted FOR, 'YYYY-MM'."},
+                        "price": {"type": "number", "description": "In the driver's quote currency."},
+                    }, "required": ["quote_month", "price"]},
+                },
+                "source_url": {"type": "string",
+                               "description": "The exact URL you fetched this curve from."},
+                "curve_date": {"type": "string",
+                               "description": "The date the curve was published, 'YYYY-MM-DD' "
+                                              "(default: today)."},
+                "note": {"type": "string", "description": "Short context, e.g. contango or "
+                                                          "backwardation and why."},
+                "override_sanity_check": {
+                    "type": "boolean",
+                    "description": "Set true ONLY to record a genuine large move that the "
+                                   "0.2x-5.0x band against the latest spot rejected, and explain "
+                                   "it in your answer."},
+            },
+            "required": ["driver_id", "points", "source_url"],
+        },
+    },
+    {
         "name": "driver_sensitivity",
         "description": "What a +/-X% move in one or more drivers does to COGS, EBITDA and margin, "
                        "computed from the bill of materials and hedge coverage — plus the "
@@ -235,24 +293,57 @@ TOOL_DEFINITIONS = [
     {
         "name": "build_budget_scenario",
         "description": "Apply an assumption set to the budget baseline and get a full monthly P&L "
-                       "projection back. The scenario is PERSISTED so later revisions can compare "
-                       "against it. Assumptions are percentage changes versus each driver's "
-                       "locked value.",
+                       "projection back. This is the ONLY place volume, price, driver and opex "
+                       "assumptions may be turned into numbers — never state a projected revenue, "
+                       "COGS, opex or EBITDA figure that did not come out of this tool. The "
+                       "scenario is PERSISTED so later revisions can compare against it. Every "
+                       "percentage is a change versus the budget baseline (drivers: versus their "
+                       "locked value).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Short scenario name, e.g. 'Freight stays high'."},
                 "assumptions": {"type": "object",
-                                "description": "{driver_id: pct change vs locked value}, e.g. "
-                                               "{\"chicken_meal\": 15, \"wheat\": -8}."},
+                                "description": "Input-cost shocks: {driver_id: pct change vs locked "
+                                               "value}, e.g. {\"chicken_meal\": 15, \"wheat\": -8}."},
+                "volume": {"type": "object",
+                           "description": "Volume decisions: {product_line: pct change vs budget "
+                                          "volume}. Use \"*\" for every line. Revenue and COGS scale "
+                                          "with volume; opex does not."},
+                "price": {"type": "object",
+                          "description": "Selling-price decisions: {product_line: pct change}. Use "
+                                         "\"*\" for every line. Setting a price on a line REPLACES "
+                                         "price_pass_through there — the two are the same lever."},
+                "opex": {"type": "object",
+                         "description": "Opex growth: {cost_centre or driver_id: pct}. A cost centre "
+                                        "not named here moves by its linked driver's percentage if "
+                                        "it has one, else by opex_inflation_pct."},
                 "note": {"type": "string", "description": "One line on what this scenario represents."},
-                "price_pass_through": {"type": "number", "description": "0-1 (default 0.35)."},
-                "opex_inflation_pct": {"type": "number", "description": "Opex inflation (default 0)."},
+                "basis": {"type": "string", "enum": list(SCENARIO_BASES),
+                          "description": "What the drivers are priced at before your percentages "
+                                         "are applied (default 'locked'). "
+                                         + " ".join(f"'{k}': {v}" for k, v in SCENARIO_BASES.items())},
+                "price_pass_through": {"type": "number",
+                                       "description": "0-1 automatic cost recovery, applied only to "
+                                                      "lines with no explicit price (default 0.35)."},
+                "opex_inflation_pct": {"type": "number",
+                                       "description": "Default growth for unmapped cost centres "
+                                                      "(default 0)."},
                 "make_active": {"type": "boolean",
                                 "description": "Make this the scenario the budget rests on."},
             },
-            "required": ["name", "assumptions"],
+            "required": ["name"],
         },
+    },
+    {
+        "name": "budget_outlook",
+        "description": "The Budget page as the CFO sees it: next year's cost lines ranked by "
+                       "materiality, each with its amount, expected change and the driver it "
+                       "is tracked against, plus revenue, cost base and operating margin. Use "
+                       "it when asked about 'the budget' as a whole, or about a cost line that "
+                       "is not one of the watchlist drivers — it is the only tool that sees "
+                       "lines the bill of materials does not.",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "name": "lock_assumptions",
@@ -778,13 +869,19 @@ def driver_status_tool(driver_id=None, category=None, only_stale=False,
         status = [d for d in status if d["drift_pct"] is not None and abs(d["drift_pct"]) > 10.0]
 
     for d in status:
-        if d["drift_pct"] is not None:
-            d["drift_pct"] = round(d["drift_pct"], 2)
+        for field in ("drift_pct", "forward_vs_lock_pct", "forward_12m"):
+            if d.get(field) is not None:
+                d[field] = round(d[field], 2)
     return {"drivers": status, "count": len(status),
             "locked_at": drivers.load_assumptions().get("locked_at"),
             "note": "drift_pct compares the latest observation to the value locked into the "
                     "budget, both in the driver's own quote currency. 'adverse' already "
-                    "accounts for direction — a falling EUR/USD rate is adverse.",
+                    "accounts for direction — a falling EUR/USD rate is adverse. forward_12m "
+                    "is the mean of the next 12 quoted months on the latest recorded forward "
+                    "curve, and forward_vs_lock_pct is that against the locked value: drift "
+                    "is what the market has already done, forward is what it says comes next. "
+                    "Both are null where no curve has been recorded — query driver_forwards "
+                    "for the month-by-month shape.",
             "source_file": "driver_prices.parquet"}
 
 
@@ -793,6 +890,16 @@ def record_driver_observation(driver_id: str, price, month: str, source_url: str
     ctx = ctx or {}
     return drivers.append_observation(
         driver_id, price, month, source_url=source_url,
+        fetched_urls=ctx.get("fetched_urls") or set(),
+        source="agent_research", note=note,
+        override_sanity_check=bool(override_sanity_check))
+
+
+def record_driver_forward(driver_id: str, points, source_url: str, curve_date=None,
+                          note=None, override_sanity_check=False, *, ctx=None) -> dict:
+    ctx = ctx or {}
+    return drivers.append_forward(
+        driver_id, points, source_url=source_url, curve_date=curve_date,
         fetched_urls=ctx.get("fetched_urls") or set(),
         source="agent_research", note=note,
         override_sanity_check=bool(override_sanity_check))
@@ -901,26 +1008,17 @@ def _budget_year(bva: pd.DataFrame) -> str:
 # 8-9. build_budget_scenario / lock_assumptions
 # --------------------------------------------------------------------------
 
-def build_budget_scenario(name: str, assumptions: dict, note=None,
+def build_budget_scenario(name: str, assumptions=None, note=None,
                           price_pass_through=0.35, opex_inflation_pct=0.0,
-                          make_active=False) -> dict:
-    if not isinstance(assumptions, dict):
-        return {"error": "assumptions must be an object of {driver_id: pct_change}."}
+                          make_active=False, volume=None, price=None,
+                          opex=None, basis="locked") -> dict:
     catalog = drivers.load_catalog()
     if catalog.empty:
         return {"error": "No drivers configured yet."}
     known = [str(d) for d in catalog["driver_id"]]
-    bad = [d for d in assumptions if d not in known]
-    if bad:
-        return _unknown("driver_id", bad[0], known)
-
-    clean = {}
-    for did, pct in assumptions.items():
-        try:
-            clean[did] = float(pct)
-        except (TypeError, ValueError):
-            return {"error": f"Assumption for '{did}' must be a number (percentage change "
-                             f"versus the locked value), got {pct!r}."}
+    basis = str(basis or "locked")
+    if basis not in SCENARIO_BASES:
+        return _unknown("basis", basis, list(SCENARIO_BASES))
 
     bom, source = _load("bill_of_materials")
     bva, _ = _load("budget_vs_actuals")
@@ -928,6 +1026,26 @@ def build_budget_scenario(name: str, assumptions: dict, note=None,
     plan = bva[bva["month"].str.startswith(year)]
     if plan.empty:
         return {"error": f"No budget rows for {year}."}
+    lines = sorted(set(plan["product_line"].astype(str)))
+
+    spec = _assumption_blocks(assumptions, volume, price, opex)
+    if "error" in spec:
+        return spec
+    if not any(spec.values()):
+        return {"error": "A scenario needs at least one assumption. Use 'assumptions' for driver "
+                         f"price shocks ({', '.join(known)}), 'volume' or 'price' for product "
+                         f"lines ({', '.join(lines)}), or 'opex' for cost centres."}
+
+    # Teachable validation, one enumerated option list per block.
+    opex_rows = _opex_plan_rows(year)
+    centres = sorted({r["cost_centre"] for r in opex_rows})
+    for bad in [d for d in spec["drivers"] if d not in known]:
+        return _unknown("driver_id", bad, known)
+    for block in ("volume", "price"):
+        for bad in [ln for ln in spec[block] if ln != budget.ALL_LINES and ln not in lines]:
+            return _unknown(f"{block} product_line", bad, lines + [budget.ALL_LINES])
+    for bad in [k for k in spec["opex"] if k not in centres and k not in known]:
+        return _unknown("opex cost_centre or driver_id", bad, centres + known)
 
     baseline_rows = [
         {"month": str(r["month"]), "product_line": str(r["product_line"]),
@@ -959,18 +1077,27 @@ def build_budget_scenario(name: str, assumptions: dict, note=None,
     hedges = dict(zip(catalog["driver_id"].astype(str),
                       catalog["hedge_coverage"].astype(float)))
 
+    months = sorted({str(r["month"]) for r in baseline_rows})
+    by_month_prices, basis_note = _basis_prices(basis, months, known, ccy,
+                                                eur_now, fx_lock)
+    if isinstance(by_month_prices, dict) and "error" in by_month_prices:
+        return by_month_prices
+
     projection = budget.project_pnl(
-        baseline_rows, bom_rows, lock_prices, clean, hedges=hedges,
+        baseline_rows, bom_rows, lock_prices, spec, hedges=hedges,
         price_pass_through=float(price_pass_through),
-        opex_inflation_pct=float(opex_inflation_pct))
+        opex_inflation_pct=float(opex_inflation_pct), opex_rows=opex_rows,
+        driver_prices_by_month=by_month_prices)
 
     stored = scenarios.save_scenario({
         "name": name, "note": note, "baseline": f"budget_{year}",
-        "assumptions": clean, "price_pass_through": float(price_pass_through),
-        "opex_inflation_pct": float(opex_inflation_pct),
+        "assumptions": spec, "price_pass_through": float(price_pass_through),
+        "opex_inflation_pct": float(opex_inflation_pct), "basis": basis,
         "totals": projection["totals"], "by_month": projection["by_month"],
         "by_product_line": projection["by_product_line"],
         "driver_impact_eur": projection["driver_impact_eur"],
+        "opex_bridge": projection["opex_bridge"],
+        "ebitda_bridge": projection["ebitda_bridge"],
         "driver_prices_used": lock_prices, "active": bool(make_active),
     })
 
@@ -979,25 +1106,246 @@ def build_budget_scenario(name: str, assumptions: dict, note=None,
     totals = projection["totals"]
     return {
         "scenario_id": stored["id"], "name": stored["name"], "year": year,
-        "active": stored["active"], "assumptions": clean,
+        "active": stored["active"], "assumptions": spec, "basis": basis,
+        "basis_note": basis_note,
         "totals": {k: (round(v, 2) if isinstance(v, (int, float)) and v is not None else v)
                    for k, v in totals.items()},
         "vs_baseline": {
             "revenue_delta_eur": round(totals["revenue_eur"] - baseline_totals["revenue_eur"], 2),
             "cogs_delta_eur": round(totals["cogs_eur"] - baseline_totals["cogs_eur"], 2),
             "ebitda_delta_eur": round(totals["ebitda_eur"] - baseline_totals["ebitda_eur"], 2),
+            "volume_delta_tonnes": round(projection["volume_delta_tonnes"], 2),
             "margin_delta_pp": round((totals["ebitda_margin_pct"] or 0.0)
                                      - (baseline_totals["ebitda_margin_pct"] or 0.0), 3),
+            # Waterfall-shaped: hand it straight to render_chart as the single
+            # series of a 'waterfall'. Every step sums to ebitda_delta_eur.
+            "bridge": _ebitda_bridge_points(projection["ebitda_bridge"]),
         },
         "driver_impact_eur": {k: round(v, 2) for k, v in projection["driver_impact_eur"].items()},
+        "opex_bridge": [{"cost_centre": r["cost_centre"], "driver_id": r["driver_id"],
+                         "basis": r["basis"], "pct": round(r["pct"], 3),
+                         "delta_eur": round(r["delta_eur"], 2)}
+                        for r in projection["opex_bridge"]["by_cost_centre"]],
+        "opex_growth_pct": round(projection["opex_bridge"]["weighted_pct"], 3),
         "by_month": [{"month": m["month"], "revenue_eur": round(m["revenue_eur"], 2),
                       "cogs_eur": round(m["cogs_eur"], 2),
                       "ebitda_eur": round(m["ebitda_eur"], 2)}
                      for m in projection["by_month"]],
         "currently_active_scenario": active.get("name"),
-        "note": "Scenario saved. Percentages are moves versus each driver's LOCKED value, "
-                "applied through the bill of materials and each driver's hedge coverage.",
+        "note": "Scenario saved. Every delta is measured against the LOCKED budget, applied "
+                "through the bill of materials and each driver's hedge coverage; volume and "
+                "price are moves versus the budget. Pass-through was suppressed on any line "
+                "with an explicit price, so recovery is never counted twice. " + basis_note,
         "source_file": source,
+    }
+
+
+def _basis_prices(basis: str, months: list[str], known: list[str], ccy: dict,
+                  spot_eur: dict, fx_fallback: float):
+    """({month: {driver_id: EUR price to apply}} | None, a sentence for the model).
+
+    The baseline the deltas are measured from never changes — it is the locked
+    price the budget was built on. What the basis changes is the price the
+    CFO's percentages sit on top of, which is why 'spot' with no assumptions at
+    all is a real answer ("what the market has already done to the budget")
+    rather than a no-op.
+
+    Returns an {"error": …} dict in the first slot when the chosen basis has no
+    data behind it, enumerating the bases that do — the same teachable shape as
+    every other validation here.
+    """
+    if basis == "locked":
+        return None, "Drivers are priced at their locked values."
+
+    if basis == "spot":
+        priced = {d: p for d, p in spot_eur.items() if d in known}
+        if not priced:
+            return ({"error": "No driver observations exist, so basis 'spot' has nothing to "
+                              "price against. Use basis 'locked', or research the prices "
+                              "first with record_driver_observation."}, "")
+        return ({m: dict(priced) for m in months},
+                f"Drivers were re-priced at the latest observed market level "
+                f"({len(priced)} drivers) before your percentages were applied, so the "
+                f"move versus the locked budget includes what the market has already done.")
+
+    wanted = set(months)
+    quote_by_month: dict[str, dict[str, float]] = {}
+    if wanted:
+        for did in known:
+            for point in drivers.forward_curve(did, months=len(wanted) + 24,
+                                               start_month=min(wanted)):
+                if point["quote_month"] in wanted:
+                    quote_by_month.setdefault(point["quote_month"], {})[did] = point["price"]
+
+    if not quote_by_month:
+        return ({"error": "No forward curves cover the budget year, so basis 'forward' has "
+                          "nothing to build on. Research the curve, record it with "
+                          "record_driver_forward citing the page you fetched, then rebuild — "
+                          "or use basis 'locked' or 'spot'."}, "")
+
+    # A USD-quoted forward is converted at the FX FORWARD for that month where
+    # one has been recorded, so an FX curve and a commodity curve compose. The
+    # locked rate is the fallback, matching how lock_prices are converted.
+    eur_by_month: dict[str, dict[str, float]] = {}
+    for month, prices in quote_by_month.items():
+        fx = float(prices.get("eur_usd") or fx_fallback or 1.0)
+        eur_by_month[month] = {
+            d: (p / fx if ccy.get(d) == "USD" and d != "eur_usd" else p)
+            for d, p in prices.items()}
+
+    covered = sorted({d for prices in quote_by_month.values() for d in prices})
+    return (eur_by_month,
+            f"Drivers were priced off the recorded forward curve, month by month, for "
+            f"{len(covered)} driver(s) across {len(eur_by_month)} of {len(months)} budget "
+            f"months ({', '.join(covered)}); anything the curve does not cover stayed at its "
+            f"locked value. Monthly cost therefore carries the curve's own shape.")
+
+
+def _assumption_blocks(assumptions, volume, price, opex) -> dict:
+    """Merge the accepted calling styles into the four blocks, or an {"error"}.
+
+    `assumptions` may be flat (`{driver_id: pct}`) or already blocked; `volume`,
+    `price` and `opex` merge on top. Both styles are accepted because the flat
+    one is what every stored scenario and every prior prompt example uses.
+
+    Unlike `budget.normalise_assumptions`, which drops junk because it runs on
+    read, this raises a teachable error — the model is here to be corrected.
+    """
+    raw: dict[str, dict] = {b: {} for b in budget.ASSUMPTION_BLOCKS}
+    if assumptions is not None:
+        if not isinstance(assumptions, dict):
+            return {"error": "assumptions must be an object of {driver_id: pct_change}."}
+        if any(k in budget.ASSUMPTION_BLOCKS and isinstance(v, dict)
+               for k, v in assumptions.items()):
+            for block in budget.ASSUMPTION_BLOCKS:
+                nested = assumptions.get(block)
+                if nested is None:
+                    continue
+                if not isinstance(nested, dict):
+                    return {"error": f"assumptions['{block}'] must be an object of {{key: pct}}."}
+                raw[block].update(nested)
+        else:
+            raw["drivers"].update(assumptions)
+
+    for block, extra in (("volume", volume), ("price", price), ("opex", opex)):
+        if extra is None:
+            continue
+        if not isinstance(extra, dict):
+            key = "cost_centre or driver_id" if block == "opex" else "product_line"
+            return {"error": f"'{block}' must be an object of {{{key}: pct_change}}."}
+        raw[block].update(extra)
+
+    spec: dict[str, dict] = {}
+    for block, entries in raw.items():
+        clean = {}
+        for key, value in entries.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                return {"error": f"The '{block}' assumption for '{key}' must be a number — a "
+                                 f"percentage change — got {value!r}."}
+            try:
+                clean[str(key)] = float(value)
+            except (TypeError, ValueError):
+                return {"error": f"The '{block}' assumption for '{key}' must be a number — a "
+                                 f"percentage change — got {value!r}."}
+        spec[block] = clean
+    return spec
+
+
+def _opex_plan_rows(year: str) -> list[dict]:
+    """Budget-basis opex_plan rows for one year, shaped for `budget.opex_bridge`.
+
+    Returns [] rather than raising when the dataset is missing — a company with
+    no opex plan still gets a scenario, just on the blanket inflation rate.
+    """
+    try:
+        plan, _ = _load("opex_plan")
+    except (FileNotFoundError, OSError, KeyError):
+        return []
+    rows = plan[plan["month"].astype(str).str.startswith(str(year))]
+    if rows.empty:
+        return []
+    amount_col = ("amount_budget_eur" if "amount_budget_eur" in rows.columns else "amount_eur")
+    out = []
+    for _, r in rows.iterrows():
+        did = r.get("driver_id")
+        out.append({"cost_centre": str(r["cost_centre"]),
+                    "driver_id": None if pd.isna(did) else str(did),
+                    "amount_eur": float(r[amount_col] or 0.0)})
+    return out
+
+
+# At most this many steps in the returned waterfall, matching render_chart's
+# WATERFALL_MAX_POINTS — the smallest drivers fold into one "Other drivers" step
+# so the bridge stays additive AND directly renderable.
+BRIDGE_MAX_POINTS = WATERFALL_MAX_POINTS
+
+
+def _ebitda_bridge_points(bridge: dict) -> list[dict]:
+    def kept(pairs):
+        return [(label, value) for label, value in pairs if abs(value) > 0.005]
+
+    head = kept([("Volume", bridge["volume_eur"]), ("Price", bridge["price_eur"])])
+    tail = kept([("Opex", bridge["opex_eur"])])
+    by_driver = kept(sorted(bridge["drivers_eur"].items(), key=lambda kv: -abs(kv[1])))
+
+    # Two absolutes bookend the deltas; only drivers fold, so Volume, Price and
+    # Opex always keep their own step and never hide inside "Other drivers".
+    room = BRIDGE_MAX_POINTS - 2 - len(head) - len(tail)
+    if len(by_driver) > room:
+        by_driver = by_driver[:room - 1] + [
+            ("Other drivers", sum(v for _, v in by_driver[room - 1:]))]
+    steps = head + by_driver + tail
+
+    points = [{"label": "Baseline EBITDA", "value": round(bridge["baseline_ebitda_eur"], 2),
+               "kind": "absolute"}]
+    points += [{"label": label, "value": round(value, 2), "kind": "delta"}
+               for label, value in steps]
+    points.append({"label": "Scenario EBITDA", "value": round(bridge["projected_ebitda_eur"], 2),
+                   "kind": "absolute"})
+    return points
+
+
+def budget_outlook() -> dict:
+    """The Budget page's own numbers, for the agent.
+
+    Imported lazily: budgetplan reads no dataset of ours and importing it at
+    module scope would put an `agent` import (and therefore the SDK) behind
+    every tools.py import, including the ones the pure tests make.
+    """
+    from . import budgetplan
+
+    plan = budgetplan.get_plan()
+    if not plan.get("configured"):
+        return {"error": "The budget has not been configured yet. Open the Budget page and "
+                         "either build it from the datasets or enter the cost lines, then ask "
+                         "again. Until then use build_budget_scenario for forward P&L."}
+    derived = budgetplan.derive(plan)
+    t = derived["totals"]
+    return {
+        "company": (plan.get("company") or {}).get("name"),
+        "current_year": t["current_year"], "budget_year": t["budget_year"],
+        "currency": t["currency"],
+        "mode": "bill_of_materials" if any(r.get("driver_id") for r in derived["ranked"])
+                else "manual",
+        "totals": {k: (round(v, 2) if isinstance(v, (int, float)) else v)
+                   for k, v in t.items()},
+        "variables": [{
+            "rank": r["rank"], "id": r["id"], "label": r["label"], "category": r["category"],
+            "driver_id": r.get("driver_id"),
+            "current_amount": round(r["current_amount"], 2),
+            "next_amount": round(r["next_amount"], 2),
+            "delta": round(r["delta"], 2),
+            "expected_change_pct": round(r["expected_change_pct"], 3),
+            "share_of_cost_pct": round(r["share_of_cost_pct"], 2),
+            "share_of_movement_pct": round(r["impact_share"] * 100.0, 2),
+            "assumption": r["assumption"] or r["default_note"],
+        } for r in derived["ranked"]],
+        "note": "Ranked by materiality — share of the cost base times expected change, so a "
+                "large line moving a little outranks a small one moving a lot. A line with a "
+                "driver_id is priced off the watchlist and its locked value and source are in "
+                "driver_status; a line without one was entered by hand. These are the CFO's "
+                "own planning figures, not a forecast.",
+        "source_file": "budget_plan.json",
     }
 
 
@@ -1164,8 +1512,10 @@ _TOOLS = {
     "cost_buildup": lambda i, ctx: cost_buildup(**i),
     "driver_status": lambda i, ctx: driver_status_tool(**i),
     "record_driver_observation": lambda i, ctx: record_driver_observation(**i, ctx=ctx),
+    "record_driver_forward": lambda i, ctx: record_driver_forward(**i, ctx=ctx),
     "driver_sensitivity": lambda i, ctx: driver_sensitivity(**i),
     "build_budget_scenario": lambda i, ctx: build_budget_scenario(**i),
+    "budget_outlook": lambda i, ctx: budget_outlook(),
     "lock_assumptions": lambda i, ctx: lock_assumptions_tool(**i),
     "project_series": lambda i, ctx: project_series(**i),
     "render_chart": lambda i, ctx: render_chart(**i),

@@ -1,24 +1,33 @@
-// budget.js — Budget Outlook: the configuration gate, the overview and the
-// scoped chat rail.
+// budget.js — the Budget tab: the configuration gate, the overview and the
+// hand-off rail.
 //
 // Loaded BEFORE app.js. That order matters: this file only declares (it calls
 // nothing at parse time), and app.js finishes by calling boot() → route(),
 // which needs window.BudgetPlan to already exist. Everything this file borrows
-// from app.js — escapeHtml, renderMarkdown, addUserMessage, addAssistantMessage,
-// createStreamRenderer, readSSE, scrollDown, showOnly — is referenced inside
-// function bodies, so it resolves at call time, long after app.js has run.
+// from app.js — escapeHtml, escapeAttr, safeHttpUrl, showOnly, askFromBudget —
+// is referenced inside function bodies, so it resolves at call time, long after
+// app.js has run.
 //
-// Kept out of app.js on purpose. The brief was "must not be a structural copy
-// of the other agents"; a separate file is what makes that checkable by
-// inspection rather than by discipline. The cost is that index.html now
-// version-stamps five assets instead of three.
+// The page has TWO input modes and one engine. In BOM mode every cost line is
+// materialised from the datasets and carries the driver_id it was priced from,
+// so the drawer can show that driver's locked value, its source URL and what
+// the market has done since. In simple mode the CFO types the lines. The
+// overview code below does not branch on the mode at all — it branches on
+// whether a row has a `driver_id`, which is the only difference that reaches
+// the screen.
+//
+// There is NO chat loop in here. It had one while the feature was tool-less;
+// now that a cost line names a real driver, a question about one belongs to the
+// main agent, which can actually go and look. Every "ask" affordance therefore
+// hands off through app.js's askFromBudget() — the same path an alert, a driver
+// card and a scenario card already use.
 //
 // SECURITY NOTE, and it is the one thing to be careful about in here:
-// app.js's escapeHtml escapes & < > but NOT quotes. So no free text is ever
-// interpolated into an HTML attribute below. Values that live in attributes are
-// slugs from our own controlled id set; user text either goes into a text
-// position (via escapeHtml) or is assigned to `.value` / `.textContent` after
-// the markup is in the DOM.
+// app.js's escapeHtml escapes & < > but NOT quotes. Anything reaching a quoted
+// attribute goes through escapeAttr, and any URL through safeHttpUrl — a driver
+// source URL is model-supplied and no amount of escaping stops `javascript:`.
+// User text otherwise goes into a text position (via escapeHtml) or is assigned
+// to `.value` / `.textContent` after the markup is in the DOM.
 
 (function () {
   "use strict";
@@ -27,7 +36,6 @@
     data: null,          // the whole GET /api/budgetplan payload
     showAll: false,
     openId: null,
-    streaming: false,
     lastRowFocus: null,
     configVars: [],      // the config screen's working copy
     resetArmed: false,
@@ -113,6 +121,17 @@
   function plan() { return (state.data && state.data.plan) || {}; }
   function derived() { return (state.data && state.data.derived) || null; }
   function currency() { return (plan().company || {}).currency || "EUR"; }
+
+  // Provenance for a materialised line, keyed by driver_id. Empty (never
+  // absent) when there is no watchlist, so callers need no guard.
+  function driverMeta(id) {
+    return (state.data && state.data.drivers && state.data.drivers[id]) || null;
+  }
+  function bomAvailable() { return !!(state.data && state.data.bom_available); }
+  // Every "ask" leaves this page for the main agent. Guarded on setup because
+  // the sessions API is gated: offering a button that 409s is worse than saying
+  // why it is not there.
+  function canAsk() { return !!(state.data && state.data.setup_complete); }
 
   // ---------- Router entry point ----------
 
@@ -278,18 +297,15 @@
         <aside class="bo-chat">
           <div class="bo-chat-head">
             <h2>Ask about this budget</h2>
-            <button class="bo-linkish" id="bo-clear-chat" type="button">Clear</button>
           </div>
-          <!-- Starters live INSIDE the scroll area, directly under the scope
-               note. In their own flex child below it they were pinned to the
-               bottom of an empty rail, reading as a footer rather than as an
-               invitation. They are removed on the first send. -->
           <div class="bo-messages" id="bo-messages">
+            ${sourceBlock()}
+            <p class="bo-scope-note" id="bo-scope-note"></p>
             <div class="bo-starters" id="bo-starters"></div>
           </div>
           <form class="bo-composer" id="bo-composer">
             <textarea id="bo-input" rows="2" placeholder="Ask about next year's budget…"></textarea>
-            <button class="bo-send" id="bo-send" type="submit">Send</button>
+            <button class="bo-send" id="bo-send" type="submit">Ask</button>
           </form>
         </aside>
       </div>
@@ -300,8 +316,38 @@
 
     renderRows();
     renderNarrative();
-    renderChat();
+    renderAskRail();
     wireOverview();
+  }
+
+  // Where the numbers came from, stated on the page rather than implied. In BOM
+  // mode this is the difference between "a budget somebody typed" and "a budget
+  // priced off the bill of materials", and it is the one place the rebuild
+  // lives — a destructive action, so it is a button with a warning, never
+  // automatic.
+  function sourceBlock() {
+    const linked = (derived()?.ranked || []).filter(r => r.driver_id).length;
+    if (!bomAvailable()) {
+      return `<div class="bo-source-block">
+        <span class="bo-source-mode">Entered by hand</span>
+        <p>Every line below is a figure you typed. Once cost datasets exist, this page can
+           price them off the bill of materials instead.</p>
+      </div>`;
+    }
+    return `<div class="bo-source-block">
+      <span class="bo-source-mode">Priced from your data</span>
+      <p>${escapeHtml(String(linked))} of ${escapeHtml(String((derived()?.ranked || []).length))}
+         lines are priced through the bill of materials and the opex plan, each against a
+         tracked driver. Open a line to see what it is locked at and where that came from.</p>
+      <div class="bo-source-actions">
+        <a class="bo-linkish" href="#/drivers">Drivers &amp; locked assumptions →</a>
+        <button class="bo-linkish" id="bo-rebuild" type="button">Rebuild from my data</button>
+      </div>
+      <p class="bo-rebuild-warn hidden" id="bo-rebuild-warn">This replaces every line and every
+         note you have edited here with the figures in the datasets. It cannot be undone.
+         <button class="bo-linkish" id="bo-rebuild-yes" type="button">Yes, rebuild</button>
+         <button class="bo-linkish" id="bo-rebuild-no" type="button">Cancel</button></p>
+    </div>`;
   }
 
   function renderRows() {
@@ -351,7 +397,7 @@
       const text = input.value.trim();
       if (!text) return;
       input.value = "";
-      send(text);
+      ask(text);
     });
     // Enter sends, Shift+Enter newlines — the same contract as the main composer.
     $("bo-input").addEventListener("keydown", e => {
@@ -360,13 +406,35 @@
         $("bo-composer").requestSubmit();
       }
     });
-    $("bo-clear-chat").addEventListener("click", async () => {
-      await fetch("/api/budgetplan/chat/clear", { method: "POST" }).catch(() => {});
-      plan().chat = [];
-      renderChat();
-    });
+    wireRebuild();
     $("bo-scrim").addEventListener("click", () => closeDrawer());
     document.addEventListener("keydown", onEsc);
+  }
+
+  function wireRebuild() {
+    const btn = $("bo-rebuild");
+    if (!btn) return;                       // simple mode: nothing to rebuild from
+    const warn = $("bo-rebuild-warn");
+    btn.addEventListener("click", () => warn.classList.toggle("hidden"));
+    $("bo-rebuild-no").addEventListener("click", () => warn.classList.add("hidden"));
+    $("bo-rebuild-yes").addEventListener("click", async () => {
+      const yes = $("bo-rebuild-yes");
+      yes.disabled = true;
+      yes.textContent = "Rebuilding…";
+      try {
+        const resp = await fetch("/api/budgetplan/rebuild", { method: "POST" });
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => null);
+          throw new Error((body && body.detail && body.detail.error)
+                          || `Could not rebuild (${resp.status}).`);
+        }
+        await load();
+        state.showAll = false;
+        renderOverview();
+      } catch (ex) {
+        warn.textContent = ex.message;
+      }
+    });
   }
 
   function onEsc(e) {
@@ -459,6 +527,8 @@
                  <span class="bo-source">Add one in configuration</span></p>`}
         </div>
 
+        ${provenanceBlock(row)}
+
         <div class="bo-block">
           <h3>Trend</h3>
           <div class="bo-trend">
@@ -494,12 +564,92 @@
     $("bo-scrim").classList.remove("hidden");
     drawer.classList.remove("hidden");
     drawer.focus();
+    wireProvenance(row);
     $("bo-drawer-close").addEventListener("click", () => closeDrawer());
-    $("bo-drawer-ask").addEventListener("click", () => {
+    const askBtn = $("bo-drawer-ask");
+    askBtn.disabled = !canAsk();
+    askBtn.addEventListener("click", () => {
       closeDrawer();
-      send(`Talk me through ${row.label} — is ${pct(row.expected_change_pct)} the right `
-         + `assumption for ${t.budget_year}, and what should I sanity-check?`);
+      ask(`Talk me through ${row.label} — is ${pct(row.expected_change_pct)} the right `
+        + `assumption for ${t.budget_year}, and what should I sanity-check?`
+        + (row.driver_id ? ` It tracks driver ${row.driver_id}.` : ""));
     });
+  }
+
+  // The block that only a materialised line can show, and the reason this page
+  // is worth more than a spreadsheet: what the figure is locked at, the page
+  // that figure was read off, and what the market has done since — drift for
+  // what already happened, the forward curve for what it says comes next.
+  //
+  // A line with no driver_id gets nothing rather than an empty shell: "we have
+  // not linked this" and "we linked it and found nothing" are different states.
+  function provenanceBlock(row) {
+    if (!row.driver_id) return "";
+    const d = driverMeta(row.driver_id);
+    if (!d) {
+      return `<div class="bo-block">
+        <h3>Where it comes from</h3>
+        <p class="bo-assumption is-default">This line names driver
+          <code>${escapeHtml(row.driver_id)}</code>, which is not on the watchlist.
+          <span class="bo-source">Nothing is being tracked against it</span></p>
+      </div>`;
+    }
+
+    const unit = d.unit || "";
+    const facts = [];
+    if (d.locked_value != null) {
+      facts.push([`Locked into the budget`,
+                  `${Number(d.locked_value).toLocaleString(undefined,
+                      { maximumFractionDigits: 2 })} ${unit}`.trim()]);
+    }
+    if (d.latest_value != null) {
+      facts.push([`Latest observation${d.latest_month ? ` (${d.latest_month})` : ""}`,
+                  `${Number(d.latest_value).toLocaleString(undefined,
+                      { maximumFractionDigits: 2 })} ${unit}`.trim()]);
+    }
+    if (d.drift_pct != null) facts.push(["Moved since we locked", pct(d.drift_pct)]);
+    if (d.forward_12m != null) {
+      facts.push([`Forward curve, next ${d.forward_months || 12} months`,
+                  `${Number(d.forward_12m).toLocaleString(undefined,
+                      { maximumFractionDigits: 2 })} ${unit}`.trim()
+                  + (d.forward_vs_lock_pct != null
+                       ? ` · ${pct(d.forward_vs_lock_pct)} vs the lock` : "")]);
+    }
+    facts.push(["Freshness", d.verify_status === "fresh" ? "Verified recently"
+                : d.verify_status === "stale" ? "Past its staleness limit"
+                : "Never verified"]);
+
+    return `<div class="bo-block">
+      <h3>Where it comes from</h3>
+      <dl class="bo-facts">${facts.map(([k, v]) =>
+        `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("")}</dl>
+      <p class="bo-prov-foot" id="bo-prov-foot"></p>
+      <a class="bo-linkish" href="#/drivers">Verify or re-lock on Drivers →</a>
+    </div>`;
+  }
+
+  // The source link is built imperatively with a protocol allowlist: it is a
+  // model-supplied URL, and escaping does not stop `javascript:`.
+  function wireProvenance(row) {
+    const foot = $("bo-prov-foot");
+    if (!foot) return;
+    const d = row.driver_id ? driverMeta(row.driver_id) : null;
+    const url = d && safeHttpUrl(d.locked_source_url || d.latest_source_url || "");
+    if (!url) {
+      foot.textContent = d ? "No source URL was recorded for this figure." : "";
+      return;
+    }
+    foot.textContent = "Read from ";
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = new URL(url).hostname;
+    foot.appendChild(a);
+    if (d.last_verified_utc) {
+      foot.appendChild(document.createTextNode(
+        ` on ${String(d.last_verified_utc).slice(0, 10)}`));
+    }
   }
 
   function closeDrawer({ silent = false } = {}) {
@@ -518,45 +668,26 @@
   }
 
   // ============================================================
-  // Chat
+  // Asking — a hand-off, not a second chat implementation
   // ============================================================
 
-  function renderChat() {
-    const container = $("bo-messages");
-    if (!container) return;
-    container.innerHTML = "";
-    const history = plan().chat || [];
-
-    if (!history.length) {
-      const intro = document.createElement("p");
-      intro.className = "bo-scope-note";
-      intro.textContent = state.data.has_api_key
-        ? "Scoped to this budget only. Every answer comes from the configuration on "
-          + "this page — nothing else."
-        : "Chat needs an ANTHROPIC_API_KEY. The figures on this page are computed "
-          + "locally and are unaffected.";
-      container.appendChild(intro);
-    }
-
-    // Recreated on every render because the container is cleared wholesale.
-    const starters = document.createElement("div");
-    starters.className = "bo-starters";
-    starters.id = "bo-starters";
-    container.appendChild(starters);
-
-    history.forEach(m => {
-      if (m.role === "user") addUserMessage(container, m.text, []);
-      else addAssistantMessage(container, m.text);
-    });
-    renderStarters();
-    scrollDown(container);
-  }
-
-  function renderStarters() {
+  function renderAskRail() {
+    const note = $("bo-scope-note");
     const host = $("bo-starters");
-    if (!host) return;
-    const history = plan().chat || [];
-    if (history.length || !state.data.has_api_key) { host.innerHTML = ""; return; }
+    const composer = $("bo-composer");
+    if (!note || !host) return;
+
+    if (!canAsk()) {
+      note.textContent = "Finish setup to ask about this budget — questions run through the "
+                       + "main agent, which needs your company profile first. The figures on "
+                       + "this page are computed locally and are unaffected.";
+      host.innerHTML = "";
+      if (composer) composer.classList.add("hidden");
+      return;
+    }
+    if (composer) composer.classList.remove("hidden");
+    note.textContent = "Questions open in Ask, where the agent can go and check the drivers, "
+                     + "the bill of materials and the market behind these numbers.";
 
     const d = derived();
     const t = d.totals;
@@ -579,43 +710,16 @@
     // company-derived labels and never touch an attribute.
     host.querySelectorAll(".bo-starter").forEach((btn, i) => {
       btn.textContent = questions[i];
-      btn.addEventListener("click", () => send(questions[i]));
+      btn.addEventListener("click", () => ask(questions[i]));
     });
   }
 
-  async function send(text) {
-    if (state.streaming) return;
-    const container = $("bo-messages");
-    if (!container) return;
-
-    const intro = container.querySelector(".bo-scope-note");
-    if (intro) intro.remove();
-    $("bo-starters").innerHTML = "";
-
-    state.streaming = true;
-    const sendBtn = $("bo-send");
-    if (sendBtn) sendBtn.disabled = true;
-
-    addUserMessage(container, text, []);
-    const bubble = addAssistantMessage(container);
-    const stream = createStreamRenderer(container, bubble);
-
-    try {
-      const resp = await fetch("/api/budgetplan/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-      await readSSE(resp, stream.handleEvent);
-    } catch (err) {
-      stream.fail(err.message);
-    } finally {
-      stream.finish();
-      state.streaming = false;
-      if (sendBtn) sendBtn.disabled = false;
-      // Re-sync so a reload shows the same transcript the server stored.
-      await load();
-    }
+  // The single exit from this page into the agent. Prefixed so the answer is
+  // about THIS budget rather than the scenario engine's view of it — the agent
+  // reads the page through the budget_outlook tool.
+  function ask(question) {
+    if (!canAsk()) return;
+    askFromBudget(`About next year's budget (use budget_outlook to read it): ${question}`);
   }
 
   // ============================================================
@@ -652,6 +756,12 @@
           <p>Everything on the overview is derived from what you enter here. Pick your
              industry to load a sensible starting set of cost lines, correct the numbers
              that matter, and switch off anything that doesn't apply.</p>
+          ${bomAvailable() ? `
+          <p class="bo-config-bom">You have cost datasets, so this budget can be built from
+             them instead — every ingredient priced through the bill of materials, every cost
+             centre off the opex plan, each linked to the driver it is tracked against.
+             <button type="button" class="bo-linkish" id="bo-build-from-data">Build it from my
+             data</button></p>` : ""}
         </div>
 
         <form id="bo-config-form">
@@ -705,12 +815,17 @@
                   <th>Variable</th>
                   <th class="bo-col-amount">This year</th>
                   <th class="bo-col-pct">Change %</th>
+                  <th class="bo-col-driver" title="Track this line against a watchlist driver">Driver</th>
                   <th class="bo-col-note">Assumption</th>
                   <th class="bo-col-del"></th>
                 </tr></thead>
                 <tbody id="bo-var-rows"></tbody>
               </table>
             </div>
+            <p class="bo-legend-note">Naming a driver links a cost line to a tracked market
+               price, so it inherits that price's locked value, its source and its place in a
+               frozen budget version. Leave it empty for a line nobody tracks.</p>
+            <datalist id="bo-driver-list">${driverOptions()}</datalist>
             <div class="bo-actions" style="border:0;padding-top:var(--space-5)">
               <button type="button" class="bo-ghost" id="bo-add-var">+ Add a variable</button>
             </div>
@@ -755,6 +870,15 @@
     wireConfig();
   }
 
+  // Options for the driver datalist. Values are driver ids — our own slugs —
+  // but the labels are model-supplied names, so they go through escapeAttr.
+  function driverOptions() {
+    const catalogue = (state.data && state.data.drivers) || {};
+    return Object.keys(catalogue).sort().map(id =>
+      `<option value="${escapeAttr(id)}">${escapeAttr(catalogue[id].name || id)}</option>`
+    ).join("");
+  }
+
   function renderVarRows() {
     const host = $("bo-var-rows");
     host.innerHTML = state.configVars.map((v, i) => `
@@ -763,6 +887,8 @@
         <td><input type="text" class="bo-v-label" maxlength="80"></td>
         <td class="bo-col-amount"><input type="number" class="bo-v-amount" min="0" step="1000"></td>
         <td class="bo-col-pct"><input type="number" class="bo-v-pct" min="-100" max="100" step="0.1"></td>
+        <td class="bo-col-driver"><input type="text" class="bo-v-driver" list="bo-driver-list"
+              maxlength="49" placeholder="none"></td>
         <td class="bo-col-note"><input type="text" class="bo-v-note" maxlength="600"></td>
         <td class="bo-col-del"><button type="button" class="bo-rowdel" aria-label="Remove">✕</button></td>
       </tr>
@@ -775,12 +901,14 @@
       const label = tr.querySelector(".bo-v-label");
       const amount = tr.querySelector(".bo-v-amount");
       const pctEl = tr.querySelector(".bo-v-pct");
+      const driver = tr.querySelector(".bo-v-driver");
       const note = tr.querySelector(".bo-v-note");
 
       inc.checked = v.include !== false;
       label.value = v.label || "";
       amount.value = String(v.current_amount ?? 0);
       pctEl.value = String(v.expected_change_pct ?? 0);
+      driver.value = v.driver_id || "";
       note.value = v.assumption || "";
       note.placeholder = v.default_note || "Why do you expect this?";
       tr.classList.toggle("is-excluded", !inc.checked);
@@ -792,6 +920,9 @@
       label.addEventListener("input", () => { v.label = label.value; });
       amount.addEventListener("input", () => { v.current_amount = Number(amount.value) || 0; });
       pctEl.addEventListener("input", () => { v.expected_change_pct = Number(pctEl.value) || 0; });
+      driver.addEventListener("input", () => {
+        v.driver_id = driver.value.trim().toLowerCase() || null;
+      });
       note.addEventListener("input", () => { v.assumption = note.value; });
       tr.querySelector(".bo-rowdel").addEventListener("click", () => {
         state.configVars.splice(i, 1);
@@ -843,6 +974,30 @@
   }
 
   function wireConfig() {
+    const fromData = $("bo-build-from-data");
+    if (fromData) fromData.addEventListener("click", async () => {
+      fromData.disabled = true;
+      fromData.textContent = "Building…";
+      try {
+        const resp = await fetch("/api/budgetplan/rebuild", { method: "POST" });
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => null);
+          throw new Error((body && body.detail && body.detail.error)
+                          || `Could not build (${resp.status}).`);
+        }
+        await load();
+        state.showAll = false;
+        // Same reasoning as submitConfig: writing the hash fires hashchange →
+        // route() → renderOverview(), so rendering here too would double it.
+        const wasAlreadyThere = location.hash === "#/budget";
+        location.hash = "#/budget";
+        if (wasAlreadyThere) renderOverview();
+      } catch (ex) {
+        fromData.disabled = false;
+        fromData.textContent = "Build it from my data";
+        showConfigError(ex.message);
+      }
+    });
     $("bo-load-defaults").addEventListener("click", () => loadDefaults());
     $("bo-c-industry").addEventListener("input", reloadDefaultsIfUntouched);
     $("bo-c-rev").addEventListener("input", reloadDefaultsIfUntouched);
@@ -853,7 +1008,7 @@
         id: `custom_${n}_${Math.random().toString(36).slice(2, 7)}`,
         label: "", category: "other", description: "",
         current_amount: 0, expected_change_pct: 0,
-        assumption: "", default_note: "", include: true,
+        assumption: "", default_note: "", driver_id: null, include: true,
       });
       renderVarRows();
       const rows = $("bo-var-rows").querySelectorAll("tr");

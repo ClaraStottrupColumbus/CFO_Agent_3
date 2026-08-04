@@ -34,7 +34,12 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DRIVERS_FILE = DATA_DIR / "drivers.parquet"
 PRICES_FILE = DATA_DIR / "driver_prices.parquet"
 PRICES_CSV = DATA_DIR / "driver_prices.csv"
+FORWARDS_FILE = DATA_DIR / "driver_forwards.parquet"
+FORWARDS_CSV = DATA_DIR / "driver_forwards.csv"
 ASSUMPTIONS_FILE = DATA_DIR / "locked_assumptions.json"
+
+# How many forward months driver_status averages into its headline figure.
+FORWARD_HORIZON_MONTHS = 12
 
 # A new observation must land within this multiple of the last known price.
 # Wide enough that real commodity moves pass; narrow enough that a
@@ -261,6 +266,215 @@ def append_observation(driver_id: str, price, month, *, source_url: str,
 
 
 # --------------------------------------------------------------------------
+# Forward curves — the second model-writable dataset, behind the SAME guards
+# --------------------------------------------------------------------------
+#
+# A budget built on today's spot is a budget that assumes the market stops
+# moving. The curve the market publishes is a better answer than extrapolating
+# the history, and it is a fact to be fetched rather than a number to be
+# invented — so it goes through verify_source_url and check_sanity_band exactly
+# as an observation does. The trust boundary widens to a second dataset without
+# a second implementation of it.
+#
+# One row per (curve_date, driver_id, quote_month): a curve is a set of monthly
+# prices read off one page on one day, and re-reading the same page later
+# appends a new curve rather than mutating the old one.
+
+FORWARD_COLUMNS = ["curve_date", "driver_id", "quote_month", "price", "currency",
+                   "source", "source_url", "revision", "recorded_at", "note"]
+
+
+def load_forwards() -> pd.DataFrame:
+    df = _read(FORWARDS_FILE, FORWARDS_CSV)
+    if df.empty:
+        return df
+    if "revision" not in df.columns:
+        df["revision"] = 0
+    return df
+
+
+def _write_forwards(df: pd.DataFrame) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_pq = FORWARDS_FILE.with_suffix(".parquet.tmp")
+    df.to_parquet(tmp_pq, index=False)
+    tmp_pq.replace(FORWARDS_FILE)
+    tmp_csv = FORWARDS_CSV.with_suffix(".csv.tmp")
+    df.to_csv(tmp_csv, index=False)
+    tmp_csv.replace(FORWARDS_CSV)
+
+
+def parse_curve_date(value) -> str | None:
+    """Accept 'YYYY-MM-DD', 'YYYY-MM' or a date; return 'YYYY-MM-DD' or None."""
+    if value is None:
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.strftime("%Y-%m-%d")
+    text = str(value).strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    if re.fullmatch(r"\d{4}-\d{2}", text):
+        return f"{text}-01"
+    return None
+
+
+def append_forward(driver_id: str, points, *, source_url: str, curve_date=None,
+                   fetched_urls=None, currency: str | None = None,
+                   source: str | None = None, note: str | None = None,
+                   override_sanity_check: bool = False,
+                   verify_provenance: bool = True) -> dict:
+    """Append one forward curve — a list of {quote_month, price} points.
+
+    Deviates from `append_observation` in taking a LIST rather than a single
+    figure, because a curve is read off one page in one go: twelve separate
+    calls would mean twelve provenance checks against the same URL and eleven
+    chances for the model to drift onto a different page halfway through. The
+    guards themselves are the same two functions, applied per point.
+
+    Validation is all-or-nothing: a curve with one bad month is rejected whole
+    rather than written half-way, so what lands on disk is always a curve
+    somebody could have read off the cited page.
+    """
+    driver = get_driver(driver_id)
+    if driver is None:
+        known = known_driver_ids()
+        return {"error": f"Unknown driver_id '{driver_id}'. Valid ids: "
+                         f"{', '.join(known) if known else '(none — run setup first)'}."}
+
+    if isinstance(points, dict):
+        points = [points]
+    if not isinstance(points, list) or not points:
+        return {"error": "points must be a non-empty list of "
+                         "{quote_month: 'YYYY-MM', price: number}."}
+
+    curve = parse_curve_date(curve_date) or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if verify_provenance and not verify_source_url(source_url, fetched_urls):
+        return {"error": (f"source_url {source_url!r} was not fetched in this turn, so the "
+                          f"forward curve was NOT recorded. Every recorded price must come "
+                          f"from a page you actually visited: search for the curve, fetch "
+                          f"the page with web_fetch, then record it citing that exact URL.")}
+
+    with _lock:
+        prev_row = latest_observation(driver_id)
+        previous = prev_row.get("price") if prev_row else None
+
+        clean: list[tuple[str, float]] = []
+        seen: set[str] = set()
+        for point in points:
+            if not isinstance(point, dict):
+                return {"error": "Each point must be an object of "
+                                 "{quote_month: 'YYYY-MM', price: number}."}
+            month = parse_month(point.get("quote_month") or point.get("month"))
+            if not month:
+                return {"error": f"Could not parse quote_month "
+                                 f"{point.get('quote_month')!r}. Use 'YYYY-MM'."}
+            if month in seen:
+                return {"error": f"Two points quote the same month '{month}'. "
+                                 f"A curve carries one price per month."}
+            seen.add(month)
+            # The band is measured against the latest SPOT price, which is what
+            # a forward is a claim about. A curve five times spot is a units
+            # mistake far more often than it is a market.
+            rejection = check_sanity_band(point.get("price"), previous,
+                                          override=override_sanity_check)
+            if rejection:
+                rejection["quote_month"] = month
+                return rejection
+            clean.append((month, float(point["price"])))
+
+        clean.sort()
+        stored = load_forwards()
+        existing = pd.DataFrame() if stored.empty else stored[
+            (stored["driver_id"] == driver_id) & (stored["curve_date"] == curve)]
+        revision = 0 if existing.empty else int(existing["revision"].max()) + 1
+        recorded_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        ccy = currency or driver.get("quote_currency") or "EUR"
+
+        rows = [{
+            "curve_date": curve,
+            "driver_id": driver_id,
+            "quote_month": month,
+            "price": price,
+            "currency": ccy,
+            "source": source or "agent_research",
+            "source_url": str(source_url or ""),
+            "revision": revision,
+            "recorded_at": recorded_at,
+            "note": note or "",
+        } for month, price in clean]
+        updated = pd.concat([stored, pd.DataFrame(rows)], ignore_index=True)
+        _write_forwards(updated[FORWARD_COLUMNS] if set(FORWARD_COLUMNS) <= set(updated.columns)
+                        else updated)
+
+    return {
+        "recorded": True, "driver_id": driver_id, "curve_date": curve,
+        "currency": ccy, "revision": revision, "months": len(clean),
+        "from_month": clean[0][0], "to_month": clean[-1][0],
+        "spot_reference": previous,
+        "curve": [{"quote_month": m, "price": p} for m, p in clean],
+        "source_url": str(source_url or ""),
+        "source_file": FORWARDS_FILE.name,
+    }
+
+
+def forward_curve(driver_id: str, *, months: int = FORWARD_HORIZON_MONTHS,
+                  start_month: str | None = None,
+                  forwards: pd.DataFrame | None = None) -> list[dict]:
+    """The latest published curve for one driver, from `start_month` forward.
+
+    Per quote month the newest curve wins (newest `curve_date`, then newest
+    `revision`) — so a re-read of the same page supersedes without deleting, and
+    a curve published today beats one published in September even where the two
+    overlap.
+
+    Months already in the past are dropped: a budget cannot be built on a price
+    for a month that has closed. If that leaves nothing — every stored curve is
+    historical — the whole curve is returned instead, because a caller asking
+    for a curve that exists should not get silence.
+    """
+    df = load_forwards() if forwards is None else forwards
+    if df.empty or "driver_id" not in df.columns:
+        return []
+    rows = df[df["driver_id"].astype(str) == str(driver_id)]
+    if rows.empty:
+        return []
+
+    rows = rows.sort_values(["quote_month", "curve_date", "revision"], kind="stable")
+    latest = rows.groupby("quote_month", as_index=False).tail(1)
+    latest = latest.sort_values("quote_month", kind="stable")
+
+    start = start_month or datetime.now(timezone.utc).strftime("%Y-%m")
+    future = latest[latest["quote_month"].astype(str) >= str(start)]
+    if future.empty:
+        future = latest
+
+    out = [{"quote_month": str(r["quote_month"]), "price": float(r["price"]),
+            "curve_date": str(r["curve_date"]), "currency": r.get("currency"),
+            "source_url": r.get("source_url")}
+           for _, r in future.iterrows()]
+    return out[:max(1, int(months))] if months else out
+
+
+def forward_prices_by_month(driver_ids=None, *, months: int = FORWARD_HORIZON_MONTHS,
+                            start_month: str | None = None) -> dict[str, dict[str, float]]:
+    """{quote_month: {driver_id: price}} in each driver's OWN quote currency.
+
+    Shaped for `budget.project_pnl`'s `driver_prices_by_month`; tools.py converts
+    to EUR before handing it over, for the same reason `_driver_eur_prices` exists.
+    """
+    forwards = load_forwards()
+    if forwards.empty:
+        return {}
+    ids = list(driver_ids) if driver_ids else sorted(set(forwards["driver_id"].astype(str)))
+    out: dict[str, dict[str, float]] = {}
+    for did in ids:
+        for point in forward_curve(did, months=months, start_month=start_month,
+                                   forwards=forwards):
+            out.setdefault(point["quote_month"], {})[str(did)] = point["price"]
+    return out
+
+
+# --------------------------------------------------------------------------
 # Locked assumptions — the CFO's frozen positions
 # --------------------------------------------------------------------------
 
@@ -332,6 +546,8 @@ def driver_status(now: datetime | None = None) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     catalog = load_catalog()
     prices = load_prices()
+    forwards = load_forwards()
+    this_month = now.strftime("%Y-%m")
     locked = load_assumptions().get("assumptions", {})
 
     out = []
@@ -368,6 +584,17 @@ def driver_status(now: datetime | None = None) -> list[dict]:
             moving_up = drift_pct > 0
             adverse = moving_up if adverse_direction == "up" else not moving_up
 
+        # The curve the market publishes, next 12 quoted months, averaged. It
+        # answers a different question from drift: drift is "the price moved
+        # since we locked", forward is "the market says it will not come back".
+        curve = forward_curve(driver_id, months=FORWARD_HORIZON_MONTHS,
+                              start_month=this_month, forwards=forwards)
+        forward_12m = (sum(p["price"] for p in curve) / len(curve)) if curve else None
+        forward_vs_lock_pct = None
+        if forward_12m is not None and locked_value not in (None, 0):
+            forward_vs_lock_pct = ((forward_12m - float(locked_value))
+                                   / float(locked_value) * 100.0)
+
         out.append({
             "driver_id": driver_id,
             "name": row.get("name") or driver_id,
@@ -384,7 +611,19 @@ def driver_status(now: datetime | None = None) -> list[dict]:
             "age_days": None if age_days is None else round(age_days, 2),
             "verify_status": verify_status,
             "locked_value": locked_value,
+            # The provenance of the LOCKED value, which is not the same page as
+            # the latest observation once a value has been held through a
+            # re-verify. The lock form round-trips both, and the export prints
+            # whichever the locked figure actually came from.
+            "locked_source_url": lock.get("source_url"),
+            "locked_rationale": lock.get("rationale"),
             "drift_pct": drift_pct,
             "adverse": adverse,
+            # None, not 0, when no curve has been recorded — "we have not looked"
+            # and "the market says flat" are different states.
+            "forward_12m": forward_12m,
+            "forward_vs_lock_pct": forward_vs_lock_pct,
+            "forward_curve_date": curve[0]["curve_date"] if curve else None,
+            "forward_months": len(curve),
         })
     return out

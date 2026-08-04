@@ -322,12 +322,14 @@ def generate(profile: dict | None = None) -> dict:
     ]), "bill_of_materials")
 
     _write(_driver_prices_frame(series, catalog), "driver_prices")
+    _write(_driver_forwards_frame(series, catalog), "driver_forwards")
     _write(_budget_vs_actuals_frame(rng, series, catalog, list_prices), "budget_vs_actuals")
     _write(_opex_frame(rng, series), "opex_plan")
 
     refresh_overview()
     _seed_locked_assumptions(series, catalog)
     _seed_baseline_scenario(series, catalog)
+    _seed_budget_plan()
     return {"months": len(HISTORY), "drivers": len(DRIVERS),
             "product_lines": len(PRODUCT_LINES), "data_dir": str(DATA_DIR)}
 
@@ -379,6 +381,11 @@ def apply_profile(profile: dict) -> dict:
                "driver_prices")
 
     refresh_overview()
+    # The watchlist just changed, so the Budget page's driver-linked lines are
+    # stale. Re-materialising here is what keeps ONE budget for ONE company:
+    # without it, confirming a profile leaves the Budget tab showing whoever the
+    # last seed named.
+    _seed_budget_plan()
     return {"drivers": len(rows), "unpriced": len(keep - set(seeded))}
 
 
@@ -443,6 +450,34 @@ def _seed_baseline_scenario(series: dict, catalog: dict) -> None:
     })
 
 
+def _seed_budget_plan() -> None:
+    """Materialise the Budget page from the datasets just written.
+
+    Before Phase 3 this file shipped one company and `budget_plan.json` shipped
+    another ("Northwind Interiors"), so the demo presented two unrelated budgets
+    behind one app. There is one budget now, and this is what makes that true on
+    a fresh install rather than only after the CFO presses rebuild.
+    """
+    from . import budgetplan
+    from . import profile as profile_mod
+
+    # The confirmed profile owns the name. Falling back to a demo name only when
+    # there is no profile is the whole point: one company, named once.
+    try:
+        company = profile_mod.get_profile().get("company") or {}
+    except Exception:
+        company = {}
+    result = budgetplan.rebuild_from_datasets({
+        "name": company.get("name") or "Meridian Feed Group",
+        "industry": "food_beverage",
+        "size": "large",
+        "currency": company.get("reporting_currency") or "EUR",
+        "fiscal_year_start_month": company.get("fiscal_year_start_month") or 1,
+    })
+    if isinstance(result, str):
+        print(f"[generate_data] budget plan not seeded: {result}")
+
+
 def _budget_price_month(month: str) -> str:
     """A year's budget prices are frozen at the previous September's lock."""
     return f"{int(month[:4]) - 1:04d}-09"
@@ -488,6 +523,62 @@ def _driver_prices_frame(series: dict, catalog: dict) -> pd.DataFrame:
                 "note": "",
             })
     return pd.DataFrame(rows).sort_values(["driver_id", "month"]).reset_index(drop=True)
+
+
+# The forward curve the market publishes, per driver, as a multiplier on the
+# anchor-month spot: (starting level, drift across the 12 months, seasonal
+# amplitude, calendar month the season peaks in).
+#
+# Only drivers with a liquid forward market get a curve. Leaving vitamin premix,
+# packaging film, road freight, rapeseed meal and wage inflation UNCOVERED is
+# deliberate: a real watchlist has both kinds, and the scenario engine has to
+# hold the uncovered ones at their locked value rather than pretending.
+#
+# Two hooks worth keeping. Gas and power carry a hard winter peak, which is the
+# whole argument for the forward basis — monthly cost shape falls out of the
+# curve instead of being assumed flat. Chicken meal eases only ~4% across the
+# year, so it stays far above the September lock: the market is saying the
+# spike does not come back, which is a different and more useful statement than
+# "it has risen 28%".
+FORWARD_SHAPES = {
+    "chicken_meal": (0.99, -0.040, 0.010, 1),
+    "wheat":        (1.01,  0.020, 0.035, 2),
+    "soybean_meal": (1.00,  0.015, 0.020, 3),
+    "maize":        (1.00,  0.025, 0.030, 2),
+    "fish_meal":    (1.02, -0.020, 0.025, 4),
+    "sea_freight":  (0.94, -0.090, 0.040, 11),
+    "energy_gas":   (1.03,  0.010, 0.180, 1),
+    "energy_power": (1.02,  0.015, 0.120, 1),
+    "eur_usd":      (1.00,  0.020, 0.006, 6),
+}
+
+
+def _driver_forwards_frame(series: dict, catalog: dict) -> pd.DataFrame:
+    """One curve per covered driver, published at the anchor month, quoting each
+    of the 12 budget months in the driver's own quote currency."""
+    curve_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    recorded_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rows = []
+    for did, (level, drift, amp, peak) in FORWARD_SHAPES.items():
+        if did not in series:
+            continue
+        spot = series[did][ANCHOR]
+        for i, month in enumerate(BUDGET_MONTHS):
+            seasonal = 1.0 + amp * math.cos(2 * math.pi * (int(month[5:7]) - peak) / 12.0)
+            shape = level * (1.0 + drift * (i + 1) / 12.0) * seasonal
+            rows.append({
+                "curve_date": curve_date,
+                "driver_id": did,
+                "quote_month": month,
+                "price": round(float(spot * shape), 4),
+                "currency": catalog[did]["quote_currency"],
+                "source": "seed_history",
+                "source_url": "",
+                "revision": 0,
+                "recorded_at": recorded_at,
+                "note": "",
+            })
+    return pd.DataFrame(rows)
 
 
 def _budget_vs_actuals_frame(rng, series: dict, catalog: dict,

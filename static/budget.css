@@ -852,3 +852,66 @@
   .bo-read { font-size: var(--fs-h5); }
   .bo-readout-head { flex-wrap: wrap; }
 }
+
+/* ---------------- BOM mode: source, rebuild, provenance ----------------
+   Added in Phase 3, when the page stopped being a second budget for a second
+   company and started reading the same datasets as the rest of the app. All of
+   it is conditional on a line carrying a driver_id, so simple mode renders
+   exactly as before and none of these rules apply. */
+
+.bo-source-block {
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-alt);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-2);
+  line-height: var(--lh-relaxed);
+}
+.bo-source-block p { margin: var(--space-2) 0 0; }
+.bo-source-mode {
+  display: inline-block;
+  font-size: var(--fs-caption);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.bo-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+/* The rebuild is destructive, so its confirmation is the one place on this page
+   that carries a warning tone rather than the neutral rail styling. */
+.bo-rebuild-warn {
+  margin-top: var(--space-3) !important;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--fg-1);
+}
+.bo-rebuild-warn button { margin-left: var(--space-2); }
+/* This file scopes `.hidden` per component rather than shipping a global rule,
+   so every element toggled by class needs its own — an omission here does not
+   fail, it silently shows a panel that should be closed. */
+.bo-rebuild-warn.hidden { display: none; }
+.bo-composer.hidden { display: none; }
+
+.bo-prov-foot {
+  margin: var(--space-3) 0 var(--space-2);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-3);
+}
+.bo-prov-foot a { color: var(--columbus-navy); }
+
+.bo-config-bom {
+  margin-top: var(--space-4) !important;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-alt);
+}
+
+.bo-vars .bo-col-driver { width: 10rem; }
+.bo-vars .bo-col-driver input { font-size: var(--fs-body-sm); }

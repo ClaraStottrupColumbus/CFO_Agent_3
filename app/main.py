@@ -17,13 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (alerts, budgetplan, config, drivers, generate_data,
-               profile as profile_mod, reporting, rules, scenarios, scheduler,
-               store, tasks, tools)
+from . import (alerts, budgetplan, budgetversions, config, drivers, export,
+               generate_data, profile as profile_mod, reporting, rules,
+               scenarios, scheduler, store, tasks, tools)
 from .agent import AVAILABLE_MODELS, EFFORT_LEVELS, volatile_context
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -177,8 +177,22 @@ class BudgetPlanRequest(BaseModel):
     variables: list[dict] | None = None
 
 
-class BudgetChatRequest(BaseModel):
-    message: str = ""
+class LockRequest(BaseModel):
+    assumptions: dict
+    scenario_id: str | None = None
+    note: str | None = None
+
+
+class VersionRequest(BaseModel):
+    scenario_id: str | None = None
+    label: str | None = None
+    note: str | None = None
+    created_by: str | None = None
+
+
+class ApprovalRequest(BaseModel):
+    by: str | None = None
+    note: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -308,25 +322,63 @@ def post_settings(payload: SettingsRequest) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Budget Outlook  (UNGATED — deliberately, and this is the one place it matters)
+# The Budget  (UNGATED — deliberately, and this is the one place it matters)
 # --------------------------------------------------------------------------
 #
 # The omission of `dependencies=Gated` on every route below is intentional, not
-# an oversight. Budget Outlook is config-driven: it reads no dataset and needs no
-# company profile, and it carries its OWN first-run gate (`plan["configured"]`).
-# Putting it behind require_setup would force a CFO through the driver-research
-# wizard for a feature that never touches a driver.
+# an oversight. In simple mode the Budget page is config-driven: it reads no
+# dataset and needs no company profile, and it carries its OWN first-run gate
+# (`plan["configured"]`). Putting it behind require_setup would force a CFO
+# through the driver-research wizard to reach a page that, until they have
+# datasets, never touches a driver.
+#
+# BOM mode reads datasets that only exist once setup has run, which is why
+# `bom_available` is reported rather than assumed: the mode follows the data,
+# not the gate.
 
 @app.get("/api/budgetplan")
 def get_budget_plan() -> dict:
     plan = budgetplan.get_plan()
-    return {
+    payload = {
         "plan": plan,
         "derived": budgetplan.derive(plan) if plan.get("configured") else None,
         "industries": budgetplan.industry_options(),
         "sizes": [{"id": s, "label": budgetplan.SIZE_LABELS[s]} for s in budgetplan.SIZES],
         "has_api_key": budgetplan.has_api_key(),
+        "bom_available": budgetplan.bom_available(),
+        "setup_complete": profile_mod.setup_complete(),
+        "drivers": {},
     }
+    # Provenance for the driver-linked lines: the locked value, where it was
+    # read and what has happened since. Keyed by driver_id so the drawer can
+    # look one up without a second request, and empty (never absent) when there
+    # is no watchlist, so the frontend has one shape to render.
+    try:
+        payload["drivers"] = {d["driver_id"]: d for d in drivers.driver_status()}
+    except Exception:
+        pass
+    return payload
+
+
+@app.post("/api/budgetplan/rebuild")
+def rebuild_budget_plan() -> dict:
+    """Rebuild every cost line from the datasets — BOM mode's one write.
+
+    Ungated with the rest of the page, but it fails cleanly rather than
+    dangerously: with no datasets `materialise_from_datasets` returns a sentence
+    saying so and nothing is saved.
+    """
+    company = (profile_mod.get_profile().get("company") or {})
+    result = budgetplan.rebuild_from_datasets({
+        "name": company.get("name") or (budgetplan.get_plan().get("company") or {}).get("name"),
+        "currency": company.get("reporting_currency"),
+        "industry": (budgetplan.get_plan().get("company") or {}).get("industry"),
+        "size": (budgetplan.get_plan().get("company") or {}).get("size"),
+        "fiscal_year_start_month": company.get("fiscal_year_start_month"),
+    })
+    if isinstance(result, str):
+        raise HTTPException(status_code=400, detail={"error": result})
+    return {"plan": result, "derived": budgetplan.derive(result)}
 
 
 @app.get("/api/budgetplan/defaults")
@@ -358,18 +410,11 @@ def post_budget_narrative(force: bool = Query(False)) -> dict:
     return {"narrative": budgetplan.ensure_narrative(plan, model, force=force)}
 
 
-@app.post("/api/budgetplan/chat")
-def post_budget_chat(payload: BudgetChatRequest) -> StreamingResponse:
-    plan = budgetplan.get_plan()
-    if not plan.get("configured"):
-        raise HTTPException(status_code=409, detail={"error": "budget_plan_not_configured"})
-    model = config.get_run_params()["model"]
-    return _sse(budgetplan.stream_chat(plan, payload.message, model))
-
-
-@app.post("/api/budgetplan/chat/clear")
-def clear_budget_chat() -> dict:
-    return {"plan": budgetplan.clear_chat()}
+# The Budget page has no chat route of its own. It had one while the feature was
+# tool-less and citation-less; now its lines carry driver ids, so a question
+# about one is a question about the real watchlist and goes through
+# reporting.run_session_turn like every other conversation in the app. The page
+# hands off to Ask, and `budget_outlook` is how the agent reads it.
 
 
 # --------------------------------------------------------------------------
@@ -564,6 +609,221 @@ def delete_scenario(scenario_id: str) -> dict:
     if not scenarios.delete_scenario(scenario_id):
         raise HTTPException(status_code=404, detail={"error": "scenario not found"})
     return {"deleted": True}
+
+
+# --------------------------------------------------------------------------
+# Locked assumptions — the CFO's door to the same function the model uses
+# --------------------------------------------------------------------------
+
+@app.post("/api/assumptions/lock", dependencies=Gated)
+def lock_assumptions(payload: LockRequest) -> dict:
+    """Freeze the assumption set from the UI.
+
+    Deliberately thin: it calls the SAME drivers.lock_assumptions the model's
+    tool calls, so there is one implementation of the frozen position and one
+    place its validation lives. Locking replaces the whole set — that is the
+    existing semantics, and the form posts every driver for exactly that reason.
+    """
+    result = drivers.lock_assumptions(payload.assumptions,
+                                      scenario_id=payload.scenario_id,
+                                      note=payload.note)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+# --------------------------------------------------------------------------
+# Budget versions
+# --------------------------------------------------------------------------
+
+def _drivers_snapshot() -> tuple[list[dict], str | None]:
+    """The driver provenance a version freezes: locked value, the URL it was read
+    from, and when. Copied into the version rather than referenced, so a later
+    re-lock cannot rewrite what was approved."""
+    payload = drivers.load_assumptions()
+    locked, locked_at = payload.get("assumptions") or {}, payload.get("locked_at")
+    rows = []
+    for d in drivers.driver_status():
+        entry = locked.get(d["driver_id"]) or {}
+        value = entry.get("value")
+        rows.append({
+            "driver_id": d["driver_id"],
+            "name": d.get("name"),
+            "unit": entry.get("unit") or d.get("unit"),
+            "value": value if value is not None else d.get("latest_value"),
+            "basis": "locked" if value is not None else "latest observation",
+            "latest_value": d.get("latest_value"),
+            "source_url": entry.get("source_url") or d.get("latest_source_url"),
+            "retrieved_at": d.get("last_verified_utc"),
+            "locked_at": locked_at,
+            "rationale": entry.get("rationale"),
+        })
+    return rows, locked_at
+
+
+def _company_name() -> str:
+    return ((profile_mod.get_profile().get("company") or {}).get("name") or "").strip()
+
+
+def _version_or_404(version_id: str) -> dict:
+    version = budgetversions.get_version(version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail={"error": "version not found"})
+    return version
+
+
+def _comparison_for(version: dict) -> dict | None:
+    """The version this one is naturally read against: its parent, else the
+    highest version below it. None for the first version ever created."""
+    parent_id = version.get("parent_version_id")
+    if parent_id:
+        parent = budgetversions.get_version(parent_id)
+        if parent:
+            return parent
+    below = [v for v in budgetversions.list_versions()
+             if (v.get("version_no") or 0) < (version.get("version_no") or 0)]
+    return below[0] if below else None
+
+
+@app.get("/api/budget/versions", dependencies=Gated)
+def list_budget_versions() -> dict:
+    items = budgetversions.list_versions()
+    active = scenarios.get_active()
+    return {
+        "versions": [budgetversions.summary(v) for v in items],
+        "approved_id": (budgetversions.approved_version() or {}).get("id"),
+        "active_scenario": scenarios.summary(active) if active else None,
+        # Seeds the approval attestation field. There is no authentication here,
+        # so this is a default name, never an identity.
+        "default_approver": _company_name(),
+    }
+
+
+@app.post("/api/budget/versions", dependencies=Gated)
+def create_budget_version(payload: VersionRequest) -> dict:
+    scenario = (scenarios.get_scenario(payload.scenario_id) if payload.scenario_id
+                else scenarios.get_active())
+    if not scenario:
+        raise HTTPException(status_code=404, detail={
+            "error": "No scenario to version. Build one on the Scenarios page first."})
+    snapshot, locked_at = _drivers_snapshot()
+    try:
+        version = budgetversions.create_version(
+            scenario, label=payload.label, note=payload.note,
+            created_by=payload.created_by, drivers_snapshot=snapshot,
+            locked_at=locked_at)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)})
+    return budgetversions.summary(version)
+
+
+@app.get("/api/budget/versions/{version_id}", dependencies=Gated)
+def get_budget_version(version_id: str) -> dict:
+    return _version_or_404(version_id)
+
+
+@app.post("/api/budget/versions/{version_id}/submit", dependencies=Gated)
+def submit_budget_version(version_id: str, payload: ApprovalRequest) -> dict:
+    try:
+        return budgetversions.summary(
+            budgetversions.submit(version_id, payload.by, payload.note))
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"error": "version not found"})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)})
+
+
+@app.post("/api/budget/versions/{version_id}/approve", dependencies=Gated)
+def approve_budget_version(version_id: str, payload: ApprovalRequest) -> dict:
+    try:
+        return budgetversions.summary(
+            budgetversions.approve(version_id, payload.by or "", payload.note))
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"error": "version not found"})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)})
+
+
+@app.delete("/api/budget/versions/{version_id}", dependencies=Gated)
+def delete_budget_version(version_id: str) -> dict:
+    try:
+        deleted = budgetversions.delete_version(version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)})
+    if not deleted:
+        raise HTTPException(status_code=404, detail={"error": "version not found"})
+    return {"deleted": True}
+
+
+@app.get("/api/budget/versions/{version_id}/diff", dependencies=Gated)
+def diff_budget_version(version_id: str, against: str | None = Query(None)) -> dict:
+    version = _version_or_404(version_id)
+    other = (budgetversions.get_version(against) if against
+             else _comparison_for(version))
+    if not other:
+        raise HTTPException(status_code=404, detail={
+            "error": "no earlier version to compare against"})
+    return budgetversions.diff(other, version)
+
+
+# --------------------------------------------------------------------------
+# Export
+# --------------------------------------------------------------------------
+
+def _xlsx(pack: dict) -> Response:
+    try:
+        content = export.workbook(pack)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail={"error": str(exc)})
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{export.filename(pack, "xlsx")}"'})
+
+
+def _markdown(pack: dict) -> Response:
+    return Response(
+        content=export.board_pack_markdown(pack), media_type="text/markdown",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{export.filename(pack, "md")}"'})
+
+
+def _scenario_pack(scenario_id: str) -> dict:
+    scenario = scenarios.get_scenario(scenario_id)
+    if not scenario:
+        raise HTTPException(status_code=404, detail={"error": "scenario not found"})
+    snapshot, locked_at = _drivers_snapshot()
+    return export.scenario_pack(scenario, drivers_snapshot=snapshot,
+                                locked_at=locked_at, company=_company_name())
+
+
+def _version_export_pack(version_id: str) -> dict:
+    version = _version_or_404(version_id)
+    other = _comparison_for(version)
+    return export.version_pack(
+        version, company=_company_name(),
+        diff=budgetversions.diff(other, version) if other else None)
+
+
+@app.get("/api/scenarios/{scenario_id}/export.xlsx", dependencies=Gated)
+def export_scenario_xlsx(scenario_id: str) -> Response:
+    return _xlsx(_scenario_pack(scenario_id))
+
+
+@app.get("/api/scenarios/{scenario_id}/export.md", dependencies=Gated)
+def export_scenario_md(scenario_id: str) -> Response:
+    return _markdown(_scenario_pack(scenario_id))
+
+
+@app.get("/api/budget/versions/{version_id}/export.xlsx", dependencies=Gated)
+def export_version_xlsx(version_id: str) -> Response:
+    return _xlsx(_version_export_pack(version_id))
+
+
+@app.get("/api/budget/versions/{version_id}/export.md", dependencies=Gated)
+def export_version_md(version_id: str) -> Response:
+    return _markdown(_version_export_pack(version_id))
 
 
 # --------------------------------------------------------------------------

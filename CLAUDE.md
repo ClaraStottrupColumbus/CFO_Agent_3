@@ -2,42 +2,6 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Booting the agent (quick start)
-
-One command, from the repo root — the whole app (API + SPA) is a single uvicorn process:
-
-```bash
-.venv/bin/uvicorn app.main:app --port 8323 --reload
-```
-
-Then open **http://127.0.0.1:8323/** — `/` serves the SPA, which lands on Home: a centred chat that
-keeps its conversation in place. Ready when the log says `Application startup complete.`
-
-Preconditions, in the order they bite:
-
-1. **`.venv` exists** — not committed. If missing:
-   `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
-2. **`.env` has `ANTHROPIC_API_KEY`** — the only required env var, read at import time by
-   `app.main`, and never overriding a value already exported in the shell. If missing:
-   `cp .env.example .env` and fill it in. The server still starts without it; the agent turns fail.
-3. **`data/` is populated** — if datasets are missing, `.venv/bin/python -m app.generate_data`
-   (seeded, deterministic).
-
-Port **8323** is the convention (Agent 1 = 8321, Agent 2 = 8322). Run it backgrounded with output
-to a log file; `--reload` picks up `app/` edits, but **not** `static/` cache-busting — see the
-`?v=N` rule below.
-
-Smoke-check without a browser:
-
-```bash
-curl -s http://127.0.0.1:8323/api/profile          # {"setup_complete": true, ...}
-curl -s "http://127.0.0.1:8323/api/sessions?kind=chat"
-```
-
-If `setup_complete` is `false`, every gated route 409s with `{"error": "setup_incomplete"}` and the
-SPA lands on `#/setup` — that is the setup gate working, not a bug. `/api/settings`,
-`/api/profile*` and `/api/budgetplan*` stay reachable regardless.
-
 ## What this is
 
 A CFO **budgeting** agent: it builds, defends and revises next year's budget by holding cost-driver
@@ -47,61 +11,61 @@ saying when one has moved far enough to change the budget.
 FastAPI + uvicorn in one process, vanilla-JS SPA, JSON/Parquet files on disk. No database, no message
 broker, no frontend build step, no bundler.
 
-## Commands
+## Booting the agent
 
-Setup (no `.venv` is committed — create one; `requirements.txt` is the only dependency source):
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-```
-
-Run the server (port **8323** by convention — Agent 1 = 8321, Agent 2 = 8322):
+One command, from the repo root — the whole app (API + SPA) is a single uvicorn process:
 
 ```bash
 .venv/bin/uvicorn app.main:app --port 8323 --reload
 ```
 
-Tests:
+Then open **http://127.0.0.1:8323/** — `/` serves the SPA, which lands on Home: a centred chat that
+keeps its conversation in place. Ready when the log says `Application startup complete.` Port **8323**
+is the convention (Agent 1 = 8321, Agent 2 = 8322). Run it backgrounded with output to a log file;
+`--reload` picks up `app/` edits, but **not** `static/` cache-busting — see the `?v=N` rule below.
+
+Preconditions, in the order they bite:
+
+1. **`.venv` exists** — not committed, and `requirements.txt` is the only dependency source:
+   `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+2. **`.env` has `ANTHROPIC_API_KEY`** — the only required env var, read at import time by
+   `app.main`, and never overriding a value already exported in the shell. If missing:
+   `cp .env.example .env` and fill it in. The server still starts without it; the agent turns fail.
+3. **`data/` is populated** — if datasets are missing, `.venv/bin/python -m app.generate_data`
+   (seeded and deterministic, `RNG_SEED = 42`).
+
+Smoke-check without a browser:
+
+```bash
+curl -s http://127.0.0.1:8323/api/profile          # {"setup_complete": true, ...}
+curl -s "http://127.0.0.1:8323/api/sessions?kind=chat"
+```
+
+If `setup_complete` is `false`, every gated route 409s with `{"error": "setup_incomplete"}` and the
+SPA lands on `#/setup` — that is the setup gate working, not a bug.
+
+Tests — the whole suite, one file, one case:
 
 ```bash
 .venv/bin/python -m pytest -q
-```
-
-A single file / single case:
-
-```bash
 .venv/bin/python -m pytest tests/test_driver_guards.py -q
-```
-
-```bash
 .venv/bin/python -m pytest tests/test_variance_decomposition.py -k additivity -q
 ```
-
-Rebuild the demo datasets (deterministic, `RNG_SEED = 42`):
-
-```bash
-.venv/bin/python -m app.generate_data
-```
-
-`ANTHROPIC_API_KEY` is the only required env var. `app.main` reads `.env` at import time and never
-overrides a value already exported in the shell (`cp .env.example .env`).
 
 **Editing `static/*` requires bumping the `?v=N` query string** on all **five** asset links in
 [static/index.html](static/index.html) (`columbus-tokens.css`, `style.css`, `budget.css`,
 `budget.js`, `app.js`) — there is no no-cache middleware in this app, so browsers serve a stale
 `app.js` otherwise. Bump them together; a half-bumped set is worse than none.
 
-## Documentation already in the repo
+## Other files worth knowing about
 
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — **this** app's spec: design rationale per
-  module, the citation model, the tool surface, the test table (§10), build order (§11) and a
-  10-step manual verification checklist (§12). Read the relevant section before changing a
-  subsystem; most non-obvious code has a "why" recorded there.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — describes the **reference/sibling app** (CFO_Agent_2) this
-  one was cloned from, not this codebase. Its frontend chapters (§8: routing, markdown renderer,
-  streaming reveal, SVG charts, polling) still apply almost verbatim; its backend module table,
-  tool names, task types and the `.claude/launch.json` reference do **not**. Module docstrings
-  throughout `app/` say "the reference" — they mean that app.
+- [Agent_upgrade.md](Agent_upgrade.md) — the live rewrite plan on the `agent_rewrite` branch, in
+  phases, each marked complete as it lands. Where it contradicts this file it is deliberate and says
+  so; read the relevant phase before changing a subsystem it touches.
+- Module docstrings throughout `app/` say **"the reference"** — they mean CFO_Agent_2, the sibling
+  app this one was cloned from. Its frontend behaviour (routing, markdown renderer, streaming
+  reveal, SVG charts, polling) still holds almost verbatim here; its backend module table, tool
+  names and task types do not.
 - `skills/` holds two vendored generic skills (`python-pro`, `code-reviewer`); nothing here depends
   on them.
 
@@ -114,8 +78,9 @@ static/ (vanilla JS SPA, hash-routed)  ──fetch JSON + SSE──►  app/main
                                                                 │
    reporting.py  run_session_turn  ── agent.py (streaming loop) ── tools.py ── budget.py (pure maths)
    scheduler.py (daemon thread) ── tasks.py ── rules.py (pure pandas) ── alerts.py
-   store.py / profile.py / config.py / scenarios.py / drivers.py   =  JSON + Parquet on disk
-   budgetplan.py (self-contained: own store, own gate, own chat loop) ── agent.get_client only
+   store.py / profile.py / config.py / scenarios.py / drivers.py / budgetversions.py = JSON + Parquet
+   export.py (pure leaf: xlsx + markdown out of plain dicts)
+   budgetplan.py (own store, own gate; lazy tools/drivers reads for BOM mode) ── agent.get_client
 ```
 
 Two rules hold the graph acyclic and are load-bearing:
@@ -128,7 +93,15 @@ Two rules hold the graph acyclic and are load-bearing:
 
 `budget.py` and `citations.py` are pure leaves — no I/O, no app imports. That is what makes the test
 suite possible without touching disk or the SDK; keep new arithmetic and new block/URL handling
-there rather than inline in `tools.py`/`agent.py`.
+there rather than inline in `tools.py`/`agent.py`. `export.py` is the third: it imports only
+`budget.py`, and takes driver provenance and company details as *arguments* rather than reading
+`drivers.py`, which is why `tests/test_export.py` needs no fixtures at all. `budgetversions.py` is a
+store, but its `diff()` is pure for the same reason.
+
+`main.py` is the only module that joins those two halves: `_drivers_snapshot()` reads
+`drivers.driver_status()` and hands the result to `budgetversions.create_version` and
+`export.scenario_pack`. Keep that direction — a store or an exporter that reaches back into the
+dataset layer loses its tests.
 
 ### A session is the only user-visible object
 
@@ -182,18 +155,32 @@ Event vocabulary yielded by `run_agent` (the backend↔browser contract, documen
 web tool must yield `web_error` instead, and every error arm yields `done` after it so the frontend's
 streaming state clears.
 
-### The trust boundary: `record_driver_observation`
+### The trust boundary: `record_driver_observation` and `record_driver_forward`
 
 Server-side web tools return results into the model's *context*, not to disk, so nothing downstream
-can compute on them. `record_driver_observation` is the only path from web research to pandas, which
-makes `driver_prices` the one **model-writable** dataset. Two pure guards in
-[app/drivers.py](app/drivers.py) stand in front of that write and are the highest-consequence code in
-the repo ([tests/test_driver_guards.py](tests/test_driver_guards.py)):
+can compute on them. Those two tools are the only path from web research to pandas, which makes
+`driver_prices` and `driver_forwards` the two **model-writable** datasets. Two pure guards in
+[app/drivers.py](app/drivers.py) stand in front of both writes and are the highest-consequence code
+in the repo ([tests/test_driver_guards.py](tests/test_driver_guards.py),
+[tests/test_forward_curve.py](tests/test_forward_curve.py)):
 
 - `verify_source_url` — the cited page must actually have been fetched **this turn**. Both sides go
   through `citations.normalise_url`; if the two sides ever diverge the guard fails closed, refuses
   every legitimate observation, and leaves nothing in the logs pointing at the comparison.
-- `check_sanity_band` — 0.2×–5.0× the last known value, escapable via `override_sanity_check`.
+- `check_sanity_band` — 0.2×–5.0× the last known value, escapable via `override_sanity_check`. For a
+  forward the band is measured against the latest **spot**, which is what a forward is a claim about.
+
+The boundary widened to a second dataset without a second implementation, and that is the property
+to protect: `append_forward` calls the same two functions. It differs from `append_observation` only
+in taking a **list** of `{quote_month, price}` points, because a curve is read off one page in one
+go — twelve calls would mean twelve provenance checks against the same URL and eleven chances to
+drift onto another page mid-curve. Validation is all-or-nothing for the same reason: what lands on
+disk is always a curve somebody could have read off the cited page.
+
+`forward_curve()` resolves the latest curve per quote month (newest `curve_date`, then `revision`),
+so a re-read supersedes without deleting. `driver_status` reports `forward_12m` and
+`forward_vs_lock_pct` **as `None`, never 0, when no curve exists** — "we have not looked" and "the
+market says flat" are different states and a UI that renders 0% for the first is lying.
 
 `lock_assumptions` is split from `append_observation` on purpose: routine research must not be able
 to overwrite the CFO's locked position.
@@ -206,16 +193,110 @@ to overwrite the CFO's locked position.
   `render_chart` out of the citation list.
 - All arithmetic lives here or in `budget.py`. The system prompt forbids the model deriving variances
   from `query_budget_data` rows, and `project_series` is restricted to volumes and driver price
-  series (forward P&L goes through `build_budget_scenario`).
+  series (forward P&L goes through `build_budget_scenario`, on a stated `basis`). `budget_outlook`
+  is the one tool that reads `budget_plan.json`; it imports `budgetplan` lazily so the SDK does not
+  end up behind every `tools.py` import, including the pure tests'.
 - `_load` prefers Parquet, falls back to CSV — which is what lets tests use CSV fixtures.
 - `render_chart` returns its validated spec under the private `_chart_spec` key; the loop pops it,
   streams the full spec to the UI and hands the model a compact ack.
+
+### The scenario engine speaks in four assumption blocks
+
+`build_budget_scenario` / `budget.project_pnl` take `{"drivers": {driver_id: pct}, "volume":
+{product_line: pct}, "price": {product_line: pct}, "opex": {cost_centre | driver_id: pct}}` —
+volume and price are the first two conversations in any budget round, so they are first-class
+rather than reachable only as a consequence of cost. `"*"` is the wildcard in `volume`/`price`.
+
+Four things there are load-bearing:
+
+- **`budget.normalise_assumptions` runs on read as well as on write** — in `scenarios.list_scenarios`
+  and `scenarios.summary`, not just in the tool. Every scenario in `data/scenarios.json` predating
+  the blocks is a flat `{driver_id: pct}` dict; without the read-side lift they parse as an empty
+  drivers block and silently project the baseline, which looks like a re-run that worked. The two
+  shapes are told apart by the **value** being a dict, never by the key, so a driver named `price`
+  cannot flip the detection.
+- **Pass-through τ applies only to lines with no explicit `price` entry.** τ and a stated price are
+  the same lever — "we recover cost in price" — and applying both double-counts recovery and
+  overstates EBITDA. An explicit `0` counts as deliberate (a decision to hold price).
+- **Application order** is volume → driver cost on the *post-volume* tonnage → explicit price → τ →
+  opex. Opex never scales with volume; it is period cost.
+- **`opex_bridge` returns a weighted rate, not a substitute total.** `opex_plan` is cut by cost
+  centre, `project_pnl`'s baseline opex by product line, and the two need not reconcile — only the
+  scale-free rate crosses over, with per-centre detail returned alongside for the narrative. Do not
+  "improve" this into a direct substitution without solving the two-cuts problem first. It is what
+  finally makes `opex_plan.csv`'s `driver_id` column mean something: wage inflation now reaches the
+  budget through the same machinery as chicken meal.
+
+`ebitda_bridge` attributes the EBITDA move across volume / price / each driver / opex and carries a
+`check_residual` for the same reason `variance_decomposition` does — a bridge that does not close is
+one nobody can defend to a board. Each driver's entry is **net of the τ recovery it triggers**, which
+is why the four components sum exactly.
+
+### `basis` — what the percentages sit on top of
+
+`build_budget_scenario` takes `basis: "locked" | "spot" | "forward"` (default `locked`), and it is
+the one field that changes what a percentage *means*, so it is stored on the scenario, frozen onto
+the version and printed in both exports. A scenario whose basis is not stated cannot be defended:
+the same assumption set on a forward curve and on locked values are two different budgets.
+
+The mechanism is one optional argument, `project_pnl(…, driver_prices_by_month={month: {driver_id:
+price}})`, and the design rule is that it is a pure **extension**:
+
+- **`driver_prices` stays the baseline the deltas are measured from** — the locked price the budget
+  was built on. `driver_prices_by_month` supplies only the price to *apply*. The per-driver delta is
+  `(applied × (1 + pct/100) − locked) × qty × volume' × (1 − hedge)`, so a curve move, a stated
+  percentage and both together are one subtraction.
+- **A month or driver the mapping omits falls back to `driver_prices`**, i.e. no implied move. Omit
+  the argument entirely and the arithmetic is byte-for-byte what it was — that property is what lets
+  `basis` be a switch rather than a fork, and `tests/test_forward_curve.py` asserts it first.
+- `tools._basis_prices` builds the mapping: `locked` → `None`; `spot` → today's EUR observations
+  repeated across every budget month (so an all-zero `spot` scenario is a real answer — "what the
+  market has already done to the budget" — not a no-op); `forward` → the recorded curve, with
+  USD-quoted drivers converted at that month's **eur_usd forward** where one exists, so an FX curve
+  and a commodity curve compose. A basis with no data behind it returns a teachable error naming the
+  bases that do.
+
+### A scenario is explored; a version is committed
+
+[app/budgetversions.py](app/budgetversions.py) — `data/budget_versions.json`, the same store pattern
+as everything else. A scenario is live: re-runnable against today's prices, deletable, and it moves
+when the market does. A version is a **freeze** of one, and the difference is the whole point of the
+module:
+
+- **It snapshots the driver provenance, not a reference to it.** `create_version` takes
+  `drivers_snapshot` (value, `source_url`, `retrieved_at`, `locked_at`, rationale per driver) as an
+  argument — `main._drivers_snapshot()` builds it. A later re-lock therefore cannot rewrite what was
+  approved, and the export can print a source next to every assumption months afterwards.
+- **`diff(a, b)` is pure and reports three cuts**, because "what changed" gets asked three ways: the
+  assumptions the CFO stated, the **locked values underneath them** (a percentage can hold still
+  while the price it applies to moves — that cut is what answers "the €2.4M swing came from
+  re-locking chicken meal on 12 Nov"), and the EBITDA those add up to. Both sides attribute against
+  the same baseline plan, so component-wise subtraction is exact; a re-cut baseline becomes its own
+  step and `check_residual` stays ~0. A version stored without a bridge still closes, via an
+  `Unattributed` step — a diff that silently drops a move is worse than an ugly one.
+- **At most one `approved` version**; approving another supersedes it, and an approved version
+  cannot be deleted or re-submitted. `approved_by` is required and free-text: this app has **no
+  authentication**, so it is an *attestation*, not a signature, and both the API error and the UI
+  copy say so rather than implying otherwise.
+- `POST /api/assumptions/lock` is a thin route onto the **existing** `drivers.lock_assumptions` — the
+  CFO gets a second door to the model's function, never a second implementation. Locking replaces
+  the whole set, which is why the form on `#/drivers` posts every driver.
+
+[app/export.py](app/export.py) turns either record into a workbook (**Summary · Monthly P&L · By
+product line · Assumptions · Driver bridge · Version diff**) or a board-pack markdown. Three things
+there are deliberate: the **Assumptions sheet carries `source_url` / `retrieved_at` / `locked_at` per
+driver** and lists the drivers the scenario *didn't* shock — that provenance is the reason to export
+from this tool rather than from a spreadsheet, so do not tidy those columns away. `openpyxl` is
+imported **inside** `workbook()`, so a checkout that predates the requirements bump loses one route
+rather than failing to import `main.py`. And `export.bridge_rows` deliberately does *not* fold small
+drivers into "Other drivers" the way `tools._ebitda_bridge_points` does for the chart: a spreadsheet
+has no point budget, and a board pack that hides a line is worse than a long one.
 
 ### Setup gate
 
 Almost every route depends on `require_setup` and 409s with `{"error": "setup_incomplete"}` until the
 CFO confirms a company profile. `/api/settings`, `/api/profile*` and `/api/budgetplan*` stay
-**ungated** so the settings panel, the setup wizard and Budget Outlook work while gated. On the
+**ungated** so the settings panel, the setup wizard and the Budget tab work while gated. On the
 frontend, `profile` gates every route except `#/setup` and `#/budget`. Startup report generation is
 gated on both the API key and `setup_complete()`.
 
@@ -223,31 +304,49 @@ The setup research turn runs as a real session so it inherits streaming, citatio
 transcript; the proposal comes back through the `propose_watchlist` **tool call** rather than
 structured outputs, because `output_config.format` is incompatible with citations (400).
 
-### Budget Outlook — the one feature that stands apart
+### The Budget tab — one engine, two input modes
 
 [app/budgetplan.py](app/budgetplan.py) + [static/budget.js](static/budget.js) +
-[static/budget.css](static/budget.css) + `#budget-view` / `#budget-config-view`. A config-driven read
-on next year's budget for **any** company. Four properties are load-bearing and easy to erode:
+[static/budget.css](static/budget.css) + `#budget-view` / `#budget-config-view`.
 
-- **It reads no dataset.** Not `drivers.parquet`, not `budget_vs_actuals.parquet`. Everything on the
-  page comes from `data/budget_plan.json`, which the user fills in. That is what lets it work on a
-  fresh install with no profile and no demo data.
-- **Its gate is its own** (`plan["configured"]`), independent of `setup_complete`. Adding
-  `dependencies=Gated` to a `/api/budgetplan*` route, or dropping `kind !== "budget"` from the
-  frontend gate, silently locks out a feature that has no need of a profile.
-- **Numbers are computed, prose is not.** `derive()` is pure and does the whole page: ranking,
-  deltas, totals, margin. The model only writes the 2–4 sentence read (cached on `fingerprint()`,
-  falling back to `templated_narrative()` when the API is unreachable) and answers chat.
-- **It does not reuse `run_agent`.** `stream_chat` is a small dedicated loop, because a tool-less,
-  citation-less turn needs none of that loop's tool rounds, `pause_turn` handling or `MODEL_CAPS`
-  logic — and the alternative was adding override parameters to the most correctness-critical code
-  in the repo. It yields a strict subset of the event vocabulary (`text`, `error`, `done`) so
-  `createStreamRenderer` consumes it unchanged.
+**This section reverses what it said before Phase 3, deliberately.** The old rationale — reads no
+dataset, own chat loop, "not a fourth `KIND_META` entry" — held while the feature was a standalone
+config-driven read, and it shipped a second budget for a second company alongside the feed business.
+There is one budget now. What survives is the *engine*, not the separateness:
 
-Structurally it shares only primitives with the other three agents — design tokens, the chat bubble
-and markdown CSS, `createStreamRenderer` / `readSSE` / `escapeHtml`. It uses none of `#feature-view`,
-`KIND_META`, `.page-inner`, `.data-inner`, `.card` or `store.py`. Keep it that way: the point of the
-feature is that it is not a fourth `KIND_META` entry.
+- **`derive()` is still pure and still does the whole page** — ranking, deltas, totals, margin — and
+  the two modes differ only in where `variables[]` comes from. That is what makes it one model
+  rather than two behind one tab, and it is why the whole of `tests/test_budget_plan.py` above the
+  BOM section needed no changes.
+- **BOM mode** (`bom_available()`: `bill_of_materials` + `budget_vs_actuals` both exist and are
+  non-empty) materialises every line from the datasets via `materialise_from_datasets()`, each
+  carrying the **`driver_id`** it was priced from. That id is the whole migration: a line that names
+  a driver inherits its locked value, its provenance, its place in a frozen version and its row in
+  the export — none of which needed new machinery. **Simple mode** is the old behaviour, and a
+  `driver_id` can still be typed in by hand on `#/budget/config`.
+- **The materialised cost base reconciles to the P&L exactly**, and three cuts make that true:
+  driver lines valued through `budget.driver_exposure`, a **conversion residual** (COGS minus those
+  materials, floored at zero) and opex cost centres sized by their **share** of the opex plan applied
+  to the P&L's opex level. That last one is the two-cuts problem again — `opex_plan` is cut by cost
+  centre, `budget_vs_actuals` by product line — solved the same scale-free way `opex_bridge` solves
+  it. Do not substitute the opex plan's own total; the margin on the hero would stop being the real
+  margin, and nothing below it would be defensible.
+- **Its gate is still its own** (`plan["configured"]`), independent of `setup_complete`, and the
+  `/api/budgetplan*` routes are still **ungated**: in simple mode there is nothing for a profile to
+  gate. BOM mode reads datasets that only exist after setup, so it simply does not offer itself until
+  they do — the mode follows the data, not the gate.
+- **Numbers are computed, prose is not.** The model writes only the 2–4 sentence read (cached on
+  `fingerprint()`, falling back to `templated_narrative()` when the API is unreachable).
+- **There is no chat loop here any more.** `stream_chat` and `/api/budgetplan/chat*` are gone. A page
+  whose cost lines name real drivers has no business answering questions about them without the
+  tools, so every "ask" affordance hands off through `askFromBudget()` in app.js — the same
+  `pendingHomeMessage` + `goHome()` path an alert, a driver card and a scenario card already use. The
+  agent reads the page back through the **`budget_outlook`** tool, which is the only tool that sees
+  cost lines the bill of materials does not cover.
+
+Dataset reads in `budgetplan.py` are **lazy imports inside the two functions that need them**, so
+everything above `derive()` stays importable with no pandas and no data directory — which is what
+keeps most of `tests/test_budget_plan.py` fixture-free.
 
 ### Autonomy
 
@@ -271,8 +370,12 @@ acquires it, so user requests can't queue behind an 03:00 market scan.
 
 [static/app.js](static/app.js) — one file, hash-routed, `showOnly(viewEl)` over `ALL_VIEWS`. Every
 view ships in [static/index.html](static/index.html) as a sibling `<main>`; nothing is templated.
-Rendering is `innerHTML` from template strings (every interpolated value through `escapeHtml`) and
-then attach listeners; a changed list is re-rendered wholesale. Charts are hand-built SVG strings
+Rendering is `innerHTML` from template strings and then attach listeners; a changed list is
+re-rendered wholesale. **Three escapes, by position, and they are not interchangeable:** text nodes
+through `escapeHtml`, anything inside a quoted attribute through **`escapeAttr`** (`escapeHtml`
+leaves quotes alone, so a model-supplied name containing `" onfocus="…` closes the value and opens a
+handler without ever needing a `<`), and URLs through `safeHttpUrl` — no amount of escaping stops a
+`javascript:` URL, so links are built imperatively with a protocol allowlist. Charts are hand-built SVG strings
 (`CHART_COLORS` is validated for lightness/chroma/CVD/contrast — do not reorder). Liveness comes from
 polling timers, not websockets; `route()` is the single place navigation clears them.
 
@@ -299,10 +402,15 @@ where its links would be traps: `#/setup` (everything else 409s until the profil
 Budget Outlook's first run, read through the synchronous `BudgetPlan.isConfigured()` — safe because
 `boot()` awaits `BudgetPlan.load()` before the first `route()`.
 
-`.card` (the surface under every driver, scenario and archived conversation) and `.panel` (the
-cream-50 module container they group into) live in `style.css`. Three surfaces separate by lightness
-alone — cream canvas, cream-50 panel, white card — so section boundaries need no rules drawn between
-them.
+`.card` (the surface under every driver, scenario, version and archived conversation) and `.panel`
+(the cream-50 module container they group into) live in `style.css`. Three surfaces separate by
+lightness alone — cream canvas, cream-50 panel, white card — so section boundaries need no rules
+drawn between them. The lock form on `#/drivers` and the version rail on `#/scenarios` add no fourth
+surface for the same reason; the approved version carries the same 4 px accent rule as the active
+scenario, because it means the same thing — *this is the one you are running on*.
+
+`renderLockPanel` returns early while `lockFormOpen`: `refreshDrivers` re-paints every 2 s during a
+verify run, and re-rendering the form would wipe what the CFO is typing into it.
 
 `createStreamRenderer(container, bubble, opts)` is the extracted streaming reveal loop, shared by
 chat, the setup wizard and the reasoning disclosure. Its 130 ms cadence, `max(14, backlog/5)` batch
@@ -319,9 +427,11 @@ section. Brand ratio ~70% cream canvas / 25% navy / **5% orange reserved for pri
 ## Testing
 
 Pure functions get tests; `main.py` routes, the SSE layer, the streaming shell of `run_agent` and
-anything touching the network deliberately do not. Nine files cover the variance/sensitivity/scenario
-maths, the provenance guards, block classification, rule boundaries, alert dedup, schedule math and
-the model-capability registry.
+anything touching the network deliberately do not. `tests/` covers the variance/sensitivity/scenario
+maths, the opex bridge, the provenance guards, block classification, rule boundaries, alert dedup,
+schedule math, the model-capability registry, the version diff and approval state machine, both
+export formats, the forward-curve guards and per-month pricing, and the BOM materialisation's
+reconciliation to the P&L.
 
 Tests that need data `monkeypatch.setattr` the module-level path constants (`tools.DATA_DIR`,
 `drivers.PRICES_FILE`, `scenarios.SCENARIOS_FILE`, …) at a `tmp_path` and write **CSV** fixtures —

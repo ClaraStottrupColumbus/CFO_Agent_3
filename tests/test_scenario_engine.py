@@ -5,7 +5,7 @@
 
 import pytest
 
-from app.budget import project_pnl
+from app.budget import normalise_assumptions, project_pnl
 
 TOL = 1e-6
 
@@ -144,3 +144,179 @@ def test_margin_percentages_are_computed_from_projected_revenue():
         t["ebitda_eur"] / t["revenue_eur"] * 100.0, abs=TOL)
     assert t["gross_margin_pct"] == pytest.approx(
         t["gross_margin_eur"] / t["revenue_eur"] * 100.0, abs=TOL)
+
+
+# ---------- The assumption vocabulary ----------
+#
+# Every scenario written before the four blocks existed is a flat dict, so the
+# lift has to be exact in both directions or saved scenarios read as empty.
+
+def test_a_flat_dict_lifts_into_the_drivers_block():
+    assert normalise_assumptions({"chicken_meal": 12.0, "wheat": -8.0}) == {
+        "drivers": {"chicken_meal": 12.0, "wheat": -8.0},
+        "volume": {}, "price": {}, "opex": {}}
+
+
+def test_a_blocked_dict_passes_through_and_fills_missing_blocks():
+    assert normalise_assumptions({"volume": {"Poultry": 10}}) == {
+        "drivers": {}, "volume": {"Poultry": 10.0}, "price": {}, "opex": {}}
+
+
+def test_a_driver_named_after_a_block_still_reads_as_a_driver():
+    # The discriminator is the VALUE being a dict, not the key being a block
+    # name — so naming a driver "price" cannot flip the shape detection.
+    assert normalise_assumptions({"price": 5.0}) == {
+        "drivers": {"price": 5.0}, "volume": {}, "price": {}, "opex": {}}
+
+
+def test_junk_is_dropped_rather_than_raised_on():
+    # normalise runs on READ; a half-written file must not take the page down.
+    assert normalise_assumptions({"wheat": "twelve", "chicken_meal": 3}) == {
+        "drivers": {"chicken_meal": 3.0}, "volume": {}, "price": {}, "opex": {}}
+    assert normalise_assumptions(None)["drivers"] == {}
+
+
+def test_a_flat_dict_and_its_blocked_form_project_identically():
+    flat = project_pnl(baseline_rows(), BOM, PRICES, {"chicken_meal": 15.0})
+    blocked = project_pnl(baseline_rows(), BOM, PRICES,
+                          {"drivers": {"chicken_meal": 15.0}})
+    assert blocked["totals"] == flat["totals"]
+
+
+# ---------- Volume ----------
+
+def test_volume_scales_revenue_and_cogs_but_never_opex():
+    base = baseline_rows()
+    res = project_pnl(base, BOM, PRICES, {"volume": {"*": 10.0}})
+    assert res["totals"]["revenue_eur"] == pytest.approx(
+        sum(r["revenue_eur"] for r in base) * 1.10, abs=1e-4)
+    assert res["totals"]["cogs_eur"] == pytest.approx(
+        sum(r["cogs_eur"] for r in base) * 1.10, abs=1e-4)
+    assert res["totals"]["opex_eur"] == pytest.approx(
+        sum(r["opex_eur"] for r in base), abs=1e-4)
+    assert res["totals"]["volume_tonnes"] == pytest.approx(
+        sum(r["volume_tonnes"] for r in base) * 1.10, abs=1e-4)
+
+
+def test_volume_alone_leaves_gross_margin_percent_unchanged():
+    flat = project_pnl(baseline_rows(), BOM, PRICES, {})
+    grown = project_pnl(baseline_rows(), BOM, PRICES, {"volume": {"*": 10.0}})
+    assert grown["totals"]["gross_margin_pct"] == pytest.approx(
+        flat["totals"]["gross_margin_pct"], abs=TOL)
+
+
+def test_a_volume_assumption_applies_only_to_the_named_line():
+    base = baseline_rows(months=1)
+    res = project_pnl(base, BOM, PRICES, {"volume": {"Swine": -20.0}})
+    by_line = {r["product_line"]: r for r in res["by_product_line"]}
+    assert by_line["Poultry"]["volume_tonnes"] == pytest.approx(1000.0, abs=TOL)
+    assert by_line["Swine"]["volume_tonnes"] == pytest.approx(560.0, abs=TOL)
+
+
+def test_a_named_line_beats_the_wildcard():
+    res = project_pnl(baseline_rows(months=1), BOM, PRICES,
+                      {"volume": {"*": 10.0, "Swine": 0.0}})
+    by_line = {r["product_line"]: r for r in res["by_product_line"]}
+    assert by_line["Poultry"]["volume_tonnes"] == pytest.approx(1100.0, abs=TOL)
+    assert by_line["Swine"]["volume_tonnes"] == pytest.approx(700.0, abs=TOL)
+
+
+def test_driver_cost_is_computed_on_the_post_volume_tonnage():
+    # 10% more Poultry tonnes consume 10% more chicken meal, so the driver
+    # shock has to land on 1100 t, not on the original 1000 t.
+    res = project_pnl(baseline_rows(months=1), BOM, PRICES,
+                      {"drivers": {"chicken_meal": 10.0}, "volume": {"Poultry": 10.0}})
+    assert res["driver_impact_eur"]["chicken_meal"] == pytest.approx(
+        0.10 * 0.22 * 1100.0 * 480.0, abs=TOL)
+
+
+# ---------- Price, and its interaction with pass-through ----------
+
+def test_price_moves_revenue_only():
+    base = baseline_rows()
+    res = project_pnl(base, BOM, PRICES, {"price": {"*": 4.0}})
+    assert res["totals"]["revenue_eur"] == pytest.approx(
+        sum(r["revenue_eur"] for r in base) * 1.04, abs=1e-4)
+    assert res["totals"]["cogs_eur"] == pytest.approx(
+        sum(r["cogs_eur"] for r in base), abs=1e-4)
+    assert res["totals"]["opex_eur"] == pytest.approx(
+        sum(r["opex_eur"] for r in base), abs=1e-4)
+
+
+def test_an_explicit_price_suppresses_pass_through_on_that_line_only():
+    # THE double-counting test. tau and an explicit price are the same lever;
+    # applying both would overstate recovery and quietly inflate EBITDA.
+    base = baseline_rows(months=1)
+    shock = {"drivers": {"wheat": 20.0}, "price": {"Poultry": 0.0}}
+    res = project_pnl(base, BOM, PRICES, shock, price_pass_through=0.5)
+
+    rows = {r["product_line"]: r for r in res["rows"]}
+    # Poultry priced deliberately at +0%: revenue is untouched despite the shock.
+    assert rows["Poultry"]["revenue_eur"] == pytest.approx(520_000.0, abs=1e-4)
+    # Swine was not priced, so tau still recovers half of its wheat delta.
+    swine_d_cogs = 0.20 * 0.55 * 700.0 * 250.0
+    assert rows["Swine"]["revenue_eur"] == pytest.approx(
+        300_000.0 + 0.5 * swine_d_cogs, abs=1e-4)
+
+
+def test_a_wildcard_price_counts_as_explicit_everywhere():
+    base = baseline_rows(months=1)
+    shock = {"drivers": {"wheat": 20.0}, "price": {"*": 3.0}}
+    res = project_pnl(base, BOM, PRICES, shock, price_pass_through=0.5)
+    for row in res["rows"]:
+        original = next(r for r in base if r["product_line"] == row["product_line"])
+        # Exactly +3%, with no tau on top.
+        assert row["revenue_eur"] == pytest.approx(original["revenue_eur"] * 1.03, abs=1e-4)
+
+
+def test_pass_through_still_applies_when_no_price_is_stated():
+    res = project_pnl(baseline_rows(), BOM, PRICES, {"drivers": {"chicken_meal": 20.0}},
+                      price_pass_through=0.5)
+    base_revenue = sum(r["revenue_eur"] for r in baseline_rows())
+    d_cogs = res["totals"]["cogs_eur"] - sum(r["cogs_eur"] for r in baseline_rows())
+    assert res["totals"]["revenue_eur"] == pytest.approx(base_revenue + 0.5 * d_cogs, abs=1e-4)
+
+
+# ---------- The EBITDA bridge ----------
+
+def test_the_ebitda_bridge_sums_to_the_total_ebitda_move():
+    # Same additivity discipline as variance_decomposition's check_residual: a
+    # bridge that does not close is a bridge nobody can defend to a board.
+    res = project_pnl(baseline_rows(), BOM, PRICES,
+                      {"drivers": {"chicken_meal": 28.0, "wheat": -8.0},
+                       "volume": {"Poultry": 12.0, "Swine": -5.0},
+                       "price": {"Poultry": 4.0}},
+                      price_pass_through=0.35, opex_inflation_pct=3.0)
+    b = res["ebitda_bridge"]
+    assert b["check_residual"] == pytest.approx(0.0, abs=1e-6)
+    assert (b["volume_eur"] + b["price_eur"] + b["opex_eur"]
+            + sum(b["drivers_eur"].values())) == pytest.approx(
+        b["projected_ebitda_eur"] - b["baseline_ebitda_eur"], abs=1e-6)
+
+
+def test_the_bridge_closes_for_a_volume_only_scenario():
+    res = project_pnl(baseline_rows(), BOM, PRICES, {"volume": {"*": -15.0}})
+    b = res["ebitda_bridge"]
+    assert b["price_eur"] == pytest.approx(0.0, abs=TOL)
+    assert b["drivers_eur"] == {}
+    assert b["volume_eur"] == pytest.approx(
+        b["projected_ebitda_eur"] - b["baseline_ebitda_eur"], abs=1e-6)
+
+
+def test_an_all_zero_scenario_has_a_bridge_of_zeroes():
+    b = project_pnl(baseline_rows(), BOM, PRICES, {})["ebitda_bridge"]
+    assert b["total_eur"] == pytest.approx(0.0, abs=TOL)
+    assert b["baseline_ebitda_eur"] == pytest.approx(b["projected_ebitda_eur"], abs=1e-6)
+
+
+def test_a_driver_bridge_entry_is_net_of_the_pass_through_it_triggers():
+    res = project_pnl(baseline_rows(months=1), BOM, PRICES,
+                      {"chicken_meal": 10.0}, price_pass_through=0.4)
+    gross = res["driver_impact_eur"]["chicken_meal"]
+    assert res["ebitda_bridge"]["drivers_eur"]["chicken_meal"] == pytest.approx(
+        -gross * 0.6, abs=TOL)
+
+
+def test_volume_delta_tonnes_is_reported_against_the_baseline():
+    res = project_pnl(baseline_rows(months=1), BOM, PRICES, {"volume": {"Poultry": 10.0}})
+    assert res["volume_delta_tonnes"] == pytest.approx(100.0, abs=TOL)

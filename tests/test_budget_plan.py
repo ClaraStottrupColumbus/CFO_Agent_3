@@ -394,26 +394,8 @@ def test_resaving_identical_numbers_keeps_the_cached_narrative():
     assert bp.save_config(valid_payload())["narrative"]["text"] == "still true"
 
 
-def test_chat_appends_and_trims_to_the_cap():
+def test_reset_clears_configuration_and_narrative():
     bp.save_config(valid_payload())
-    for i in range(bp.MAX_CHAT_MESSAGES + 8):
-        bp.append_chat("user", f"message {i}")
-    chat = bp.get_plan()["chat"]
-    assert len(chat) == bp.MAX_CHAT_MESSAGES
-    assert chat[-1]["text"] == f"message {bp.MAX_CHAT_MESSAGES + 7}"
-
-
-def test_clear_chat_leaves_the_configuration_intact():
-    bp.save_config(valid_payload())
-    bp.append_chat("user", "hello")
-    plan = bp.clear_chat()
-    assert plan["chat"] == []
-    assert plan["configured"] is True
-
-
-def test_reset_clears_configuration_narrative_and_chat():
-    bp.save_config(valid_payload())
-    bp.append_chat("user", "hello")
     plan = bp.get_plan()
     plan["narrative"] = {"text": "something", "generated_at": 1, "fingerprint": "f", "model": "x"}
     bp._write(plan)
@@ -421,7 +403,6 @@ def test_reset_clears_configuration_narrative_and_chat():
     after = bp.reset_plan()
     assert after["configured"] is False
     assert after["variables"] == []
-    assert after["chat"] == []
     assert after["narrative"]["text"] == ""
     assert after["company"]["name"] == ""
     # And it survives a round-trip through disk, not just in memory.
@@ -451,17 +432,6 @@ def test_the_brief_flags_excluded_variables_as_excluded():
     assert "Ghost" in text.split("EXCLUDED")[1]
 
 
-def test_starter_questions_are_grounded_in_this_company():
-    plan = make_plan([("payroll", 1_000_000.0, 1.0), ("freight", 100_000.0, 40.0)])
-    questions = bp.starter_questions(plan)
-    assert 3 <= len(questions) <= 4
-    assert any("freight" in q.lower() for q in questions)
-
-
-def test_starter_questions_do_not_crash_without_variables():
-    assert bp.starter_questions(make_plan([]))
-
-
 # ---------- Failure messages ----------
 
 class _Auth(Exception):
@@ -483,10 +453,171 @@ def test_an_unrecognised_failure_still_reassures_about_the_figures():
     assert "computed locally" in bp.explain_api_failure(ValueError("boom"))
 
 
-def test_the_chat_system_prompt_embeds_the_brief_and_the_scope_rule():
-    plan = make_plan([("payroll", 1_000_000.0, 1.0)])
-    system = bp.build_chat_system(plan)
-    assert "Testco" in system
-    assert "2027" in system
-    assert "out of scope" in system
-    assert "Payroll" in system
+# ---------- BOM mode: the same engine, fed from the datasets ----------
+#
+# Phase 3 collapsed two budget models into one. The property that makes it one
+# model rather than two behind a tab is that BOM mode produces `variables[]` in
+# exactly the shape simple mode does, so `derive()` — tested exhaustively above
+# — is untouched. What these tests check is that the materialisation is honest:
+# it reconciles to the P&L, and every line it can attribute names its driver.
+
+import pandas as pd
+
+from app import drivers as drivers_mod
+from app import tools as tools_mod
+
+
+@pytest.fixture
+def datasets(tmp_path, monkeypatch):
+    """A miniature company: one product line, two drivers, two cost centres."""
+    monkeypatch.setattr(tools_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(drivers_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(drivers_mod, "DRIVERS_FILE", tmp_path / "drivers.parquet")
+    monkeypatch.setattr(drivers_mod, "PRICES_FILE", tmp_path / "driver_prices.parquet")
+    monkeypatch.setattr(drivers_mod, "PRICES_CSV", tmp_path / "driver_prices.csv")
+    monkeypatch.setattr(drivers_mod, "FORWARDS_FILE", tmp_path / "driver_forwards.parquet")
+    monkeypatch.setattr(drivers_mod, "FORWARDS_CSV", tmp_path / "driver_forwards.csv")
+    monkeypatch.setattr(drivers_mod, "ASSUMPTIONS_FILE", tmp_path / "locked_assumptions.json")
+
+    def csv(name, rows):
+        pd.DataFrame(rows).to_csv(tmp_path / f"{name}.csv", index=False)
+
+    csv("budget_vs_actuals", [
+        {"month": "2026-06", "product_line": "Feed", "region": "Iberia",
+         "volume_tonnes_actual": 500.0, "volume_tonnes_budget": 500.0,
+         "revenue_actual_eur": 500_000.0, "revenue_budget_eur": 500_000.0,
+         "cogs_actual_eur": 300_000.0, "cogs_budget_eur": 300_000.0,
+         "opex_actual_eur": 60_000.0, "opex_budget_eur": 60_000.0},
+        {"month": "2027-06", "product_line": "Feed", "region": "Iberia",
+         "volume_tonnes_actual": None, "volume_tonnes_budget": 600.0,
+         "revenue_actual_eur": None, "revenue_budget_eur": 630_000.0,
+         "cogs_actual_eur": None, "cogs_budget_eur": 380_000.0,
+         "opex_actual_eur": None, "opex_budget_eur": 66_000.0},
+    ])
+    csv("bill_of_materials", [
+        {"product_line": "Feed", "driver_id": "wheat", "qty_per_tonne": 0.4, "unit": "EUR/t"},
+    ])
+    csv("drivers", [
+        {"driver_id": "wheat", "name": "Feed wheat", "category": "ingredient",
+         "unit": "EUR/t", "quote_currency": "EUR", "baseline": 250.0,
+         "hedge_coverage": 0.0, "adverse_direction": "up", "stale_after_days": 7,
+         "search_hint": ""},
+        {"driver_id": "wage_inflation", "name": "Wage inflation", "category": "labour",
+         "unit": "%/yr", "quote_currency": "EUR", "baseline": 3.0,
+         "hedge_coverage": 0.0, "adverse_direction": "up", "stale_after_days": 30,
+         "search_hint": ""},
+    ])
+    csv("driver_prices", [
+        {"month": "2026-06", "driver_id": "wheat", "price": 250.0, "currency": "EUR",
+         "source": "seed", "source_url": "https://exchange.example/wheat", "revision": 0,
+         "recorded_at": "2026-06-01T00:00:00+00:00", "note": ""},
+        {"month": "2026-06", "driver_id": "wage_inflation", "price": 3.0, "currency": "EUR",
+         "source": "seed", "source_url": "", "revision": 0,
+         "recorded_at": "2026-06-01T00:00:00+00:00", "note": ""},
+    ])
+    csv("opex_plan", [
+        {"month": "2026-06", "cost_centre": "Production", "amount_eur": 30_000.0,
+         "amount_budget_eur": 30_000.0, "headcount": 10, "driver_id": "wage_inflation"},
+        {"month": "2026-06", "cost_centre": "G&A", "amount_eur": 10_000.0,
+         "amount_budget_eur": 10_000.0, "headcount": 4, "driver_id": "wage_inflation"},
+        {"month": "2027-06", "cost_centre": "Production", "amount_eur": 33_000.0,
+         "amount_budget_eur": 33_000.0, "headcount": 10, "driver_id": "wage_inflation"},
+        {"month": "2027-06", "cost_centre": "G&A", "amount_eur": 11_000.0,
+         "amount_budget_eur": 11_000.0, "headcount": 4, "driver_id": "wage_inflation"},
+    ])
+    drivers_mod.lock_assumptions({"wheat": {"value": 260.0, "unit": "EUR/t",
+                                            "source_url": "https://exchange.example/wheat"}})
+    return tmp_path
+
+
+def test_bom_mode_is_unavailable_without_datasets(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools_mod, "DATA_DIR", tmp_path)
+    assert bp.bom_available() is False
+
+
+def test_bom_mode_is_available_with_them(datasets):
+    assert bp.bom_available() is True
+
+
+def test_the_materialised_cost_base_reconciles_to_the_pnl(datasets):
+    """The number that makes the page trustworthy. If the lines do not sum to
+    COGS + opex, the margin on the hero is wrong and nothing below it is
+    defensible — so the conversion residual exists precisely to close this."""
+    payload = bp.materialise_from_datasets()
+    assert not isinstance(payload, str), payload
+
+    current = sum(v["current_amount"] for v in payload["variables"])
+    assert current == pytest.approx(300_000.0 + 60_000.0, rel=1e-9)
+
+    plan = dict(payload)
+    plan["configured"] = True
+    plan["baseline"] = dict(payload["baseline"], budget_year=2027)
+    totals = bp.derive(plan)["totals"]
+    assert totals["cost_next"] == pytest.approx(380_000.0 + 66_000.0, rel=1e-6)
+    assert totals["revenue_current"] == pytest.approx(500_000.0)
+    assert totals["revenue_next"] == pytest.approx(630_000.0)
+
+
+def test_every_priced_line_names_the_driver_it_came_from(datasets):
+    by_id = {v["id"]: v for v in bp.materialise_from_datasets()["variables"]}
+    # The bill-of-materials line carries its driver, so the drawer can show that
+    # driver's locked value and source — the whole point of the link.
+    assert by_id["wheat"]["driver_id"] == "wheat"
+    # So does a cost centre with a driver_id in the opex plan: wage inflation now
+    # reaches the budget through the same machinery as wheat.
+    assert by_id["opex_production"]["driver_id"] == "wage_inflation"
+    # And the residual names nothing, because nothing tracks it.
+    assert by_id[bp.CONVERSION_ID]["driver_id"] is None
+
+
+def test_the_residual_is_cogs_minus_the_priced_materials(datasets):
+    by_id = {v["id"]: v for v in bp.materialise_from_datasets()["variables"]}
+    # 0.4 t/t x 500 t x EUR 250 = 50 000 of the 300 000 COGS.
+    assert by_id["wheat"]["current_amount"] == pytest.approx(50_000.0)
+    assert by_id[bp.CONVERSION_ID]["current_amount"] == pytest.approx(250_000.0)
+
+
+def test_opex_is_split_by_share_not_by_the_plans_own_total(datasets):
+    """opex_plan totals 40k and the P&L says 60k; only the SHARE crosses the
+    seam, exactly as budget.opex_bridge moves only a weighted rate."""
+    by_id = {v["id"]: v for v in bp.materialise_from_datasets()["variables"]}
+    assert by_id["opex_production"]["current_amount"] == pytest.approx(45_000.0)
+    assert by_id["opex_g_a"]["current_amount"] == pytest.approx(15_000.0)
+
+
+def test_the_assumption_text_quotes_the_locked_value(datasets):
+    by_id = {v["id"]: v for v in bp.materialise_from_datasets()["variables"]}
+    assert "260" in by_id["wheat"]["assumption"]
+
+
+def test_a_materialised_plan_survives_validation(datasets):
+    """It goes through the same validator a typed configuration does — one
+    store, one set of rules, no privileged write path."""
+    saved = bp.rebuild_from_datasets({"name": "Feedco"})
+    assert not isinstance(saved, str), saved
+    assert saved["configured"] is True
+    assert saved["company"]["name"] == "Feedco"
+    assert any(v["driver_id"] == "wheat" for v in saved["variables"])
+
+
+def test_materialising_without_datasets_explains_itself(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools_mod, "DATA_DIR", tmp_path)
+    result = bp.materialise_from_datasets()
+    assert isinstance(result, str)
+    assert "by hand" in result
+
+
+def test_a_driver_link_round_trips_through_the_validator():
+    payload = valid_payload()
+    payload["variables"][0]["driver_id"] = "chicken_meal"
+    assert bp.validate(payload)["variables"][0]["driver_id"] == "chicken_meal"
+
+
+def test_an_invalid_driver_link_is_refused_teachably():
+    payload = valid_payload()
+    payload["variables"][0]["driver_id"] = "Not A Slug!"
+    assert "driver link" in bp.validate(payload)
+
+
+def test_no_driver_link_stores_none_rather_than_an_empty_string():
+    assert bp.validate(valid_payload())["variables"][0]["driver_id"] is None
