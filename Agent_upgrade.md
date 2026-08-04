@@ -34,7 +34,7 @@ What the review found bad, and what this rewrite fixes:
 | 4 | **Two budget models for two different companies** (Budget Outlook = "Northwind Interiors"; the rest = the feed business) | Phase 3 ✅ |
 | 5 | No approval state, no version diff, no audit of what a re-lock was worth | Phase 2 ✅ |
 | 6 | The CFO **cannot lock from the UI** — `lock_assumptions` is a model-only tool | Phase 2 ✅ |
-| 7 | Budgets are built on **today's spot**; `project_series` is extrapolation dressed as foresight | Phase 3 ✅ (tool deleted in Phase 4) |
+| 7 | Budgets are built on **today's spot**; `project_series` is extrapolation dressed as foresight | Phase 3 ✅ (tool deleted in Phase 4 ✅) |
 | 8 | No cash / working capital | **Deferred** — see Phase 5 |
 
 **Correction to the review:** it also asked for the tool-call debug blocks to be put behind a
@@ -268,9 +268,9 @@ Deviations from plan, all deliberate:
    scenario whose basis is not stated cannot be defended — the same percentages on a forward curve
    and on locked values are two different budgets.
 
-Not done here, and still Phase 4's: `project_series` still exists, the Market scan pill is still in
-the nav, `driver_stale`/`scenario_ebitda_floor` still fire, and `WEEKLY_PROMPT`/`MONTHLY_PROMPT` are
-unchanged.
+Not done here, and left to Phase 4 (where all four landed): `project_series` still exists, the Market
+scan pill is still in the nav, `driver_stale`/`scenario_ebitda_floor` still fire, and
+`WEEKLY_PROMPT`/`MONTHLY_PROMPT` are unchanged.
 
 ### 3.1 Forward curves replace extrapolation
 
@@ -318,7 +318,41 @@ links. Update CLAUDE.md in the same commit rather than leaving the two in contra
 
 ---
 
-## Phase 4 — Removals, prompts, navigation
+## Phase 4 — Removals, prompts, navigation ✅ COMPLETE
+
+**Status: done.** `project_series` is gone, Market scan has lost its pill and reads as the "This
+week" strip on Drivers, the two noise rules are removed, and the prompts cover forward curves, the
+assumption blocks and the version diff. 366 tests green (`tests/test_rules.py` −7 for the deleted
+rules, +4 for the re-run and an assertion that the removals stay removed). `CLAUDE.md` gained the
+no-extrapolation rule under "Conventions in `tools.py`", the state-vs-event rationale under
+"Autonomy", and the weekly merge alongside the monthly one. Demo data regenerated. Asset links
+bumped to `?v=23`.
+
+Deviations from plan, all deliberate:
+
+1. **Prompt rule 3 is a prohibition, not a restriction.** The plan said "rewrite rule 3 around
+   forward curves". With the tool deleted, the rule that mattered was not "use the curve instead" but
+   "you have no projection tool and must not become one in prose" — no run-rates, no "at this rate",
+   no annualising three months. Deleting the tool without that rule would have moved extrapolation
+   from a tool call, where it was at least labelled, into unlabelled prose.
+2. **A new rule 12 for the assumption blocks, pushing `basis` to 13 and `budget_outlook` to 14.**
+   Renumbering invalidates the cached prompt prefix once, which is expected on any prompt edit, and
+   reading order is worth more than a one-off cache miss: the blocks and the basis are the same
+   conversation.
+3. **The "This week" strip carries a Run-a-scan button.** With `#/weekly` redirecting, the "Generate
+   this week's report" button inside `renderFeature`'s placeholder became unreachable, and the only
+   remaining way to get a scan would have been the scheduler. The strip's empty state and its action
+   row both call the same `apiGenerateReport("weekly")` the placeholder did.
+4. **The strip loads once per visit, and pauses while a scan runs.** `refreshDrivers` repaints every
+   2 s during a verify run; polling the scan on that tick would be two wasted requests a second for a
+   headline written at 03:00, and repainting mid-scan would put an idle label back on a running
+   button. Same guard as `renderLockPanel`'s `lockFormOpen`.
+5. **`_rerun_active_scenario` survives its rule.** `scenario_ebitda_floor` was the noise; the
+   arithmetic under it is what `main.budget_state` puts on the home screen. It keeps its tests, now
+   testing the function directly rather than the deleted rule — a home screen quoting a wrong number
+   is worse than a noisy alert.
+
+### The work
 
 1. **Delete `project_series`** — the tool, its schema, `PROJECTABLE`
    ([tools.py:91](app/tools.py#L91)) and system-prompt rule 3. Superseded by 3.1.

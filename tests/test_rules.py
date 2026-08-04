@@ -134,42 +134,15 @@ def test_drift_does_not_fire_with_nothing_locked(data):
     assert fire("driver_moved_since_lock", only("driver_moved_since_lock")) == []
 
 
-# ---------- 2. driver_stale ----------
-
-def test_stale_does_not_fire_within_the_limit(data):
-    data.write_drivers(stale_after_days=7)
-    data.write_prices(age_days=6.0)
-    assert fire("driver_stale", only("driver_stale")) == []
-
-
-def test_stale_fires_past_the_limit(data):
-    data.write_drivers(stale_after_days=7)
-    data.write_prices(age_days=9.0)
-    found = fire("driver_stale", only("driver_stale"))
-    assert len(found) == 1
-    assert "9 days ago" in found[0]["title"]
+# Staleness is deliberately NOT a rule. A driver crossing its limit is a state,
+# not an event — nothing happened — and it re-fired on every evaluation until
+# the CFO muted the whole feed. It is still fully visible on the Drivers page,
+# where `drivers.driver_status` computes it and `tests/test_driver_guards.py`
+# covers it. The same reasoning removed `scenario_ebitda_floor`; what it
+# computed lives on below, under the home-screen re-run.
 
 
-def test_staleness_is_per_driver_not_global(data):
-    # FX goes stale in a day, wage inflation in a month.
-    data.write_prices(age_days=9.0)
-    data.write_drivers(stale_after_days=30)
-    assert fire("driver_stale", only("driver_stale")) == []
-    data.write_drivers(stale_after_days=3)
-    assert len(fire("driver_stale", only("driver_stale"))) == 1
-
-
-def test_a_never_verified_driver_fires(data):
-    data.write_drivers()
-    pd.DataFrame(columns=["month", "driver_id", "price", "currency", "source",
-                          "source_url", "revision", "recorded_at", "note"]).to_csv(
-        data.root / "driver_prices.csv", index=False)
-    found = fire("driver_stale", only("driver_stale"))
-    assert len(found) == 1
-    assert "never been verified" in found[0]["title"]
-
-
-# ---------- 3. budget_line_variance ----------
+# ---------- 2. budget_line_variance ----------
 
 def test_variance_does_not_fire_at_the_threshold(data):
     data.write_bva(actual_revenue=950_000.0, budget_revenue=1_000_000.0)   # exactly -5%
@@ -208,7 +181,7 @@ def test_beating_budget_never_fires(data):
     assert fire("budget_line_variance", only("budget_line_variance")) == []
 
 
-# ---------- 4. unit_cost_breach ----------
+# ---------- 3. unit_cost_breach ----------
 
 def test_unit_cost_does_not_fire_at_the_threshold(data):
     # Assumed €400/t; actual €416/t is exactly +4%.
@@ -241,7 +214,14 @@ def test_unit_cost_does_not_fire_without_a_scenario(data):
     assert fire("unit_cost_breach", only("unit_cost_breach")) == []
 
 
-# ---------- 5. scenario_ebitda_floor ----------
+# ---------- The home-screen re-run ----------
+#
+# `_rerun_active_scenario` used to back the `scenario_ebitda_floor` rule. The
+# rule is gone — a scenario under the floor stays under it, so it re-fired the
+# same finding every window — but the arithmetic is not: `main.budget_state`
+# calls this to put the cumulative EBITDA effect of everything that has drifted
+# on the home screen. It stays tested here because it is still rules.py's, and
+# because a home screen quoting a wrong number is worse than a noisy alert.
 
 def _bom(root):
     pd.DataFrame([{"product_line": "Poultry Feed", "driver_id": "wheat",
@@ -264,31 +244,26 @@ def _budget_year(root, revenue=12_000_000.0, cogs=9_000_000.0, opex=1_800_000.0)
     pd.DataFrame(rows).to_csv(root / "budget_vs_actuals.csv", index=False)
 
 
-def test_ebitda_floor_does_not_fire_when_prices_have_not_moved(data):
+def test_the_rerun_is_flat_when_prices_have_not_moved(data):
     _bom(data.root)
     _budget_year(data.root)
     data.scenario(prices={"wheat": 250.0})
     data.write_prices(price=250.0)
-    assert fire("scenario_ebitda_floor", only("scenario_ebitda_floor")) == []
+    out = rules._rerun_active_scenario()
+    assert out["delta_ebitda_eur"] == pytest.approx(0.0)
+    assert out["margin_pct"] == pytest.approx(out["baseline_margin_pct"])
 
 
-def test_ebitda_floor_fires_when_a_driver_move_pushes_margin_under(data):
+def test_a_rising_driver_cuts_the_projection(data):
     # Baseline margin is 10%. Wheat doubling adds 0.5 t/t x 20000 t x €250 =
     # €2.5M of COGS, which takes EBITDA from €1.2M to -€1.3M.
     _bom(data.root)
     _budget_year(data.root)
     data.scenario(prices={"wheat": 250.0})
     data.write_prices(price=500.0)
-    found = fire("scenario_ebitda_floor", only("scenario_ebitda_floor"))
-    assert len(found) == 1
-    assert found[0]["metric_value"] < 8.0
-    assert found[0]["context"]["delta_ebitda_eur"] < 0
-
-
-def test_ebitda_floor_does_not_fire_without_a_scenario(data):
-    _bom(data.root)
-    _budget_year(data.root)
-    assert fire("scenario_ebitda_floor", only("scenario_ebitda_floor")) == []
+    out = rules._rerun_active_scenario()
+    assert out["delta_ebitda_eur"] == pytest.approx(-2_500_000.0)
+    assert out["margin_pct"] < 8.0
 
 
 def test_a_falling_driver_lifts_the_projection(data):
@@ -296,8 +271,21 @@ def test_a_falling_driver_lifts_the_projection(data):
     _budget_year(data.root)
     data.scenario(prices={"wheat": 250.0})
     data.write_prices(price=200.0)
-    assert fire("scenario_ebitda_floor", only("scenario_ebitda_floor")) == []
     assert rules._rerun_active_scenario()["delta_ebitda_eur"] > 0
+
+
+def test_the_rerun_returns_none_without_a_scenario(data):
+    _bom(data.root)
+    _budget_year(data.root)
+    assert rules._rerun_active_scenario() is None
+
+
+def test_the_removed_rules_are_gone_for_good(data):
+    """Both fired on every evaluation. Their absence is the feature, so it is
+    asserted rather than left to whoever re-adds a line to DEFAULT_RULES."""
+    assert "driver_stale" not in rules.RULE_IDS
+    assert "scenario_ebitda_floor" not in rules.RULE_IDS
+    assert set(rules.DEDUP) == set(rules.RULE_IDS)
 
 
 # ---------- Shape and configuration ----------
@@ -327,7 +315,7 @@ def test_thresholds_round_trip_through_save(tmp_path, monkeypatch):
     assert stored["driver_moved_since_lock"]["threshold"] == 15.0
     assert stored["driver_moved_since_lock"]["enabled"] is False
     # Unlisted rules keep their defaults, so a new rule appears after an upgrade.
-    assert stored["driver_stale"]["enabled"] is True
+    assert stored["unit_cost_breach"]["enabled"] is True
     assert {r["id"] for r in rules.get_rules()} == set(rules.RULE_IDS)
 
 

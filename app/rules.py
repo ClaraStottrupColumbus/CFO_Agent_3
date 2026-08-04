@@ -1,8 +1,17 @@
 # rules.py — Deterministic budget rules. Pure pandas, never calls the API.
 #
-# Five threshold rules over stable tables. Detection is entirely API-free —
+# Three threshold rules over stable tables. Detection is entirely API-free —
 # only the narrative in alerts.py needs the model, and it falls back to the
 # finding title when the network is unavailable.
+#
+# There were five. `driver_stale` and `scenario_ebitda_floor` were removed
+# because both fired on every evaluation and trained the CFO to mute the other
+# three. Staleness is a STATE, not an event: nothing happened when a driver
+# crossed its limit, and it is already fully visible on the Drivers page as a
+# badge, a summary count and a card rule. The EBITDA floor was the same shape —
+# a scenario below the floor stays below it until someone acts, so it re-fired
+# the same finding every window. What it computed is not lost: the re-run still
+# runs, on the home screen, through `_rerun_active_scenario`.
 #
 # The finding shape is preserved exactly from the reference:
 #   {rule_id, entity, period, metric_value, threshold, severity, title}
@@ -23,19 +32,14 @@ from .tools import _budget_year, _driver_eur_prices, _load, _opex_plan_rows
 RULES_FILE = Path(__file__).resolve().parent.parent / "data" / "rules.json"
 
 # Defaults are set so the seeded story hooks fire: chicken meal, sea freight and
-# fish meal have all moved >10% since the September lock, and two drivers are
-# past their staleness limit (generate_data.py).
+# fish meal have all moved >10% since the September lock (generate_data.py).
 DEFAULT_RULES = [
     {"id": "driver_moved_since_lock", "enabled": True, "threshold": 10.0,
      "label": "Driver moved since lock by more than (%)", "direction": "higher_is_worse"},
-    {"id": "driver_stale", "enabled": True, "threshold": 1.0,
-     "label": "Driver unverified for longer than its limit (x)", "direction": "higher_is_worse"},
     {"id": "budget_line_variance", "enabled": True, "threshold": -5.0,
      "label": "Product line revenue vs budget below (%)", "direction": "lower_is_worse"},
     {"id": "unit_cost_breach", "enabled": True, "threshold": 4.0,
      "label": "Unit cost above the locked assumption by (%)", "direction": "higher_is_worse"},
-    {"id": "scenario_ebitda_floor", "enabled": True, "threshold": 8.0,
-     "label": "Projected EBITDA margin floor (%)", "direction": "lower_is_worse"},
 ]
 RULE_IDS = tuple(r["id"] for r in DEFAULT_RULES)
 RULE_DIRECTION = {r["id"]: r["direction"] for r in DEFAULT_RULES}
@@ -46,10 +50,8 @@ RULE_DIRECTION = {r["id"]: r["direction"] for r in DEFAULT_RULES}
 # code path. One mechanism, two behaviours.
 DEDUP = {
     "driver_moved_since_lock": {"window_hours": 72, "include_period": False, "bucket": 5.0},
-    "driver_stale": {"window_hours": 72, "include_period": False, "bucket": 1.0},
     "budget_line_variance": {"window_hours": 720, "include_period": True, "bucket": 5.0},
     "unit_cost_breach": {"window_hours": 720, "include_period": True, "bucket": 2.0},
-    "scenario_ebitda_floor": {"window_hours": 720, "include_period": True, "bucket": 1.0},
 }
 
 _lock = threading.Lock()
@@ -150,26 +152,7 @@ def evaluate(rules: list[dict] | None = None) -> list[dict]:
                  "latest_value": d.get("latest_value"), "adverse": d.get("adverse"),
                  "hedge_coverage": d.get("hedge_coverage"), "category": d.get("category")})
 
-    # ---- 2. A watchlist driver has gone stale ----
-    if (r := enabled("driver_stale")):
-        th = float(r["threshold"])
-        for d in status:
-            limit = float(d.get("stale_after_days") or 7)
-            age = d.get("age_days")
-            if age is None:
-                add("driver_stale", d["driver_id"], latest, 999.0, th,
-                    f"{d['name']} has never been verified",
-                    {"stale_after_days": limit, "category": d.get("category")})
-                continue
-            ratio = age / limit if limit else 0.0
-            if ratio > th:
-                add("driver_stale", d["driver_id"], latest, ratio, th,
-                    f"{d['name']} was last verified {age:.0f} days ago "
-                    f"(limit {limit:.0f} days)",
-                    {"age_days": age, "stale_after_days": limit,
-                     "category": d.get("category")})
-
-    # ---- 3. A product line is missing its revenue budget ----
+    # ---- 2. A product line is missing its revenue budget ----
     if (r := enabled("budget_line_variance")) and latest:
         th = float(r["threshold"])
         cur = closed[closed["month"] == latest]
@@ -185,7 +168,7 @@ def evaluate(rules: list[dict] | None = None) -> list[dict]:
                     f"{row['product_line']} revenue is {abs(v):.1f}% below budget in {latest}",
                     {"actual_eur": float(row["revenue_actual_eur"]), "budget_eur": bud})
 
-    # ---- 4. Unit cost has breached the locked assumption ----
+    # ---- 3. Unit cost has breached the locked assumption ----
     # The separation-of-drivers rule: it catches cost inflation that volume
     # growth hides inside the absolute amount.
     if (r := enabled("unit_cost_breach")) and latest:
@@ -210,22 +193,6 @@ def evaluate(rules: list[dict] | None = None) -> list[dict]:
                     {"actual_unit_cost": actual, "assumed_unit_cost": base,
                      "scenario": (scenario or {}).get("name")})
 
-    # ---- 5. The locked scenario no longer clears the EBITDA floor ----
-    # The "so what" rule, and it needs nothing but pandas — detection stays API-free.
-    if (r := enabled("scenario_ebitda_floor")):
-        th = float(r["threshold"])
-        projected = _rerun_active_scenario()
-        if projected is not None:
-            margin = projected["margin_pct"]
-            if margin < th:
-                add("scenario_ebitda_floor", projected["scenario_name"],
-                    str(projected["year"]), margin, th,
-                    f"Re-running the locked budget on today's prices drops EBITDA margin to "
-                    f"{margin:.1f}% (floor {th:g}%)",
-                    {"ebitda_eur": projected["ebitda_eur"],
-                     "baseline_margin_pct": projected["baseline_margin_pct"],
-                     "delta_ebitda_eur": projected["delta_ebitda_eur"]})
-
     return findings
 
 
@@ -247,6 +214,11 @@ def _rerun_active_scenario() -> dict | None:
     Assumptions are expressed as percentage moves from each driver's LOCKED
     value, so re-running is just "what percentage has each driver actually
     moved" fed through the same engine.
+
+    No rule calls this any more — `scenario_ebitda_floor` was removed. It is not
+    dead: `main.budget_state` is its caller, and it is what puts the cumulative
+    EBITDA effect of everything that has drifted on the home screen. A standing
+    number on a screen is the right home for it; a re-firing alert was not.
     """
     scenario = scenarios.get_active()
     if not scenario:

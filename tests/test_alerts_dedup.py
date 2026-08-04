@@ -1,9 +1,9 @@
 # Windowed dedup with magnitude bucketing (§7).
 #
-# The reference dedups permanently on rule:entity:period. That is wrong here
-# twice over: a driver legitimately re-breaches (wheat crosses +10% in week 1
-# and +18% in week 3, and the escalation IS the news), and driver_stale would
-# fire once and then never again as it gets staler.
+# The reference dedups permanently on rule:entity:period. That is wrong here: a
+# driver legitimately re-breaches — wheat crosses +10% in week 1 and +18% in
+# week 3, and the escalation IS the news — so a permanent key swallows the
+# second alert entirely.
 
 import time
 
@@ -107,7 +107,7 @@ def test_different_entities_never_collide():
 
 def test_different_rules_never_collide():
     a = finding(rule_id="driver_moved_since_lock")
-    b = finding(rule_id="driver_stale")
+    b = finding(rule_id="unit_cost_breach")
     assert alerts.dedup_key(a) != alerts.dedup_key(b)
 
 

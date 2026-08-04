@@ -5,12 +5,12 @@
 # network.
 #
 # Dedup is WINDOWED with magnitude bucketing, not permanent-per-period. The
-# reference dedups forever on rule:entity:period, which is wrong here twice
-# over: a driver legitimately re-breaches (wheat crosses +10% in week 1 and
-# +18% in week 3, and the escalation IS the news), and driver_stale would fire
-# once and then never again as it gets staler. Per-rule config carries the
-# window and whether the key includes the period, so the reference's
-# permanent-per-period behaviour is reproduced through the same code path.
+# reference dedups forever on rule:entity:period, which is wrong here: a driver
+# legitimately re-breaches — wheat crosses +10% in week 1 and +18% in week 3,
+# and the escalation IS the news — so a permanent key would swallow the second
+# alert entirely. Per-rule config carries the window and whether the key
+# includes the period, so the reference's permanent-per-period behaviour is
+# still reproducible through the same code path where it is the right answer.
 
 from __future__ import annotations
 

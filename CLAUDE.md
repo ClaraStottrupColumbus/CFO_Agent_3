@@ -111,13 +111,24 @@ whose first user message is a preset prompt (`WEEKLY_PROMPT` / `MONTHLY_PROMPT`)
 generation, report follow-ups, scheduled prompts, the setup proposal stream and ordinary chat all run
 through one function, `reporting.run_session_turn`. Child chats under a report carry `parent_id`.
 
-The `monthly` kind has **no tab of its own**. A budget revision exists to produce a scenario, so both
-live under `#/scenarios`: "+ New scenario" creates a `monthly` session, streams one turn seeded with a
-client-composed build prompt, and the agent's `build_budget_scenario` tool persists the result. Past
-revisions — including everything the scheduled `budget_revision` task writes — list in the Revisions
-panel and open at `#/monthly/{id}` in the ordinary thread view. `#/monthly` with no id
-`location.replace`s to `#/scenarios`, and `NAV_ALIAS` points the kind at the Scenarios pill. Nothing
-about the kind changed server-side; this is a navigation merge only.
+Neither the `monthly` nor the `weekly` kind has **a tab of its own**. Both are the same merge, done
+twice, and neither changed anything server-side:
+
+- A budget revision exists to produce a scenario, so both live under `#/scenarios`: "+ New scenario"
+  creates a `monthly` session, streams one turn seeded with a client-composed build prompt, and the
+  agent's `build_budget_scenario` tool persists the result. Past revisions — including everything the
+  scheduled `budget_revision` task writes — list in the Revisions panel.
+- A market scan exists to say which drivers moved, so it lives under `#/drivers` as the **"This week"
+  strip**: the latest scan's headline, the drifted drivers, and a button into the full transcript.
+  `WEEKLY_PROMPT` asks for a headline that stands alone precisely because the strip shows that line
+  and nothing else; `scanHeadline()` takes the first line of the first assistant turn and strips
+  markdown rather than rendering it. The strip loads **once per visit**, not on the 2 s verify poll —
+  and `renderWeekStrip` bails while a scan is running, the same guard `renderLockPanel` uses.
+
+`#/monthly` and `#/weekly` with no id `location.replace` to `#/scenarios` and `#/drivers`; an
+individual transcript still opens at `#/{kind}/{id}` in the ordinary thread view, whose sidebar lists
+every past one. `NAV_ALIAS = {monthly: "scenarios", weekly: "drivers"}` points each kind at the pill
+it now lives under.
 
 UI-only message fields (`attachments`, `text`, `charts`, `reasoning`, per-message `sources`) are
 persisted but stripped before the API call.
@@ -192,10 +203,16 @@ to overwrite the CFO's locked position.
 - Every result carries `source_file`, except presentation-only tools; that absence is what keeps
   `render_chart` out of the citation list.
 - All arithmetic lives here or in `budget.py`. The system prompt forbids the model deriving variances
-  from `query_budget_data` rows, and `project_series` is restricted to volumes and driver price
-  series (forward P&L goes through `build_budget_scenario`, on a stated `basis`). `budget_outlook`
-  is the one tool that reads `budget_plan.json`; it imports `budgetplan` lazily so the SDK does not
-  end up behind every `tools.py` import, including the pure tests'.
+  from `query_budget_data` rows. `budget_outlook` is the one tool that reads `budget_plan.json`; it
+  imports `budgetplan` lazily so the SDK does not end up behind every `tools.py` import, including
+  the pure tests'.
+- **There is deliberately no extrapolation tool.** `project_series` — linear trend plus seasonality
+  over a driver's own history — was deleted once `driver_forwards` landed, and prompt rule 3 is now
+  the prohibition rather than the restriction: a fitted line is a claim about the future with no
+  source behind it, which is the one thing this app exists not to ship. Forward prices come from the
+  published curve (`record_driver_forward` → `basis: "forward"`), forward P&L from
+  `build_budget_scenario`. If neither has data, "we have not looked" is the answer. Do not re-add a
+  projection tool; add a curve.
 - `_load` prefers Parquet, falls back to CSV — which is what lets tests use CSV fixtures.
 - `render_chart` returns its validated spec under the private `_chart_spec` key; the loop pops it,
   streams the full spec to the UI and hands the model a compact ack.
@@ -363,6 +380,15 @@ session kind explicitly (never `ttype.split("_")[0]`).
 dedup is **windowed with magnitude bucketing**, not permanent-per-period, so a re-breach at a higher
 magnitude re-fires.
 
+There are **three** rules, and there were five. `driver_stale` and `scenario_ebitda_floor` are gone
+because both fired on every evaluation and trained the CFO to mute the other three. The distinction
+worth keeping is **state vs event**: nothing *happens* when a driver crosses its staleness limit, and
+a scenario under the EBITDA floor stays under it until someone acts — so both re-fired the same
+finding every window. Neither is lost as information: staleness is a badge, a summary count and a
+card rule on `#/drivers`, and the floor's arithmetic (`rules._rerun_active_scenario`, still tested)
+now feeds `main.budget_state` and the home screen headline. An alert should be something that
+happened; anything that is merely true belongs on a screen.
+
 Background agent runs take `reporting.AGENT_SEMAPHORE` (bounded at 2); interactive chat never
 acquires it, so user requests can't queue behind an 03:00 market scan.
 
@@ -405,8 +431,8 @@ Budget Outlook's first run, read through the synchronous `BudgetPlan.isConfigure
 `.card` (the surface under every driver, scenario, version and archived conversation) and `.panel`
 (the cream-50 module container they group into) live in `style.css`. Three surfaces separate by
 lightness alone — cream canvas, cream-50 panel, white card — so section boundaries need no rules
-drawn between them. The lock form on `#/drivers` and the version rail on `#/scenarios` add no fourth
-surface for the same reason; the approved version carries the same 4 px accent rule as the active
+drawn between them. The lock form and the "This week" strip on `#/drivers` and the version rail on
+`#/scenarios` add no fourth surface for the same reason; the approved version carries the same 4 px accent rule as the active
 scenario, because it means the same thing — *this is the one you are running on*.
 
 `renderLockPanel` returns early while `lockFormOpen`: `refreshDrivers` re-paints every 2 s during a

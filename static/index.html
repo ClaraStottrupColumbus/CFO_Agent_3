@@ -15,9 +15,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CFO Finance Agent</title>
-  <link rel="stylesheet" href="/static/columbus-tokens.css?v=22">
-  <link rel="stylesheet" href="/static/style.css?v=22">
-  <link rel="stylesheet" href="/static/budget.css?v=22">
+  <link rel="stylesheet" href="/static/columbus-tokens.css?v=23">
+  <link rel="stylesheet" href="/static/style.css?v=23">
+  <link rel="stylesheet" href="/static/budget.css?v=23">
 </head>
 <body>
   <header>
@@ -41,7 +41,10 @@
     <nav id="topic-switcher" class="topic-switcher hidden" aria-label="Switch section">
       <a href="#/" data-kind="home">Home</a>
       <a href="#/chat" data-kind="chat" title="Every question you've asked">Ask</a>
-      <a href="#/weekly" data-kind="weekly">Market scan</a>
+      <!-- Market scan has no pill of its own: a scan exists to tell you which
+           drivers moved, so it reads as the "This week" strip at the top of
+           Drivers and opens from there. The `weekly` kind, its scheduled task
+           and every #/weekly/{id} transcript are unchanged. -->
       <a href="#/drivers" data-kind="drivers" title="Budget drivers — what you know about the world">Drivers</a>
       <a href="#/scenarios" data-kind="scenarios" title="Budget scenarios and the revisions that built them">Scenarios</a>
       <!-- In the header, not inside a view: the header sits outside .view, so
@@ -81,6 +84,9 @@
       <p class="page-sub">Your budget rests on these assumptions whether or not you write them down.</p>
     </header>
     <div id="drivers-summary" class="driver-summary"></div>
+    <!-- Where the market scan surfaces now that it has no pill: the latest
+         scan's headline and what drifted, opening the full transcript. -->
+    <div id="drivers-week"></div>
     <!-- The CFO's door to lock_assumptions — the same function the model's tool
          calls. Locking replaces the whole set, so the form posts every driver. -->
     <div id="drivers-lock"></div>
@@ -340,7 +346,7 @@
 
   <!-- budget.js BEFORE app.js: it only declares window.BudgetPlan, while app.js
        ends by calling boot() → route(), which needs it to already exist. -->
-  <script src="/static/budget.js?v=22"></script>
-  <script src="/static/app.js?v=22"></script>
+  <script src="/static/budget.js?v=23"></script>
+  <script src="/static/app.js?v=23"></script>
 </body>
 </html>

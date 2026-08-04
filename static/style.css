@@ -1524,6 +1524,26 @@ details.reasoning.is-live .reasoning-spinner {
 .revision-card h4 { margin: 0; font-size: var(--fs-h6); font-weight: var(--fw-medium); }
 .revision-card .ask-card-foot { margin-top: auto; }
 
+/* ---------- "This week" on #/drivers (Phase 4) ----------
+   Market scan lost its nav pill, so the scan surfaces here as a .panel like the
+   lock panel below it — no fourth surface, no new device. The headline is the
+   only thing that reads larger than body text, because it is the one sentence
+   the strip exists to deliver. */
+
+.week-strip .week-headline {
+  margin: 0 0 var(--space-4);
+  max-width: 70ch;
+  font-size: var(--fs-body-lg);
+  line-height: 1.45;
+  color: var(--fg-1);
+}
+.week-strip .week-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.week-strip .week-chips .chip { font-variant-numeric: tabular-nums; }
+.week-strip .week-actions {
+  display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-4);
+}
+.week-strip .week-actions .btn-ghost { font-size: .8rem; padding: 5px 10px; }
+
 /* ---------- Locking, versions and diffs (Phase 2) ----------
    No new surfaces: the lock panel and the version rail are .panel + .card like
    every other list on these pages, so the three-lightness separation (cream

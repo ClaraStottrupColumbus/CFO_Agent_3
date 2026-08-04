@@ -1447,8 +1447,11 @@ function scheduleReportPoll(kind) {
 // so used to inherit whichever pill was highlighted last.
 // A kind with no pill of its own, highlighting the pill it now lives under.
 // Reading a budget revision at #/monthly/{id} should light Scenarios, because
-// that is where the link to it came from and where Back leads.
-const NAV_ALIAS = { monthly: "scenarios" };
+// that is where the link to it came from and where Back leads. A market scan at
+// #/weekly/{id} lights Drivers for the same reason: the scan's whole output is
+// which drivers moved, so the "This week" strip on Drivers is where it is
+// linked from and where Back leads.
+const NAV_ALIAS = { monthly: "scenarios", weekly: "drivers" };
 
 function updateNav(kind) {
   kind = NAV_ALIAS[kind] || kind;
@@ -1943,7 +1946,13 @@ function route() {
     if (id) renderFeature("monthly", id);
     else location.replace("#/scenarios");
   } else if (kind === "weekly") {
-    renderFeature(kind, id);
+    // Same merge as monthly → scenarios, and for the same reason: a market scan
+    // exists to say which drivers moved, so Drivers is the list view for it. An
+    // individual transcript still opens in the ordinary thread view, with its
+    // own sidebar listing every past scan — nothing already written becomes
+    // unreachable. replace, not assign: Back must not bounce into a redirect.
+    if (id) renderFeature("weekly", id);
+    else location.replace("#/drivers");
   } else if (kind === "data") {
     renderData();
   } else if (kind === "scheduler") {
@@ -2431,14 +2440,18 @@ async function submitProfile(e) {
 
 function renderDrivers() {
   showOnly(driversView);
+  loadWeekScan();     // once per visit, not once per poll tick — see below
   refreshDrivers();
 }
+
+let driversData = null;
 
 async function refreshDrivers() {
   let data;
   try { data = await (await fetch("/api/drivers")).json(); }
   catch { return; }
   if (driversView.classList.contains("hidden")) return;   // navigated away mid-fetch
+  driversData = data;
 
   // The counts as status pills, in their own panel. Same numbers as the old
   // ` · `-joined sentence; the state that needs acting on is now findable at a
@@ -2458,6 +2471,7 @@ async function refreshDrivers() {
         `<span class="status-chip ${x.cls}">${escapeHtml(x.label)}</span>`).join("")}</div>
     </div>`;
 
+  renderWeekStrip();
   renderLockPanel(data);
 
   const body = document.getElementById("drivers-body");
@@ -2499,6 +2513,146 @@ function fmtNum(v, digits = 2) {
   if (v === null || v === undefined) return "—";
   return Number(v).toLocaleString(undefined,
     { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+// ---------- "This week": the market scan, where a CFO now meets it ----------
+//
+// #/weekly lost its pill, so this strip is the scan's list view. It is loaded
+// ONCE per visit to #/drivers, not on every refreshDrivers tick: a verify run
+// repaints this view every 2s, and a scan written at 03:00 does not change in
+// that window — polling it would be two wasted requests a second for a headline
+// that is hours old. renderWeekStrip therefore paints from cached state and is
+// safe to call on every tick.
+
+let weekScan = { loaded: false, session: null, headline: "" };
+// Same reason renderLockPanel returns early while its form is open: a verify run
+// repaints this panel every 2s, and repainting mid-scan would put "Run a new
+// scan" back on a button that is already running one.
+let weekScanRunning = false;
+
+async function loadWeekScan() {
+  weekScan = { loaded: false, session: null, headline: "" };
+  try {
+    const data = await apiListSessions("weekly");
+    // Child chats under a scan carry parent_id; only the scan itself is a scan.
+    const latest = (data.sessions || [])
+      .filter(s => !s.parent_id && (s.message_count || 0) >= 2)
+      .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))[0];
+    if (latest) {
+      const full = await apiGetSession(latest.id);
+      weekScan.session = latest;
+      weekScan.headline = scanHeadline(full);
+    }
+  } catch { /* gated, offline, or no scans — the empty state is the answer */ }
+  weekScan.loaded = true;
+  if (!driversView.classList.contains("hidden")) renderWeekStrip();
+}
+
+// The scan is prompted to open with a one-line headline naming the single most
+// important move (WEEKLY_PROMPT), so the top of the first assistant turn IS the
+// summary. Markdown is stripped rather than rendered: this is one line under a
+// panel head, and a stray `**` there reads as a bug.
+function scanHeadline(session) {
+  const first = ((session && session.messages) || [])
+    .find(m => m.role === "assistant" && typeof m.content === "string");
+  if (!first) return "";
+  // Take the first line that is a SENTENCE. A model that opens with a section
+  // label — "## This week", "## Headline" — has told us nothing, so short lines
+  // are skipped rather than shown; the sentence is always on the next one.
+  const line = first.content.split("\n")
+    .map(s => flattenMarkdown(s))
+    .find(s => s.length >= 25) || "";
+  return line.length > 220 ? line.slice(0, 219).trimEnd() + "…" : line;
+}
+
+function flattenMarkdown(s) {
+  return s.replace(/^\s*#{1,6}\s*/, "")            // heading marks
+    .replace(/^\s*[-*+]\s+/, "")                   // bullet marks
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")       // links → their text
+    // Citation markers take the space in front of them, or stripping "[1]."
+    // leaves " ." — a gap before the full stop that reads as a typo.
+    .replace(/\s*\[\d+\]/g, "")
+    .replace(/[*_`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Wire a "run a scan" button, whichever of the two states it is in. Generation
+// is a full agent turn, so the button owns the waiting state and the strip stops
+// repainting under it until the hash changes or it fails.
+function wireScanButton(id, idleLabel) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    weekScanRunning = true;
+    btn.disabled = true;
+    btn.textContent = "Scanning…";
+    try {
+      const r = await apiGenerateReport("weekly");
+      location.hash = `#/weekly/${r.id}`;
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+      btn.textContent = idleLabel;
+    } finally {
+      weekScanRunning = false;
+    }
+  });
+}
+
+function renderWeekStrip() {
+  const wrap = document.getElementById("drivers-week");
+  if (!wrap || !driversData || weekScanRunning) return;
+  if (!weekScan.loaded) { wrap.innerHTML = ""; return; }   // no flash of empty state
+
+  // Drifted uses the same >10% the summary count uses, so the strip and the
+  // pill above it can never disagree about how many have moved.
+  const drifted = (driversData.drivers || [])
+    .filter(d => d.drift_pct !== null && d.drift_pct !== undefined && Math.abs(d.drift_pct) > 10)
+    .sort((a, b) => Math.abs(b.drift_pct) - Math.abs(a.drift_pct));
+
+  if (!weekScan.session) {
+    wrap.innerHTML = `
+      <section class="panel week-strip">
+        <div class="panel-head">
+          <h3>This week</h3>
+          <button id="week-run" class="btn-ghost" type="button">Run a market scan</button>
+        </div>
+        <p class="panel-note">No market scan yet. A scan checks what moved in the markets this
+          budget depends on, records what it finds against these drivers, and says what it is
+          worth.</p>
+      </section>`;
+    wireScanButton("week-run", "Run a market scan");
+    return;
+  }
+
+  const chips = drifted.slice(0, 4).map(d => {
+    const word = d.adverse === true ? "adverse" : d.adverse === false ? "favourable" : "";
+    return `<span class="chip">${escapeHtml(d.name || d.driver_id)}
+      <span class="num">${d.drift_pct > 0 ? "+" : ""}${fmtNum(d.drift_pct, 1)}%</span>${
+      word ? ` <span class="drift-word">${word}</span>` : ""}</span>`;
+  }).join("");
+  const more = drifted.length > 4
+    ? `<span class="chip">+${drifted.length - 4} more</span>` : "";
+
+  wrap.innerHTML = `
+    <section class="panel week-strip">
+      <div class="panel-head">
+        <h3>This week</h3>
+        <span class="chip">${escapeHtml(fmtWhen(weekScan.session.updated_at))}</span>
+      </div>
+      <p class="week-headline">${escapeHtml(weekScan.headline || weekScan.session.title || "Market scan")}</p>
+      ${drifted.length
+        ? `<div class="week-chips">${chips}${more}</div>`
+        : `<p class="panel-note">Nothing has drifted more than 10% from its locked value.</p>`}
+      <div class="week-actions">
+        <button id="week-open" class="btn-ghost" type="button">Read the full scan →</button>
+        <button id="week-run" class="btn-ghost" type="button">Run a new scan</button>
+      </div>
+    </section>`;
+  document.getElementById("week-open").addEventListener("click",
+    () => { location.hash = `#/weekly/${weekScan.session.id}`; });
+  wireScanButton("week-run", "Run a new scan");
 }
 
 // ---------- Locking, from the UI ----------

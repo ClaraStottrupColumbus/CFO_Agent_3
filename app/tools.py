@@ -106,13 +106,14 @@ BASIS_COLUMNS = {
                "cogs": "cogs_budget_eur", "opex": "opex_budget_eur"},
 }
 
-# Only these may be projected. A CFO asking "what should next year's revenue be"
-# must get the scenario engine, not least-squares extrapolation — so the guard is
-# both a schema restriction here AND an explicit prompt rule (agent.py rule 8).
-PROJECTABLE = {
-    "volume": "Monthly volume in tonnes (from budget_vs_actuals).",
-    "driver_price": "A driver's monthly price series (from driver_prices).",
-}
+# There is deliberately no extrapolation tool here. `project_series` — linear
+# trend plus monthly seasonality over a driver's own history — was removed once
+# `driver_forwards` landed: a fitted trend is a claim about the future with no
+# source behind it, and this app's whole position is that an assumption without
+# provenance cannot be defended. Forward prices now come from the curve the
+# market publishes (record_driver_forward → basis="forward"), and forward P&L
+# from build_budget_scenario. If neither has data, the answer is "we have not
+# looked", not a regression line.
 
 
 # --------------------------------------------------------------------------
@@ -359,24 +360,6 @@ TOOL_DEFINITIONS = [
                 "note": {"type": "string"},
             },
             "required": ["assumptions"],
-        },
-    },
-    {
-        "name": "project_series",
-        "description": "Project a VOLUME or DRIVER PRICE series forward using linear trend plus "
-                       "seasonality. Strictly limited to those two — never use it for revenue, "
-                       "COGS, margin, EBITDA or any other P&L line. For forward P&L use "
-                       "build_budget_scenario.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "series": {"type": "string", "enum": list(PROJECTABLE),
-                           "description": "What kind of series to project."},
-                "entity": {"type": "string",
-                           "description": "Product line (for volume) or driver_id (for driver_price)."},
-                "months_ahead": {"type": "integer", "description": "How many months (1-24, default 12)."},
-            },
-            "required": ["series", "entity"],
         },
     },
     {
@@ -1365,80 +1348,7 @@ def propose_watchlist(ctx: dict | None = None, **proposal) -> dict:
 
 
 # --------------------------------------------------------------------------
-# 10. project_series
-# --------------------------------------------------------------------------
-
-def project_series(series: str, entity: str, months_ahead: int = 12) -> dict:
-    if series not in PROJECTABLE:
-        return {"error": f"series must be one of {', '.join(PROJECTABLE)}. This tool projects "
-                         f"ONLY volumes and driver price series — for forward revenue, COGS, "
-                         f"margin or EBITDA use build_budget_scenario instead."}
-    try:
-        horizon = max(1, min(24, int(months_ahead)))
-    except (TypeError, ValueError):
-        return {"error": "months_ahead must be an integer between 1 and 24."}
-
-    if series == "volume":
-        bva, source = _load("budget_vs_actuals")
-        lines = sorted(set(bva["product_line"]))
-        if entity not in lines:
-            return _unknown("product_line", entity, lines)
-        closed = _closed(bva)
-        hist = (closed[closed["product_line"] == entity]
-                .groupby("month")["volume_tonnes_actual"].sum().sort_index())
-        unit = "tonnes"
-    else:
-        prices = drivers.load_prices()
-        if prices.empty:
-            return {"error": "No driver prices available."}
-        ids = sorted(set(prices["driver_id"].astype(str)))
-        if entity not in ids:
-            return _unknown("driver_id", entity, ids)
-        rows = prices[prices["driver_id"] == entity].sort_values(["month", "revision"])
-        hist = rows.groupby("month")["price"].last().sort_index()
-        meta = drivers.get_driver(entity) or {}
-        unit = str(meta.get("unit") or "")
-        source = "driver_prices.parquet"
-
-    if len(hist) < 6:
-        return {"error": f"Only {len(hist)} months of history for '{entity}' — at least 6 are "
-                         f"needed to project a trend."}
-
-    months = list(hist.index.astype(str))
-    values = hist.to_numpy(dtype=float)
-    n = len(values)
-    x = np.arange(n, dtype=float)
-    slope, intercept = np.polyfit(x, values, 1)
-
-    residuals = values - (slope * x + intercept)
-    seasonal = np.zeros(12)
-    for i, m in enumerate(months):
-        seasonal[(int(m[5:7]) - 1)] += residuals[i]
-    counts = np.zeros(12)
-    for m in months:
-        counts[int(m[5:7]) - 1] += 1
-    seasonal = np.divide(seasonal, counts, out=np.zeros(12), where=counts > 0)
-
-    projected = []
-    for k in range(1, horizon + 1):
-        future_month = _shift_months([months[-1]], k)[0]
-        value = slope * (n - 1 + k) + intercept + seasonal[int(future_month[5:7]) - 1]
-        projected.append({"month": future_month, "value": round(float(value), 3)})
-
-    return {
-        "series": series, "entity": entity, "unit": unit,
-        "history_months": n, "history_from": months[0], "history_to": months[-1],
-        "trend_per_month": round(float(slope), 4),
-        "projection": projected,
-        "disclaimer": "This is an extrapolation of the historical pattern (linear trend plus "
-                      "monthly seasonality), not a forecast. Relay this caveat to the CFO. It "
-                      "does not know about anything that has not already happened.",
-        "source_file": source,
-    }
-
-
-# --------------------------------------------------------------------------
-# 11. render_chart (presentation only — returns NO source_file)
+# 10. render_chart (presentation only — returns NO source_file)
 # --------------------------------------------------------------------------
 
 def render_chart(chart_type: str, title: str, series: list, unit: str | None = None) -> dict:
@@ -1517,7 +1427,6 @@ _TOOLS = {
     "build_budget_scenario": lambda i, ctx: build_budget_scenario(**i),
     "budget_outlook": lambda i, ctx: budget_outlook(),
     "lock_assumptions": lambda i, ctx: lock_assumptions_tool(**i),
-    "project_series": lambda i, ctx: project_series(**i),
     "render_chart": lambda i, ctx: render_chart(**i),
     "propose_watchlist": lambda i, ctx: propose_watchlist(ctx=ctx, **i),
 }
