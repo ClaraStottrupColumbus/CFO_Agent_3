@@ -15,9 +15,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CFO Finance Agent</title>
-  <link rel="stylesheet" href="/static/columbus-tokens.css?v=26">
-  <link rel="stylesheet" href="/static/style.css?v=26">
-  <link rel="stylesheet" href="/static/budget.css?v=26">
+  <link rel="stylesheet" href="/static/columbus-tokens.css?v=29">
+  <link rel="stylesheet" href="/static/style.css?v=29">
+  <link rel="stylesheet" href="/static/budget.css?v=29">
 </head>
 <body>
   <header>
@@ -104,7 +104,7 @@
       <div>
         <p class="eyebrow">Scenarios</p>
         <h2>What the budget could be</h2>
-        <p class="page-sub">Describe what a scenario assumes and the agent builds it — re-running next year's budget on those assumptions, with its working shown.</p>
+        <p class="page-sub">Describe what a scenario assumes and the agent builds it — re-running next year's budget on those assumptions, with its working shown. Adjust the numbers yourself afterwards.</p>
       </div>
       <button id="scenario-new-btn" class="btn-primary" type="button">+ New scenario</button>
     </header>
@@ -122,6 +122,49 @@
         <button type="submit" class="btn-primary">Build scenario</button>
       </form>
       <div id="scenario-stream" class="scenario-stream hidden"></div>
+    </section>
+
+    <!-- The edit form has its OWN host, a sibling of the two list hosts below.
+         Same rule as #bo-cash-body / #bo-cash-form-host on the Budget page: a
+         list repaint (a finished build, an activate, a delete) must not be able
+         to wipe half-typed assumptions, and the cheapest way to guarantee that
+         is for the form never to live inside the thing that repaints. -->
+    <section id="scenario-edit" class="panel scenario-edit hidden">
+      <div class="panel-head">
+        <h3 id="scenario-edit-title">Edit scenario</h3>
+        <button id="scenario-edit-cancel" class="btn-ghost" type="button">Cancel</button>
+      </div>
+      <p class="panel-note">Saving recomputes this scenario in place — same scenario,
+        same place in the list, re-run through the same engine the agent uses. Every
+        percentage is a move versus the locked budget.</p>
+      <form id="scenario-edit-form">
+        <div class="sc-fields">
+          <div>
+            <label class="field-label" for="scenario-edit-name">Name</label>
+            <input id="scenario-edit-name" type="text" maxlength="80">
+          </div>
+          <div>
+            <label class="field-label" for="scenario-edit-basis">Drivers priced at</label>
+            <select id="scenario-edit-basis"></select>
+          </div>
+          <div>
+            <label class="field-label" for="scenario-edit-tau">Cost recovered in price</label>
+            <input id="scenario-edit-tau" type="number" step="any" min="0" max="1" inputmode="decimal">
+            <p class="hint">0–1. Applied only to lines with no explicit price below.</p>
+          </div>
+          <div>
+            <label class="field-label" for="scenario-edit-opexinf">Default opex growth %</label>
+            <input id="scenario-edit-opexinf" type="number" step="any" inputmode="decimal">
+            <p class="hint">For cost centres with no entry and no linked driver.</p>
+          </div>
+        </div>
+        <label class="field-label" for="scenario-edit-note">Note (optional)</label>
+        <input id="scenario-edit-note" type="text" placeholder="e.g. What the board asked us to test">
+        <div id="scenario-edit-blocks"></div>
+        <p id="scenario-edit-error" class="error-text hidden"></p>
+        <button type="submit" class="btn-primary">Save and recompute</button>
+      </form>
+      <div id="scenario-edit-result" class="sc-result hidden"></div>
     </section>
 
     <!-- Versions: what was committed, as opposed to what was explored. A
@@ -346,7 +389,7 @@
 
   <!-- budget.js BEFORE app.js: it only declares window.BudgetPlan, while app.js
        ends by calling boot() → route(), which needs it to already exist. -->
-  <script src="/static/budget.js?v=26"></script>
-  <script src="/static/app.js?v=26"></script>
+  <script src="/static/budget.js?v=29"></script>
+  <script src="/static/app.js?v=29"></script>
 </body>
 </html>

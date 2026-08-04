@@ -5,7 +5,7 @@
 
 import pytest
 
-from app.budget import normalise_assumptions, project_pnl
+from app.budget import normalise_assumptions, project_pnl, repriced_drivers
 
 TOL = 1e-6
 
@@ -181,6 +181,66 @@ def test_a_flat_dict_and_its_blocked_form_project_identically():
     blocked = project_pnl(baseline_rows(), BOM, PRICES,
                           {"drivers": {"chicken_meal": 15.0}})
     assert blocked["totals"] == flat["totals"]
+
+
+# ---------- Which locked prices moved under a recompute ----------
+#
+# Recomputing a scenario re-reads today's locked assumptions, so its EBITDA can
+# move with not one percentage changed. This is what lets the edit form say so
+# instead of handing back a number the CFO cannot account for.
+
+def test_repriced_names_only_the_drivers_whose_locked_price_moved():
+    rows = repriced_drivers({"chicken_meal": 400.0, "wheat": 200.0},
+                            {"chicken_meal": 424.0, "wheat": 200.0})
+    assert [r["driver_id"] for r in rows] == ["chicken_meal"]
+    assert rows[0]["from"] == 400.0 and rows[0]["to"] == 424.0
+    assert rows[0]["pct"] == pytest.approx(6.0)
+
+
+def test_repriced_is_empty_when_nothing_moved_or_there_is_no_earlier_record():
+    assert repriced_drivers({"wheat": 200.0}, {"wheat": 200.0}) == []
+    assert repriced_drivers({}, {"wheat": 200.0}) == []
+
+
+def test_a_driver_absent_from_the_earlier_computation_is_not_a_move():
+    # A driver added to the catalog since is not something that "moved" — there is
+    # no earlier price to have moved from.
+    rows = repriced_drivers({"wheat": 200.0}, {"wheat": 200.0, "electricity": 90.0})
+    assert rows == []
+
+
+def test_repriced_reports_none_pct_rather_than_dividing_by_a_zero_baseline():
+    rows = repriced_drivers({"wheat": 0.0}, {"wheat": 200.0})
+    assert rows[0]["pct"] is None
+    assert rows[0]["to"] == 200.0
+
+
+def test_a_move_too_small_to_print_is_not_reported():
+    # The real case this guards: a price stored as a spot fallback and re-read off
+    # a rounded locked value differs in the fifth decimal, and every USD-quoted
+    # driver inherits that from the FX rate. Reported literally, an edit that
+    # changed nothing names fourteen drivers at "+0.0%".
+    rows = repriced_drivers({"chicken_meal": 581.882233672406, "eur_usd": 1.0495444330932484},
+                            {"chicken_meal": 581.9069080514531, "eur_usd": 1.0495})
+    assert rows == []
+    # Just over the threshold is still reported.
+    assert repriced_drivers({"wheat": 200.0}, {"wheat": 200.2})[0]["pct"] == pytest.approx(0.1)
+
+
+def test_a_price_that_appeared_from_zero_is_always_reported():
+    assert repriced_drivers({"wheat": 0.0}, {"wheat": 0.0}) == []
+    assert repriced_drivers({"wheat": 0.0}, {"wheat": 0.0001})[0]["pct"] is None
+
+
+def test_repriced_is_ordered_by_the_size_of_the_move():
+    rows = repriced_drivers({"a": 100.0, "b": 100.0},
+                            {"a": 110.0, "b": 150.0})
+    assert [r["driver_id"] for r in rows] == ["b", "a"]
+
+
+def test_unparseable_prices_are_skipped_rather_than_raised_on():
+    assert repriced_drivers({"wheat": None}, {"wheat": 200.0}) == []
+    assert repriced_drivers({"wheat": 200.0}, {"wheat": "twelve"}) == []
 
 
 # ---------- Volume ----------

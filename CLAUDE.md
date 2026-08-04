@@ -120,7 +120,9 @@ twice, and neither changed anything server-side:
 - A budget revision exists to produce a scenario, so both live under `#/scenarios`: "+ New scenario"
   creates a `monthly` session, streams one turn seeded with a client-composed build prompt, and the
   agent's `build_budget_scenario` tool persists the result. Past revisions — including everything the
-  scheduled `budget_revision` task writes — list in the Revisions panel.
+  scheduled `budget_revision` task writes — list in the Revisions panel. Each card also carries
+  **Edit assumptions**, which recomputes that scenario in place through the same tool — except the one
+  an approved version was frozen from, which shows its frozen state instead.
 - A market scan exists to say which drivers moved, so it lives under `#/drivers` as the **"This week"
   strip**: the latest scan's headline, the drifted drivers, and a button into the full transcript.
   `WEEKLY_PROMPT` asks for a headline that stands alone precisely because the strip shows that line
@@ -227,7 +229,7 @@ to overwrite the CFO's locked position.
 volume and price are the first two conversations in any budget round, so they are first-class
 rather than reachable only as a consequence of cost. `"*"` is the wildcard in `volume`/`price`.
 
-Four things there are load-bearing:
+Five things there are load-bearing:
 
 - **`budget.normalise_assumptions` runs on read as well as on write** — in `scenarios.list_scenarios`
   and `scenarios.summary`, not just in the tool. Every scenario in `data/scenarios.json` predating
@@ -246,6 +248,23 @@ Four things there are load-bearing:
   "improve" this into a direct substitution without solving the two-cuts problem first. It is what
   finally makes `opex_plan.csv`'s `driver_id` column mean something: wage inflation now reaches the
   budget through the same machinery as chicken meal.
+- **`replace_scenario_id` recomputes in place, and `active` is asserted rather than denied.** It is
+  the keyword-only argument behind `PUT /api/scenarios/{id}` — same id, same `active` flag, stored
+  projection overwritten, `updated_at` bumped — and three things make it safe. It checks the scenario
+  **exists** first, because `save_scenario` upserts and a stale id would otherwise mint a ghost
+  record. It passes `active` **only when `make_active` is true**, because `save_scenario` inherits the
+  stored flag from an absent key, and passing `False` would quietly take the budget off a scenario the
+  CFO was only correcting. And the "needs at least one assumption" refusal became a **creation**
+  guard (`and previous is None`): several stored scenarios legitimately carry none — the seeded
+  "2027 budget (as locked)" among them — so renaming one or moving its basis is a real edit. The
+  argument is **absent from the model's tool schema**, and absence is not enough on its own:
+  `execute_tool` splats input with `**i` and no schema sets `additionalProperties: false`, so
+  `build_budget_scenario_tool` exists as the narrow door and the dispatcher points at *it*. A
+  recompute also re-reads today's locked prices, so `budget.repriced_drivers` names any driver whose
+  locked value moved — otherwise EBITDA changes with no percentage touched and nothing says why. Its
+  threshold is **relative** (`REPRICE_MIN_PCT`), because a spot fallback re-read as a rounded locked
+  value differs in the fifth decimal and every USD driver inherits that from FX: reported literally,
+  an edit that changed nothing names fourteen drivers at "+0.0%".
 
 `ebitda_bridge` attributes the EBITDA move across volume / price / each driver / opex and carries a
 `check_residual` for the same reason `variance_decomposition` does — a bridge that does not close is
@@ -276,12 +295,18 @@ price}})`, and the design rule is that it is a pure **extension**:
   and a commodity curve compose. A basis with no data behind it returns a teachable error naming the
   bases that do.
 
+An **edit re-validates the basis**, because it runs the whole pipeline again. A scenario stored on
+`forward` whose curve no longer covers the budget year therefore cannot be saved — not even renamed —
+until the CFO moves it to `locked` or `spot`, and the form renders that refusal inline next to the
+basis select rather than as "could not save". That is the teachable error doing its job on a human;
+do not soften it into a silent fallback, or a scenario would quietly change what it measures.
+
 ### A scenario is explored; a version is committed
 
 [app/budgetversions.py](app/budgetversions.py) — `data/budget_versions.json`, the same store pattern
-as everything else. A scenario is live: re-runnable against today's prices, deletable, and it moves
-when the market does. A version is a **freeze** of one, and the difference is the whole point of the
-module:
+as everything else. A scenario is live: re-runnable against today's prices, **editable by hand**,
+deletable, and it moves when the market does. A version is a **freeze** of one, and the difference is
+the whole point of the module:
 
 - **It snapshots the driver provenance, not a reference to it.** `create_version` takes
   `drivers_snapshot` (value, `source_url`, `retrieved_at`, `locked_at`, rationale per driver) as an
@@ -303,9 +328,24 @@ module:
   approved, so next quarter's measurement must not silently rewrite the funding case the board signed
   off. Optional — a version created on a company with no working-capital history carries `None`, and
   the Cash flow sheet says which inputs are missing rather than printing zeros.
+- **The approved version is the one thing that makes a scenario read-only.** `approved_freeze()` —
+  which scenario the approved version was frozen from — lives in *this* module, because a version
+  knows what it froze while a scenario knows nothing about versions, and `scenarios.py` must not learn
+  otherwise. `main.py` joins the halves twice: as `frozen` in the `GET /api/scenarios` envelope (not
+  inside `scenarios.summary`, whose shape belongs to that module) and as the **409** on
+  `PUT /api/scenarios/{id}`. A *draft or submitted* version deliberately freezes nothing — a budget
+  under review is still being explored — and superseding hands the older scenario back, so at most one
+  approved version means at most one frozen scenario, which is why the shape is one record or `None`
+  rather than a map. A frozen scenario is still **deletable**: the version holds a full copy, which is
+  the entire reason the freeze is a copy.
 - `POST /api/assumptions/lock` is a thin route onto the **existing** `drivers.lock_assumptions` — the
   CFO gets a second door to the model's function, never a second implementation. Locking replaces
-  the whole set, which is why the form on `#/drivers` posts every driver.
+  the whole set, which is why the form on `#/drivers` posts every driver. `PUT /api/scenarios/{id}` →
+  `tools.build_budget_scenario` and `GET /api/scenario-options` → `tools.scenario_options` are the same
+  rule applied twice more; the second exists so the edit form's selects and the tool's teachable
+  validation come off **one** dataset read, because two derivations of "the valid product lines" is how
+  a form offers a value the validator then rejects. Its path is flat, not `/api/scenarios/options`,
+  which `/api/scenarios/{scenario_id}` would swallow.
 
 [app/export.py](app/export.py) turns either record into a workbook (**Summary · Monthly P&L · By
 product line · Cash flow · Assumptions · Driver bridge · Version diff**) or a board-pack markdown.
@@ -515,7 +555,20 @@ drawn between them. The lock form and the "This week" strip on `#/drivers` and t
 scenario, because it means the same thing — *this is the one you are running on*.
 
 `renderLockPanel` returns early while `lockFormOpen`: `refreshDrivers` re-paints every 2 s during a
-verify run, and re-rendering the form would wipe what the CFO is typing into it.
+verify run, and re-rendering the form would wipe what the CFO is typing into it. The scenario edit form
+solves the same problem **structurally instead of with a flag**: `#scenario-edit` is a *sibling* of
+`#scenarios-body` and `#versions-body`, so a finished build, an activate or a delete repaints the lists
+and cannot reach inside the form — the `#bo-cash-form-host` rule again. `editingScenarioId` therefore
+lives outside the form too, letting a repaint mark the card being edited without reading an input.
+Navigating in closes the form (`renderScenarios` → `closeScenarioEdit`); a repaint never does.
+
+**`.hidden` is scoped per component in both stylesheets, and there is no global rule** — so a component
+that toggles the class without declaring it has a collapse that silently does nothing. That was the
+History button on `#/drivers` for as long as `.driver-history.hidden` was missing: the handler toggled,
+the table stayed, and the button's label never changed either. Declare the rule next to the element,
+and give the control a visible state (`History` / `Hide history` plus `aria-expanded`) so a dead toggle
+is visible immediately rather than a year later. `.error-text.hidden` and `#scenario-edit-form.hidden`
+were missing for the same reason.
 
 `createStreamRenderer(container, bubble, opts)` is the extracted streaming reveal loop, shared by
 chat, the setup wizard and the reasoning disclosure. Its 130 ms cadence, `max(14, backlog/5)` batch
@@ -536,7 +589,10 @@ anything touching the network deliberately do not. `tests/` covers the variance/
 maths, the opex bridge, the provenance guards, block classification, rule boundaries, alert dedup,
 schedule math, the model-capability registry, the version diff and approval state machine, both
 export formats, the forward-curve guards and per-month pricing, the BOM materialisation's
-reconciliation to the P&L, and the cash projection's additivity, sign conventions and measured days.
+reconciliation to the P&L, the cash projection's additivity, sign conventions and measured days, and —
+behind the CFO's edit form — the scenario store's replace-by-id semantics (overwrite in place,
+`created_at` preserved, `active` inherited from an absent key) and which scenario an *approved* version
+freezes.
 
 Tests that need data `monkeypatch.setattr` the module-level path constants (`tools.DATA_DIR`,
 `drivers.PRICES_FILE`, `scenarios.SCENARIOS_FILE`, …) at a `tmp_path` and write **CSV** fixtures —

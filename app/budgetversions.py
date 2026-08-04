@@ -89,6 +89,37 @@ def approved_version() -> dict | None:
     return next((v for v in list_versions() if v.get("status") == "approved"), None)
 
 
+def approved_freeze() -> dict | None:
+    """Which scenario the approved version was frozen from, if any.
+
+    It lives here because a version knows what it froze and a scenario knows
+    nothing about versions — the import graph runs one way, and scenarios.py must
+    not learn that this module exists. main.py joins the two halves: in the
+    GET /api/scenarios envelope and in the edit route's guard.
+
+    At most one version is approved, so at most ONE scenario is frozen. The shape
+    says so — a single record or None, never a map.
+
+    A draft or submitted version deliberately does NOT freeze its scenario: a
+    budget under review is still being explored, and only an approval is a claim
+    the company has committed to those numbers.
+    """
+    v = approved_version()
+    if not v or not v.get("scenario_id"):
+        return None
+    return {"scenario_id": v["scenario_id"], "version_id": v.get("id"),
+            "version_no": v.get("version_no"), "label": v.get("label"),
+            "approved_by": v.get("approved_by"), "approved_at": v.get("approved_at")}
+
+
+def approved_freeze_of(scenario_id: str | None) -> dict | None:
+    """`approved_freeze` narrowed to one scenario — the edit route's guard."""
+    frozen = approved_freeze()
+    if not frozen or not scenario_id or frozen["scenario_id"] != scenario_id:
+        return None
+    return frozen
+
+
 def latest_version() -> dict | None:
     items = list_versions()
     return items[0] if items else None

@@ -494,6 +494,10 @@ h1 {
 
 .thinking { color: var(--fg-3); font-style: italic; }
 .error-text { color: var(--bad); }
+/* Every inline error in app.js is hidden by adding `.hidden` to it, and this
+   file has no global rule for that class — so without this line a message that
+   was cleared on a successful retry stayed on screen underneath the new state. */
+.error-text.hidden { display: none; }
 
 /* Newly revealed streaming text fades in. The span is re-created on every
    reveal tick (TICK_MS in app.js), so keep this duration close to that
@@ -1234,6 +1238,11 @@ details.reasoning.is-live .reasoning-spinner {
 .driver-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
 .driver-actions .btn-ghost { font-size: .8rem; padding: 5px 10px; }
 .driver-history { margin-top: 8px; font-size: .8rem; }
+/* This file scopes `.hidden` per component rather than shipping a global rule,
+   so a component that toggles the class and never declares it has a collapse
+   that silently does nothing. That was the History button: the handler toggled,
+   the table stayed. Declare the rule next to the element it belongs to. */
+.driver-history.hidden { display: none; }
 .mini-table { width: 100%; border-collapse: collapse; }
 .mini-table th, .mini-table td {
   text-align: left; padding: 4px 6px;
@@ -1554,7 +1563,8 @@ details.reasoning.is-live .reasoning-spinner {
 .lock-table { margin-bottom: var(--space-4); }
 .lock-table th { font-weight: var(--fw-medium); color: var(--fg-3); }
 .lock-table td { vertical-align: middle; }
-.lock-table input, .version-freeze input, .version-approve input {
+.lock-table input, .version-freeze input, .version-approve input,
+.scenario-edit input, .scenario-edit select {
   font-family: var(--font-sans);
   font-size: var(--fs-body-sm);
   color: var(--fg-1);
@@ -1565,7 +1575,8 @@ details.reasoning.is-live .reasoning-spinner {
   width: 100%;
   max-width: 26rem;
 }
-.lock-table input:focus, .version-freeze input:focus, .version-approve input:focus {
+.lock-table input:focus, .version-freeze input:focus, .version-approve input:focus,
+.scenario-edit input:focus, .scenario-edit select:focus {
   outline: none;
   border-color: var(--columbus-navy);
   box-shadow: 0 0 0 2px rgba(1, 1, 144, 0.18);
@@ -1574,6 +1585,49 @@ details.reasoning.is-live .reasoning-spinner {
 #lock-note { max-width: 34rem; }
 #lock-form .btn-primary { margin-top: var(--space-3); }
 #lock-form .field-label { display: block; margin-top: var(--space-2); }
+
+/* ---------- Editing a scenario by hand ----------
+   No fourth surface: .panel + .mini-table + the input rules above, same as the
+   lock form. Only the grid of scalars and the narrow percentage column are new. */
+.scenario-edit.hidden { display: none; }
+.scenario-edit .panel-note { max-width: 70ch; }
+/* Panel headings are capitalised by .panel-head h3, which is right for the fixed
+   section titles and wrong for a name the CFO typed — it renders "Electricity at
+   forward-curve level" as "Electricity At Forward-Curve Level". */
+#scenario-edit-title { text-transform: none; }
+.sc-fields {
+  display: grid; gap: var(--space-4); margin: var(--space-4) 0;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+.sc-fields .field-label { display: block; margin-bottom: var(--space-1); }
+.sc-fields .hint { margin: var(--space-1) 0 0; }
+.scenario-edit .field-label { display: block; margin-top: var(--space-2); }
+#scenario-edit-note { max-width: 34rem; }
+.sc-block { margin-top: var(--space-5); }
+.sc-block h4 { margin: 0 0 var(--space-1); font-size: .92rem; }
+.sc-block .hint { margin: 0 0 var(--space-2); max-width: 64ch; }
+.sc-table th { font-weight: var(--fw-medium); color: var(--fg-3); }
+.sc-table td { vertical-align: middle; }
+.sc-table .sc-pct { max-width: 7rem; text-align: right; font-variant-numeric: tabular-nums; }
+.sc-table .sc-key { max-width: 22rem; }
+.sc-table .sc-drop { font-size: .78rem; padding: 3px 8px; }
+.sc-block .sc-add { font-size: .8rem; padding: 5px 10px; margin-top: var(--space-2); }
+#scenario-edit-form .btn-primary { margin-top: var(--space-4); }
+/* The result REPLACES the form, so the form's own hidden rule has to exist —
+   this file ships no global one, and without it the two stack on top of each
+   other with a live submit button under a finished result. */
+#scenario-edit-form.hidden { display: none; }
+.sc-result.hidden { display: none; }
+.sc-result h4 { margin: 0 0 var(--space-2); font-size: .95rem; }
+.sc-result .panel-note { margin-top: var(--space-2); }
+.sc-result .btn-ghost { margin-top: var(--space-3); }
+/* Frozen is not "the one you are running on", so it must not borrow that 4px
+   --accent rule. A muted edge says "settled" without claiming to be active. */
+.scenario-card.is-frozen { border-left: 4px solid var(--border-default);
+  padding-left: calc(var(--space-6) - 3px); }
+.scenario-card.is-frozen.is-active { border-left-color: var(--accent); }
+.is-frozen-chip { background: var(--bg-canvas); color: var(--fg-3); }
+.scenario-card.is-editing { box-shadow: 0 0 0 2px rgba(1, 1, 144, 0.18); }
 
 .version-freeze { margin-top: var(--space-4); display: flex; flex-direction: column;
   align-items: flex-start; gap: var(--space-1); }

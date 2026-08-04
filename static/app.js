@@ -2679,7 +2679,7 @@ function renderLockPanel(data) {
     <section class="panel lock-panel">
       <div class="panel-head">
         <h3>Locked assumptions</h3>
-        <button id="lock-open" class="btn-ghost" type="button">Lock assumptions</button>
+        <button id="lock-open" class="btn-ghost" type="button">Edit assumptions</button>
       </div>
       <p class="panel-note">${when}</p>
     </section>`;
@@ -2814,7 +2814,7 @@ function driverCard(d) {
     <div class="driver-actions">
       <button class="btn-ghost dv-verify"${d.verifying ? " disabled" : ""}>${
         d.verifying ? "Verifying…" : "Re-verify now"}</button>
-      <button class="btn-ghost dv-history">History</button>
+      <button class="btn-ghost dv-history" aria-expanded="false">History</button>
       <button class="btn-ghost dv-ask">Ask about this driver</button>
     </div>
     <div class="driver-history hidden"></div>`;
@@ -2833,10 +2833,26 @@ function driverCard(d) {
   });
   // Load-once-then-toggle, copying wirePreview's shape — which is what keeps
   // route() at ~20 lines instead of growing a #/drivers/{id} route.
-  card.querySelector(".dv-history").addEventListener("click", async () => {
+  //
+  // The label and aria-expanded are set from the panel's own class, in one place
+  // on both paths: a toggle whose control never changes reads as broken, which
+  // is exactly how this looked while `.driver-history.hidden` had no CSS rule
+  // behind it and the collapse was silently a no-op.
+  const historyBtn = card.querySelector(".dv-history");
+  const markHistory = (panel) => {
+    const open = !panel.classList.contains("hidden");
+    historyBtn.textContent = open ? "Hide history" : "History";
+    historyBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  historyBtn.addEventListener("click", async () => {
     const panel = card.querySelector(".driver-history");
-    if (panel.dataset.loaded) { panel.classList.toggle("hidden"); return; }
+    if (panel.dataset.loaded) {
+      panel.classList.toggle("hidden");
+      markHistory(panel);
+      return;
+    }
     panel.classList.remove("hidden");
+    markHistory(panel);
     panel.textContent = "Loading…";
     try {
       const h = await (await fetch(`/api/drivers/${d.driver_id}/history`)).json();
@@ -2863,10 +2879,14 @@ function driverCard(d) {
 // #/scenarios — compare, activate, delete, and BUILD.
 //
 // This page absorbed Budget revision. A revision exists to produce a scenario,
-// so the two were one idea behind two tabs. Creating still runs through the
-// agent — `build_budget_scenario` is what persists a scenario, and there is
-// still no form that writes one directly — but the trigger now lives here
-// instead of requiring the CFO to know to ask for it inside a monthly report.
+// so the two were one idea behind two tabs. CREATING still runs through the
+// agent — turning "freight holds all year" into an assumption set is what the
+// model is for — but the trigger lives here rather than requiring the CFO to
+// know to ask for it inside a monthly report. CORRECTING is the CFO's own:
+// `openScenarioEdit` posts every field to PUT /api/scenarios/{id}, which
+// recomputes through the same `build_budget_scenario` the tool calls. The one
+// exception is the scenario an approved version was frozen from, which shows its
+// frozen state instead of an Edit button — see refreshScenarios' `frozen`.
 // ==========================================================================
 
 // The seeded prompt for a build. Composed client-side, like every other seeded
@@ -2886,6 +2906,9 @@ function scenarioBuildPrompt(description) {
 async function renderScenarios() {
   showOnly(scenariosView);
   resetScenarioComposer();
+  // Navigating in closes the edit form deliberately. A REPAINT never does — the
+  // form is not inside either list host — which is the whole guarantee.
+  closeScenarioEdit();
   await Promise.all([refreshScenarios(), refreshVersions()]);
 }
 
@@ -2908,6 +2931,10 @@ async function refreshScenarios() {
     return;
   }
   const scenarios = scenarioRes.value.scenarios || [];
+  // One record or None: at most one version is approved, so at most one scenario
+  // is frozen. It rides in the envelope because scenarios.py knows nothing about
+  // versions — main.py is what joins the two.
+  const frozen = scenarioRes.value.frozen || null;
   const revisions = revisionRes.status === "fulfilled"
     ? (revisionRes.value.sessions || []).filter(s => !s.parent_id)
     : [];
@@ -2928,11 +2955,11 @@ async function refreshScenarios() {
     const saved = scenarios.filter(s => !s.active);
     if (active.length) {
       body.appendChild(scenarioPanel("Active", active,
-        "What the budget is currently read against."));
+        "What the budget is currently read against.", frozen));
     }
     if (saved.length) {
       body.appendChild(scenarioPanel(active.length ? "Alternatives" : "Saved scenarios", saved,
-        "Activate one to read the budget against it instead."));
+        "Activate one to read the budget against it instead.", frozen));
     }
   }
 
@@ -3054,7 +3081,7 @@ document.getElementById("scenario-form").addEventListener("submit", async (e) =>
   }
 });
 
-function scenarioPanel(title, items, note) {
+function scenarioPanel(title, items, note, frozen) {
   const panel = document.createElement("section");
   panel.className = "panel";
   panel.innerHTML = `
@@ -3064,14 +3091,19 @@ function scenarioPanel(title, items, note) {
     </div>`;
   const grid = document.createElement("div");
   grid.className = "card-grid";
-  items.forEach(s => grid.appendChild(scenarioCard(s)));
+  items.forEach(s => grid.appendChild(scenarioCard(s, frozen)));
   panel.appendChild(grid);
   return panel;
 }
 
-function scenarioCard(s) {
+function scenarioCard(s, frozen) {
   const card = document.createElement("article");
-  card.className = "card scenario-card" + (s.active ? " is-active" : "");
+  // Frozen gets a muted rule, never the 4px accent — that one means "this is the
+  // one you are running on", which is a different claim entirely.
+  const frozenHere = frozen && frozen.scenario_id === s.id ? frozen : null;
+  card.className = "card scenario-card" + (s.active ? " is-active" : "")
+    + (frozenHere ? " is-frozen" : "")
+    + (s.id === editingScenarioId ? " is-editing" : "");
   const eur = (v) => v === null || v === undefined ? "—"
     : `€${(v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`;
   card.innerHTML = `
@@ -3088,12 +3120,21 @@ function scenarioCard(s) {
     </dl>
     <p class="driver-meta">${s.assumption_count} assumption${s.assumption_count === 1 ? "" : "s"}
       · updated ${escapeHtml(fmtWhen(s.updated_at))}</p>
+    ${frozenHere ? `<p class="driver-meta">This is what v${escapeHtml(String(frozenHere.version_no))}
+      was approved from, so it stays as approved. Build a new scenario to change the budget.</p>` : ""}
     <div class="driver-actions">
+      ${frozenHere
+        ? `<span class="chip is-frozen-chip">Frozen — approved as v${
+            escapeHtml(String(frozenHere.version_no))}</span>`
+        : `<button class="btn-ghost sc-edit">${
+            s.id === editingScenarioId ? "Editing…" : "Edit assumptions"}</button>`}
       ${s.active ? "" : '<button class="btn-ghost sc-activate">Make active</button>'}
       <button class="btn-ghost sc-ask">Ask about this</button>
       ${exportLinks(`/api/scenarios/${encodeURIComponent(s.id)}`)}
       ${s.active ? "" : '<button class="btn-ghost sc-delete">Delete</button>'}
     </div>`;
+  const edit = card.querySelector(".sc-edit");
+  if (edit) edit.addEventListener("click", () => openScenarioEdit(s));
   // refreshScenarios, not renderScenarios: re-painting the list must not reset
   // an open composer or a build the user is still reading.
   const act = card.querySelector(".sc-activate");
@@ -3114,6 +3155,314 @@ function scenarioCard(s) {
     goHome();
   });
   return card;
+}
+
+// ==========================================================================
+// Editing a scenario by hand
+//
+// The agent builds a scenario out of a sentence; this corrects one. It PUTs to
+// /api/scenarios/{id}, which is thin onto the SAME build_budget_scenario the
+// model's tool calls, so a percentage typed here and a percentage the agent
+// chose go through one engine and cannot disagree.
+//
+// The form lives in #scenario-edit, its own host and a SIBLING of the two list
+// containers — the #bo-cash-form-host rule. A finished build, an activate or a
+// delete repaints #scenarios-body and #versions-body; neither can reach inside
+// this panel, so nothing half-typed is ever wiped. That is structural rather
+// than a flag, which is why this needs no equivalent of lockFormOpen.
+// ==========================================================================
+
+// Fetched once per session — the valid driver ids, product lines, cost centres
+// and bases, off the same read the server validates against.
+let scenarioOptions = null;
+// Lives OUTSIDE the form, so a list repaint can mark the card being edited
+// without reading or writing a single input.
+let editingScenarioId = null;
+
+const SC_BLOCKS = [
+  { block: "drivers", title: "Driver prices",
+    hint: "Percentage move versus the locked value, applied through the bill of materials and each driver's hedge coverage." },
+  { block: "volume", title: "Volume",
+    hint: "Percentage move versus budget volume. Revenue and COGS scale with it; opex does not." },
+  { block: "price", title: "Selling price",
+    hint: "Percentage move versus budget price. A line priced here ignores the pass-through above — the two are the same lever." },
+  { block: "opex", title: "Opex",
+    hint: "By cost centre, or by driver id to move every centre linked to it." },
+];
+
+async function loadScenarioOptions() {
+  if (scenarioOptions) return scenarioOptions;
+  const data = await (await fetch("/api/scenario-options")).json();
+  if (!data.available) throw new Error(data.error || "Scenario options are not available yet.");
+  scenarioOptions = data;
+  return data;
+}
+
+// The keys this block may name, as {value, label}. Straight off the server's
+// lists so the form cannot offer something the validator rejects.
+function scKeyChoices(block) {
+  const o = scenarioOptions || {};
+  if (block === "drivers") {
+    return (o.drivers || []).map(d => ({ value: d.driver_id,
+      label: d.name && d.name !== d.driver_id ? `${d.name} (${d.driver_id})` : d.driver_id }));
+  }
+  if (block === "volume" || block === "price") {
+    return [{ value: o.all_lines || "*", label: "Every product line (*)" }]
+      .concat((o.product_lines || []).map(l => ({ value: l, label: l })));
+  }
+  return (o.cost_centres || []).map(c => ({ value: c, label: c }))
+    .concat((o.drivers || []).map(d => ({ value: d.driver_id, label: `${d.driver_id} (driver)` })));
+}
+
+// Rebuild every select's option set to exclude keys chosen in SIBLING rows, so a
+// duplicate is unrepresentable rather than something resolved at submit. Never
+// touches the percentage inputs.
+function scRefreshKeys(tbody, block) {
+  const rows = Array.from(tbody.querySelectorAll("tr"));
+  const chosen = rows.map(tr => tr.querySelector(".sc-key").value);
+  const all = scKeyChoices(block);
+  rows.forEach((tr, i) => {
+    const sel = tr.querySelector(".sc-key");
+    const mine = chosen[i];
+    const taken = new Set(chosen.filter((_, j) => j !== i));
+    let opts = all.filter(c => !taken.has(c.value));
+    // A stored key the datasets no longer carry (a retired line, a renamed cost
+    // centre) keeps its own option, marked. An edit must not silently delete an
+    // assumption the CFO never touched.
+    if (mine && !all.some(c => c.value === mine)) {
+      opts = [{ value: mine, label: `${mine} (no longer in the datasets)` }].concat(opts);
+    }
+    sel.innerHTML = opts.map(c =>
+      `<option value="${escapeAttr(c.value)}"${c.value === mine ? " selected" : ""}>${
+        escapeHtml(c.label)}</option>`).join("");
+    sel.value = mine;
+  });
+}
+
+function scAddRow(tbody, block, key, pct) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td><select class="sc-key"></select></td>
+    <td><input class="sc-pct" type="number" step="any" inputmode="decimal"
+               value="${pct === null || pct === undefined ? "" : escapeAttr(String(pct))}"></td>
+    <td><button type="button" class="btn-ghost sc-drop" aria-label="Remove this assumption">✕</button></td>`;
+  tbody.appendChild(tr);
+  const sel = tr.querySelector(".sc-key");
+  // One option is enough to hold the value; scRefreshKeys rebuilds the rest.
+  sel.innerHTML = `<option value="${escapeAttr(key || "")}" selected></option>`;
+  sel.value = key || "";
+  tr.querySelector(".sc-drop").addEventListener("click", () => {
+    tr.remove();
+    scRefreshKeys(tbody, block);
+  });
+  sel.addEventListener("change", () => scRefreshKeys(tbody, block));
+  scRefreshKeys(tbody, block);
+}
+
+function scBuildBlocks(spec) {
+  const host = document.getElementById("scenario-edit-blocks");
+  host.innerHTML = SC_BLOCKS.map(b => `
+    <div class="sc-block" data-block="${escapeAttr(b.block)}">
+      <h4>${escapeHtml(b.title)}</h4>
+      <p class="hint">${escapeHtml(b.hint)}</p>
+      <table class="mini-table sc-table">
+        <thead><tr><th>What moves</th><th>Change %</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <button type="button" class="btn-ghost sc-add">+ Add</button>
+    </div>`).join("");
+
+  SC_BLOCKS.forEach(b => {
+    const wrap = host.querySelector(`.sc-block[data-block="${b.block}"]`);
+    const tbody = wrap.querySelector("tbody");
+    const entries = (spec && spec[b.block]) || {};
+    Object.keys(entries).forEach(k => scAddRow(tbody, b.block, k, entries[k]));
+    wrap.querySelector(".sc-add").addEventListener("click", () => {
+      // Pre-select the first key nothing has taken yet, with an empty percentage:
+      // a blank is an error at submit, never coerced to 0, because an explicit 0
+      // means "hold this deliberately" and the engine treats it as a decision.
+      const taken = new Set(Array.from(tbody.querySelectorAll(".sc-key")).map(s => s.value));
+      const free = scKeyChoices(b.block).find(c => !taken.has(c.value));
+      if (!free) return;
+      scAddRow(tbody, b.block, free.value, "");
+    });
+  });
+}
+
+async function openScenarioEdit(summary) {
+  const err = document.getElementById("scenario-edit-error");
+  const panel = document.getElementById("scenario-edit");
+  panel.classList.remove("hidden");
+  document.getElementById("scenario-edit-result").classList.add("hidden");
+  document.getElementById("scenario-edit-form").classList.remove("hidden");
+  err.classList.add("hidden");
+  document.getElementById("scenario-edit-title").textContent =
+    `Edit “${summary.name || "Untitled"}”`;
+
+  let full;
+  try {
+    await loadScenarioOptions();
+    // The summary carries no assumptions, no pass-through and no opex inflation,
+    // so the form reads the full record rather than half-filling itself.
+    full = await (await fetch(`/api/scenarios/${encodeURIComponent(summary.id)}`)).json();
+  } catch (ex) {
+    err.textContent = ex.message || "Could not open this scenario.";
+    err.classList.remove("hidden");
+    document.getElementById("scenario-edit-blocks").innerHTML = "";
+    return;
+  }
+
+  editingScenarioId = summary.id;
+  document.getElementById("scenario-edit-name").value = full.name || "";
+  document.getElementById("scenario-edit-note").value = full.note || "";
+  document.getElementById("scenario-edit-tau").value =
+    full.price_pass_through === null || full.price_pass_through === undefined
+      ? "" : full.price_pass_through;
+  document.getElementById("scenario-edit-opexinf").value =
+    full.opex_inflation_pct === null || full.opex_inflation_pct === undefined
+      ? "" : full.opex_inflation_pct;
+
+  const basisSel = document.getElementById("scenario-edit-basis");
+  const stored = full.basis || "locked";
+  basisSel.innerHTML = (scenarioOptions.bases || []).map(b =>
+    `<option value="${escapeAttr(b.basis)}"${b.basis === stored ? " selected" : ""}>${
+      escapeHtml(b.basis)}</option>`).join("");
+  basisSel.value = stored;
+
+  scBuildBlocks(full.assumptions);
+  refreshScenarios();                       // mark the card as being edited
+  panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  document.getElementById("scenario-edit-name").focus();
+}
+
+function closeScenarioEdit() {
+  editingScenarioId = null;
+  const panel = document.getElementById("scenario-edit");
+  if (!panel) return;
+  panel.classList.add("hidden");
+  document.getElementById("scenario-edit-blocks").innerHTML = "";
+  document.getElementById("scenario-edit-error").classList.add("hidden");
+  document.getElementById("scenario-edit-result").classList.add("hidden");
+  document.getElementById("scenario-edit-form").classList.remove("hidden");
+}
+
+document.getElementById("scenario-edit-cancel").addEventListener("click", () => {
+  closeScenarioEdit();
+  refreshScenarios();
+});
+
+document.getElementById("scenario-edit-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!editingScenarioId) return;
+  const err = document.getElementById("scenario-edit-error");
+  const fail = (msg) => {
+    err.textContent = msg;
+    err.classList.remove("hidden");
+  };
+
+  const assumptions = {};
+  let blank = null;
+  SC_BLOCKS.forEach(b => {
+    const block = {};
+    document.querySelectorAll(`.sc-block[data-block="${b.block}"] tbody tr`).forEach(tr => {
+      const sel = tr.querySelector(".sc-key");
+      const key = sel.value;
+      const raw = tr.querySelector(".sc-pct").value.trim();
+      if (!key) return;
+      // The option's own label, not the key: "Give * a percentage" is not a
+      // sentence, and "*" is the one key with no readable form of its own.
+      if (raw === "") { blank = blank || (sel.selectedOptions[0] || {}).text || key; return; }
+      block[key] = Number(raw);
+    });
+    assumptions[b.block] = block;
+  });
+  if (blank) {
+    // Never coerced to 0: a stated 0 is a decision to hold, and the engine reads
+    // it as one. A blank is an unfinished row and has to be said out loud.
+    fail(`Give ${blank} a percentage, or remove the row.`);
+    return;
+  }
+  const name = document.getElementById("scenario-edit-name").value.trim();
+  if (!name) { fail("A scenario needs a name."); return; }
+  err.classList.add("hidden");
+
+  const numberOrNull = (id) => {
+    const raw = document.getElementById(id).value.trim();
+    return raw === "" ? null : Number(raw);
+  };
+  const btn = e.target.querySelector("button[type=submit]");
+  btn.disabled = true; btn.textContent = "Recomputing…";
+
+  let result;
+  try {
+    const resp = await fetch(`/api/scenarios/${encodeURIComponent(editingScenarioId)}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name, note: document.getElementById("scenario-edit-note").value.trim() || null,
+        basis: document.getElementById("scenario-edit-basis").value,
+        price_pass_through: numberOrNull("scenario-edit-tau"),
+        opex_inflation_pct: numberOrNull("scenario-edit-opexinf"),
+        assumptions,
+      }),
+    });
+    if (!resp.ok) {
+      // Every refusal lands here with no special-casing: a teachable
+      // _assumption_blocks error, a basis with no curve behind it, the 404 for a
+      // scenario deleted in another tab and the 409 for a frozen one. The form
+      // keeps everything typed.
+      const detail = await resp.json().catch(() => ({}));
+      throw new Error((detail.detail && detail.detail.error) || "Could not save.");
+    }
+    result = await resp.json();
+  } catch (ex) {
+    fail(ex.message);
+    btn.disabled = false; btn.textContent = "Save and recompute";
+    return;
+  }
+
+  btn.disabled = false; btn.textContent = "Save and recompute";
+  renderScenarioEditResult(result);
+  await Promise.all([refreshScenarios(), refreshVersions()]);
+});
+
+// What the recompute did, out of the response and nothing else.
+function renderScenarioEditResult(result) {
+  const host = document.getElementById("scenario-edit-result");
+  const eur = (v) => v === null || v === undefined ? "—"
+    : `€${(v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`;
+  const totals = result.totals || {};
+  const delta = (result.vs_baseline || {}).ebitda_delta_eur;
+  const signed = delta === null || delta === undefined ? "—"
+    : `${delta >= 0 ? "+" : "−"}${eur(Math.abs(delta))}`;
+
+  // The honest half. A recompute re-reads today's locked prices, so EBITDA can
+  // move with no percentage changed — say which drivers did it rather than
+  // handing back a number the CFO cannot account for.
+  const repriced = result.repriced_drivers || [];
+  const repricedLine = repriced.length ? `<p class="panel-note">${
+    escapeHtml(repriced.map(r => `${r.driver_id} ${r.pct === null ? "moved"
+      : (r.pct >= 0 ? "+" : "") + fmtNum(r.pct, 1) + "%"}`).join(", "))
+    } ${repriced.length === 1 ? "has" : "have"} been re-locked since this scenario was last
+    computed, so part of the move is the new locked price rather than your percentages.</p>` : "";
+
+  host.innerHTML = `
+    <h4>Recomputed</h4>
+    <dl class="driver-figures">
+      <div><dt>Revenue</dt><dd class="num">${eur(totals.revenue_eur)}</dd></div>
+      <div><dt>EBITDA</dt><dd class="num">${eur(totals.ebitda_eur)}</dd></div>
+      <div><dt>Margin</dt><dd class="num">${totals.ebitda_margin_pct == null ? "—"
+        : fmtNum(totals.ebitda_margin_pct, 1) + "%"}</dd></div>
+      <div><dt>vs locked budget</dt><dd class="num">${signed}</dd></div>
+    </dl>
+    <p class="panel-note">${escapeHtml(result.basis_note || "")}</p>
+    ${repricedLine}
+    <button id="scenario-edit-done" class="btn-ghost" type="button">Done</button>`;
+  host.classList.remove("hidden");
+  document.getElementById("scenario-edit-form").classList.add("hidden");
+  document.getElementById("scenario-edit-done").addEventListener("click", () => {
+    closeScenarioEdit();
+    refreshScenarios();
+  });
 }
 
 // ==========================================================================

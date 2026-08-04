@@ -326,6 +326,54 @@ def _numeric_map(d) -> dict[str, float]:
     return out
 
 
+def repriced_drivers(before: dict, after: dict) -> list[dict]:
+    """Drivers whose LOCKED price moved between two computations of one scenario.
+
+    Recomputing a scenario re-reads the locked assumptions, so its EBITDA can
+    move with not one percentage changed. That is the same fact
+    `budgetversions.diff`'s locked-values cut exists to expose months later; here
+    it is exposed at the moment of the edit, because a CFO who changed a name and
+    got a different EBITDA back deserves the reason in the same breath.
+
+    The threshold is RELATIVE, not absolute, and it is the reason this is not a
+    plain inequality: a price that was stored as a spot fallback and is now read
+    off a rounded locked value differs in the fifth decimal, and every USD-quoted
+    driver inherits that from the FX rate. Reported literally, an edit that
+    changed nothing would print fourteen drivers at "+0.0%" — a sentence that
+    tells the CFO to distrust a figure that is in fact correct. Anything that
+    rounds to 0.0% at the precision the UI prints is not a re-lock worth naming.
+
+    `pct` is None on a zero baseline — an undefined ratio, never 0, the same
+    distinction driver_status draws for a missing forward curve. A price that
+    appeared from nothing is always reported, however small.
+    """
+    rows = []
+    for driver_id in after:
+        was, now = _num(before.get(driver_id)), _num(after.get(driver_id))
+        if was is None or now is None:
+            continue
+        if was and abs(now - was) / abs(was) < REPRICE_MIN_PCT / 100.0:
+            continue
+        if not was and now == 0:
+            continue
+        rows.append({"driver_id": str(driver_id), "from": was, "to": now,
+                     "pct": ((now - was) / was * 100.0) if was else None})
+    rows.sort(key=lambda r: -abs(r["to"] - r["from"]))
+    return rows
+
+
+# The precision the UI prints a driver move at. Below this a "re-locked" note
+# would read as "+0.0%", which is noise wearing the clothes of a finding.
+REPRICE_MIN_PCT = 0.05
+
+
+def _num(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def opex_bridge(opex_rows: list[dict], driver_assumptions: dict,
                 opex_overrides: dict, default_pct: float) -> dict:
     """Move each opex cost centre by its own rate, and report the weighted total.

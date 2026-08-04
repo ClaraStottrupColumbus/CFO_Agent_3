@@ -5,9 +5,17 @@
 # to evaluate. Scenario persistence is load-bearing, not a convenience.
 #
 # Creation stays conversational — the agent writes a scenario through a tool
-# during a revision — so this module is only persistence plus the
-# re-run-with-latest-prices path. There is deliberately no scenario-authoring
-# form anywhere in the app.
+# during a revision, because turning a sentence into an assumption set is what the
+# model is for. CORRECTION does not: `save_scenario`'s replace-by-id is now
+# load-bearing rather than latent, because the CFO's edit form recomputes a stored
+# scenario in place through tools.build_budget_scenario. Two invariants make that
+# safe, and both live here:
+#
+#   * `active` is ASSERTED, never denied. A caller that omits the key inherits the
+#     stored flag, so recomputing a scenario cannot take the budget off it.
+#   * This module still knows nothing about versions. "An approved version was
+#     frozen from this scenario, so it may not be edited" is main.py's check,
+#     against budgetversions.approved_freeze — the import graph runs one way.
 
 from __future__ import annotations
 

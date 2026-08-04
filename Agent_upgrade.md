@@ -458,6 +458,68 @@ not an oversight: the next phase to do cash properly would start with a financin
 
 ---
 
+## Phase 6 — The CFO can correct a scenario ✅ COMPLETE
+
+**The gap:** every scenario had to be built, and rebuilt, through the agent. Nudging one percentage
+meant a conversation, and the only way to "edit" a scenario was to describe a new one — which left the
+old one behind and moved the numbers for reasons buried in a transcript. `app/scenarios.py`'s header
+said this was deliberate ("there is deliberately no scenario-authoring form anywhere in the app"), and
+it was right about **creation** and wrong about **correction**.
+
+**Status: done.** 425 tests green (new `tests/test_scenario_store.py` +8, `test_budget_versions.py` +4,
+`test_scenario_engine.py` +8). Asset links bumped to `?v=29`.
+
+What landed, and the one rule it all follows — *a second door onto one implementation, never a second
+implementation*:
+
+- **`tools.build_budget_scenario` gained keyword-only `replace_scenario_id`.** No new arithmetic: the
+  same validation, the same `_basis_prices`, the same single `project_pnl` call, and
+  `scenarios.save_scenario`'s latent replace-by-id path finally load-bearing. Three guards make it
+  safe — an existence check (`save_scenario` upserts, so a stale id would mint a ghost record), `active`
+  asserted-never-denied (an absent key inherits the stored flag), and the "needs at least one
+  assumption" refusal demoted to a *creation* guard, because the seeded "2027 budget (as locked)"
+  legitimately has none and renaming it is a real edit.
+- **`build_budget_scenario_tool` is the model's narrow door.** Leaving the argument out of the schema
+  was not enough: the dispatcher splats input with `**i` and no schema sets
+  `additionalProperties: false`, so a hallucinated `replace_scenario_id` would have been honoured. Now
+  it is unrepresentable and gets a teachable "Invalid arguments" instead.
+- **`budget.repriced_drivers`** — a recompute re-reads today's locked prices, so EBITDA can move with
+  no percentage touched. This names the drivers responsible, with a **relative** threshold, because a
+  spot fallback re-read as a rounded locked value differs in the fifth decimal and every USD driver
+  inherits that through FX: reported literally, an edit that changed nothing named fourteen drivers at
+  "+0.0%".
+- **`budgetversions.approved_freeze` / `approved_freeze_of`** — which scenario the approved version was
+  frozen from, computed where the knowledge lives. Draft and submitted versions freeze nothing;
+  superseding hands the older scenario back; at most one approved version means at most one frozen
+  scenario, so the shape is one record or `None`.
+- **Routes** — `PUT /api/scenarios/{id}` (404 → 409 if frozen → the tool), `GET /api/scenario-options`
+  (flat path, because `/api/scenarios/{scenario_id}` would swallow `/api/scenarios/options`), and
+  `frozen` added to the `GET /api/scenarios` envelope rather than to `scenarios.summary`, whose shape
+  belongs to that module.
+- **UI** — `#scenario-edit`, a *sibling* of the two list hosts so a repaint cannot wipe a half-typed
+  form, with add/remove rows per block, duplicate keys made unrepresentable by rebuilding the sibling
+  selects, a blank percentage refused inline (never coerced to `0`, which means "hold this
+  deliberately"), and a stored key the datasets no longer carry kept and marked rather than silently
+  dropped. Frozen cards show `Frozen — approved as vN` with a muted rule, never the 4 px accent.
+
+Three latent CSS bugs fell out of it and were fixed in the same pass, all the same bug: this project
+scopes `.hidden` per component and ships no global rule, so `.driver-history.hidden` (**the History
+button never collapsed** — the reported symptom), `.error-text.hidden` (a cleared error stayed on
+screen) and `#scenario-edit-form.hidden` had no rule behind the class the JS was toggling.
+
+**Manual checklist:**
+
+13. On `#/drivers`, the button reads **Edit assumptions**; History expands, and clicking it again
+    collapses it with the label flipping to "Hide history".
+14. Edit an alternative scenario's chicken-meal percentage and save — EBITDA moves on the card, the
+    scenario keeps its place, and `data/scenarios.json` shows the same id and `created_at`.
+15. Edit the **active** scenario and confirm it is still active afterwards.
+16. Freeze it as a version and approve it: the card becomes `Frozen — approved as v1` with no Edit
+    button, and a `PUT` to it returns 409. Approve a version from another scenario and the first
+    becomes editable again.
+
+---
+
 ## Verification
 
 **Automated**
@@ -467,6 +529,7 @@ not an oversight: the next phase to do cash properly would start with a financin
 .venv/bin/python -m pytest tests/test_scenario_engine.py -q      # Phase 1
 .venv/bin/python -m pytest tests/test_driver_guards.py -q        # guards still pass, unchanged
 .venv/bin/python -m pytest tests/test_cash_flow.py -q            # Phase 5
+.venv/bin/python -m pytest tests/test_scenario_store.py -q       # Phase 6
 ```
 
 **End to end**

@@ -183,6 +183,26 @@ class LockRequest(BaseModel):
     note: str | None = None
 
 
+class ScenarioEditRequest(BaseModel):
+    """The editable half of a scenario record.
+
+    Every field is STATED, not patched: an edit replaces the assumption set
+    whole, the same semantics as POST /api/assumptions/lock replacing the whole
+    locked position. A key the CFO removed has to be *absent*, and a partial patch
+    cannot express a removal. An omitted scalar falls back to the stored value.
+
+    Validation lives in tools._assumption_blocks and budget.py, never here, so
+    this form and the model's tool cannot disagree about what a valid basis or a
+    valid product line is.
+    """
+    name: str
+    note: str | None = None
+    basis: str | None = None
+    price_pass_through: float | None = None
+    opex_inflation_pct: float | None = None
+    assumptions: dict | None = None      # the four blocks, or a flat drivers dict
+
+
 class VersionRequest(BaseModel):
     scenario_id: str | None = None
     label: str | None = None
@@ -614,7 +634,31 @@ def add_observation(driver_id: str, payload: ObservationRequest) -> dict:
 @app.get("/api/scenarios", dependencies=Gated)
 def list_scenarios() -> dict:
     items = scenarios.list_scenarios()
-    return {"scenarios": [scenarios.summary(s) for s in items]}
+    # `frozen` travels in the ENVELOPE, not inside summary(): that shape belongs to
+    # scenarios.py, and that module must not learn that versions exist. The
+    # precedent is GET /api/budget/versions returning approved_id and
+    # active_scenario alongside its summaries. At most one version is approved, so
+    # this is one record or None.
+    return {"scenarios": [scenarios.summary(s) for s in items],
+            "frozen": budgetversions.approved_freeze()}
+
+
+@app.get("/api/scenario-options", dependencies=Gated)
+def scenario_options() -> dict:
+    """What a scenario may name — drivers, product lines, cost centres, bases.
+
+    Thin onto tools.scenario_options, which reads what the tool's own validation
+    reads, so the edit form cannot offer a key the validator then rejects. 200
+    with available: false rather than a 4xx, like /api/cash: "there is no budget
+    plan yet" is a state the form renders as a reason.
+
+    A flat path deliberately — /api/scenarios/options would be swallowed by the
+    /api/scenarios/{scenario_id} route below.
+    """
+    result = tools.scenario_options()
+    if "error" in result:
+        return {"available": False, **result}
+    return {"available": True, **result}
 
 
 @app.get("/api/scenarios/{scenario_id}", dependencies=Gated)
@@ -623,6 +667,50 @@ def get_scenario(scenario_id: str) -> dict:
     if not s:
         raise HTTPException(status_code=404, detail={"error": "scenario not found"})
     return s
+
+
+@app.put("/api/scenarios/{scenario_id}", dependencies=Gated)
+def update_scenario(scenario_id: str, payload: ScenarioEditRequest) -> dict:
+    """Recompute one scenario in place from an edited assumption set.
+
+    Thin, and onto the SAME tools.build_budget_scenario the model calls — the rule
+    POST /api/assumptions/lock follows. One implementation of "what these
+    assumptions are worth", so the figure on the card and the figure in an answer
+    cannot disagree.
+
+    The frozen check is HERE because this is the only module allowed to join the
+    two halves: tools.py imports no budgetversions and scenarios.py must not.
+    """
+    existing = scenarios.get_scenario(scenario_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail={"error": "scenario not found"})
+
+    frozen = budgetversions.approved_freeze_of(scenario_id)
+    if frozen:
+        # 409, not 400: the request is well formed, the object's state forbids it.
+        by = f" by {frozen['approved_by']}" if frozen.get("approved_by") else ""
+        raise HTTPException(status_code=409, detail={
+            "error": f"v{frozen['version_no']} was approved{by} from this scenario, so it is "
+                     "frozen. The approved budget has to keep saying what was approved. Build a "
+                     "new scenario, or approve a later version first.",
+            "version_id": frozen["version_id"], "version_no": frozen["version_no"]})
+
+    result = tools.build_budget_scenario(
+        payload.name, assumptions=payload.assumptions, note=payload.note,
+        basis=payload.basis or existing.get("basis") or "locked",
+        price_pass_through=(float(existing.get("price_pass_through") or 0.0)
+                            if payload.price_pass_through is None
+                            else payload.price_pass_through),
+        opex_inflation_pct=(float(existing.get("opex_inflation_pct") or 0.0)
+                            if payload.opex_inflation_pct is None
+                            else payload.opex_inflation_pct),
+        # make_active is deliberately NOT passed: activation stays POST /activate.
+        # One lever per door, and an edit that silently moved the budget onto a
+        # scenario would be a trap.
+        replace_scenario_id=scenario_id)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.post("/api/scenarios/{scenario_id}/activate", dependencies=Gated)

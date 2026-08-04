@@ -146,6 +146,57 @@ def test_transitions_on_a_missing_version_raise_keyerror(store):
         budgetversions.approve("nope", "A. Board")
 
 
+# ---------- Which scenario an approval freezes ----------
+#
+# The CFO can edit a scenario by hand, EXCEPT the one an approved version was
+# frozen from: the approved budget has to keep saying what was approved. This is
+# the lookup behind that, and it lives here because a version knows what it froze
+# while a scenario knows nothing about versions.
+
+def test_an_approved_version_freezes_the_scenario_it_was_made_from(store):
+    version = budgetversions.create_version(scenario(sid="sc1"))
+    budgetversions.approve(version["id"], "A. Board")
+
+    frozen = budgetversions.approved_freeze()
+    assert frozen["scenario_id"] == "sc1"
+    assert frozen["version_no"] == 1
+    assert frozen["approved_by"] == "A. Board"
+    assert budgetversions.approved_freeze_of("sc1") == frozen
+
+
+def test_a_draft_or_submitted_version_does_not_freeze_its_scenario(store):
+    # A budget under review is still being explored. Only an approval is a claim
+    # the company has committed to those numbers.
+    draft = budgetversions.create_version(scenario(sid="sc1"))
+    assert budgetversions.approved_freeze() is None
+    budgetversions.submit(draft["id"], "N. Bentmann")
+    assert budgetversions.approved_freeze() is None
+    assert budgetversions.approved_freeze_of("sc1") is None
+
+
+def test_superseding_hands_the_older_scenario_back(store):
+    first = budgetversions.create_version(scenario(sid="sc1"))
+    second = budgetversions.create_version(scenario("Re-lock", sid="sc2"))
+    budgetversions.approve(first["id"], "A. Board")
+    budgetversions.approve(second["id"], "A. Board")
+
+    # At most one approved version, so at most one frozen scenario — sc1 becomes
+    # editable again the moment its version is superseded.
+    assert budgetversions.approved_freeze_of("sc1") is None
+    assert budgetversions.approved_freeze_of("sc2")["version_no"] == 2
+
+
+def test_approved_freeze_is_none_with_no_versions_and_for_unknown_ids(store):
+    assert budgetversions.approved_freeze() is None
+    assert budgetversions.approved_freeze_of("sc1") is None
+
+    version = budgetversions.create_version(scenario(sid="sc1"))
+    budgetversions.approve(version["id"], "A. Board")
+    assert budgetversions.approved_freeze_of("sc-other") is None
+    assert budgetversions.approved_freeze_of(None) is None
+    assert budgetversions.approved_freeze_of("") is None
+
+
 # ---------- The diff ----------
 
 def build(a_kwargs, b_kwargs, *, a_drivers=None, b_drivers=None):

@@ -1047,41 +1047,135 @@ def _budget_year(bva: pd.DataFrame) -> str:
     return sorted(by_year)[-1]
 
 
-# --------------------------------------------------------------------------
-# 8-9. build_budget_scenario / lock_assumptions
-# --------------------------------------------------------------------------
+def _scenario_inputs() -> dict:
+    """Everything a scenario is built from, and every key it may legally name.
 
-def build_budget_scenario(name: str, assumptions=None, note=None,
-                          price_pass_through=0.35, opex_inflation_pct=0.0,
-                          make_active=False, volume=None, price=None,
-                          opex=None, basis="locked") -> dict:
+    One function, because the options enumerated in build_budget_scenario's
+    teachable errors and the options the CFO's edit form renders have to come off
+    the same read. Two derivations of "the valid product lines" is how a form
+    offers a value the validator then rejects.
+
+    Returns the same `{"error": …}` dicts as before for the two states that make
+    a scenario impossible at all, so both callers report one reason.
+    """
     catalog = drivers.load_catalog()
     if catalog.empty:
         return {"error": "No drivers configured yet."}
-    known = [str(d) for d in catalog["driver_id"]]
-    basis = str(basis or "locked")
-    if basis not in SCENARIO_BASES:
-        return _unknown("basis", basis, list(SCENARIO_BASES))
-
     bom, source = _load("bill_of_materials")
     bva, _ = _load("budget_vs_actuals")
     year = _budget_year(bva)
     plan = bva[bva["month"].str.startswith(year)]
     if plan.empty:
         return {"error": f"No budget rows for {year}."}
-    lines = sorted(set(plan["product_line"].astype(str)))
+    opex_rows = _opex_plan_rows(year)
+    return {
+        "catalog": catalog, "known": [str(d) for d in catalog["driver_id"]],
+        "bom": bom, "plan": plan, "year": year,
+        "lines": sorted(set(plan["product_line"].astype(str))),
+        "opex_rows": opex_rows,
+        "centres": sorted({r["cost_centre"] for r in opex_rows}),
+        "source": source,
+    }
+
+
+def scenario_options() -> dict:
+    """The keys a scenario may name and the defaults it starts from — what the
+    CFO's edit form fills its selects with.
+
+    Not a model tool: the model already receives these lists inside the teachable
+    errors `build_budget_scenario` returns, which is the door it can act on. This
+    exists so the form and the validator cannot disagree about what a valid
+    driver, product line, cost centre or basis is.
+    """
+    ctx = _scenario_inputs()
+    if "error" in ctx:
+        return ctx
+    cat = ctx["catalog"]
+    ids = cat["driver_id"].astype(str)
+    names = dict(zip(ids, cat["name"].astype(str))) if "name" in cat.columns else {}
+    units = dict(zip(ids, cat["unit"].astype(str))) if "unit" in cat.columns else {}
+    return {
+        "year": ctx["year"],
+        "drivers": [{"driver_id": d, "name": names.get(d, d), "unit": units.get(d)}
+                    for d in ctx["known"]],
+        "product_lines": ctx["lines"],
+        "all_lines": budget.ALL_LINES,
+        "cost_centres": ctx["centres"],
+        "bases": [{"basis": k, "description": v} for k, v in SCENARIO_BASES.items()],
+        "blocks": list(budget.ASSUMPTION_BLOCKS),
+        "defaults": {"basis": "locked", "price_pass_through": 0.35,
+                     "opex_inflation_pct": 0.0},
+        "source_file": ctx["source"],
+    }
+
+
+# --------------------------------------------------------------------------
+# 8-9. build_budget_scenario / lock_assumptions
+#
+# Creation stays conversational — turning "freight holds all year" into an
+# assumption set is what the model is for. CORRECTION does not: the CFO's
+# `replace_scenario_id` recomputes a stored scenario in place through this same
+# function, so there is one implementation of "what these assumptions are worth"
+# and the figure on the card cannot disagree with the figure in an answer.
+# --------------------------------------------------------------------------
+
+def build_budget_scenario(name: str, assumptions=None, note=None,
+                          price_pass_through=0.35, opex_inflation_pct=0.0,
+                          make_active=False, volume=None, price=None,
+                          opex=None, basis="locked", *,
+                          replace_scenario_id: str | None = None) -> dict:
+    """Apply an assumption set to the budget baseline, project the P&L once and
+    persist the result. The only path from assumptions to numbers.
+
+    `replace_scenario_id` recomputes an EXISTING scenario in place: same id, same
+    `active` flag, the stored projection overwritten, `updated_at` bumped. It is
+    keyword-only and deliberately absent from the model's tool schema — see
+    `build_budget_scenario_tool`, which is the door the model gets.
+    """
+    basis = str(basis or "locked")
+    if basis not in SCENARIO_BASES:
+        return _unknown("basis", basis, list(SCENARIO_BASES))
+
+    previous = None
+    if replace_scenario_id:
+        # scenarios.save_scenario UPSERTS on id, so a stale id would mint a ghost
+        # record rather than fail. This check is the whole difference between
+        # "recompute in place" and "create with a chosen id".
+        previous = scenarios.get_scenario(replace_scenario_id)
+        if previous is None:
+            return {"error": f"No scenario with id '{replace_scenario_id}' to recompute — it may "
+                             "have been deleted in another tab. Reload the scenarios list."}
+
+    ctx = _scenario_inputs()
+    if "error" in ctx:
+        return ctx
+    catalog, known, lines = ctx["catalog"], ctx["known"], ctx["lines"]
+    bom, plan, year = ctx["bom"], ctx["plan"], ctx["year"]
+    opex_rows, centres, source = ctx["opex_rows"], ctx["centres"], ctx["source"]
+
+    # An edit must not silently re-base a scenario onto a different plan. Once
+    # actuals start landing, _budget_year moves on; a recompute would then keep
+    # the name and the id while measuring against a year nobody asked about.
+    if previous is not None:
+        was = str(previous.get("baseline") or "")
+        if was and was != f"budget_{year}":
+            return {"error": f"This scenario was built against {was}, but the budget year is now "
+                             f"{year}. Recomputing it would silently change what it measures "
+                             f"against. Build a new scenario for {year} instead."}
 
     spec = _assumption_blocks(assumptions, volume, price, opex)
     if "error" in spec:
         return spec
-    if not any(spec.values()):
+    # A CREATION guard, not an edit one: a scenario the model saved by accident is
+    # worse than a corrected tool call, but a stored scenario already exists —
+    # several of them legitimately carry no assumptions at all ("2027 budget (as
+    # locked)"), and renaming one or moving its basis is a real edit.
+    if not any(spec.values()) and previous is None:
         return {"error": "A scenario needs at least one assumption. Use 'assumptions' for driver "
                          f"price shocks ({', '.join(known)}), 'volume' or 'price' for product "
                          f"lines ({', '.join(lines)}), or 'opex' for cost centres."}
 
     # Teachable validation, one enumerated option list per block.
-    opex_rows = _opex_plan_rows(year)
-    centres = sorted({r["cost_centre"] for r in opex_rows})
     for bad in [d for d in spec["drivers"] if d not in known]:
         return _unknown("driver_id", bad, known)
     for block in ("volume", "price"):
@@ -1132,7 +1226,7 @@ def build_budget_scenario(name: str, assumptions=None, note=None,
         opex_inflation_pct=float(opex_inflation_pct), opex_rows=opex_rows,
         driver_prices_by_month=by_month_prices)
 
-    stored = scenarios.save_scenario({
+    fields = {
         "name": name, "note": note, "baseline": f"budget_{year}",
         "assumptions": spec, "price_pass_through": float(price_pass_through),
         "opex_inflation_pct": float(opex_inflation_pct), "basis": basis,
@@ -1141,8 +1235,21 @@ def build_budget_scenario(name: str, assumptions=None, note=None,
         "driver_impact_eur": projection["driver_impact_eur"],
         "opex_bridge": projection["opex_bridge"],
         "ebitda_bridge": projection["ebitda_bridge"],
-        "driver_prices_used": lock_prices, "active": bool(make_active),
-    })
+        "driver_prices_used": lock_prices,
+    }
+    if previous is not None:
+        fields["id"] = replace_scenario_id
+        # This tool has never written source_records, so a replace that omitted it
+        # would silently strip provenance off any record that carries one.
+        fields["source_records"] = previous.get("source_records") or []
+    # `active` is ASSERTED here, never DENIED. save_scenario inherits the stored
+    # flag when the key is absent, so recomputing the active scenario leaves the
+    # budget resting on it; passing active=False would quietly take the budget off
+    # a scenario the CFO was only editing. On a create, absent and False are
+    # identical to save_scenario, so that path is byte-for-byte what it was.
+    if make_active:
+        fields["active"] = True
+    stored = scenarios.save_scenario(fields)
 
     active = scenarios.get_active() or {}
     baseline_totals = budget.project_pnl(baseline_rows, bom_rows, lock_prices, {})["totals"]
@@ -1151,6 +1258,14 @@ def build_budget_scenario(name: str, assumptions=None, note=None,
         "scenario_id": stored["id"], "name": stored["name"], "year": year,
         "active": stored["active"], "assumptions": spec, "basis": basis,
         "basis_note": basis_note,
+        "replaced": previous is not None,
+        "created_at": stored["created_at"], "updated_at": stored["updated_at"],
+        # A recompute re-reads today's locked assumptions, so a scenario's EBITDA
+        # can move with not one percentage changed. Say which drivers did it,
+        # rather than handing back a number nobody typed a reason for.
+        "repriced_drivers": (budget.repriced_drivers(previous.get("driver_prices_used") or {},
+                                                     lock_prices)
+                             if previous is not None else []),
         "totals": {k: (round(v, 2) if isinstance(v, (int, float)) and v is not None else v)
                    for k, v in totals.items()},
         "vs_baseline": {
@@ -1175,7 +1290,11 @@ def build_budget_scenario(name: str, assumptions=None, note=None,
                       "ebitda_eur": round(m["ebitda_eur"], 2)}
                      for m in projection["by_month"]],
         "currently_active_scenario": active.get("name"),
-        "note": "Scenario saved. Every delta is measured against the LOCKED budget, applied "
+        "note": ("Scenario recomputed in place: same id, same active flag, the previous "
+                 "projection overwritten. A budget version already frozen from it keeps its "
+                 "own copy, so nothing that was approved changed. "
+                 if previous is not None else "Scenario saved. ")
+                + "Every delta is measured against the LOCKED budget, applied "
                 "through the bill of materials and each driver's hedge coverage; volume and "
                 "price are moves versus the budget. Pass-through was suppressed on any line "
                 "with an explicit price, so recovery is never counted twice. " + basis_note,
@@ -1643,6 +1762,26 @@ def lock_assumptions_tool(assumptions: dict, scenario_id=None, note=None) -> dic
     return result
 
 
+def build_budget_scenario_tool(name: str, assumptions=None, note=None,
+                               price_pass_through=0.35, opex_inflation_pct=0.0,
+                               make_active=False, volume=None, price=None,
+                               opex=None, basis="locked") -> dict:
+    """The model's door: exactly the schema's arguments and no more.
+
+    `replace_scenario_id` is deliberately not here, and leaving it out of the
+    input_schema would not have been enough — the dispatcher splats model input
+    with `**i` and no schema sets additionalProperties: false, so a hallucinated
+    argument would be honoured. This wrapper makes it unrepresentable instead:
+    the model gets execute_tool's teachable "Invalid arguments" rather than
+    silently overwriting a stored projection with no undo. Same reasoning as
+    record_driver_observation's `verify_provenance`, which only main.py passes.
+    """
+    return build_budget_scenario(
+        name, assumptions=assumptions, note=note,
+        price_pass_through=price_pass_through, opex_inflation_pct=opex_inflation_pct,
+        make_active=make_active, volume=volume, price=price, opex=opex, basis=basis)
+
+
 def propose_watchlist(ctx: dict | None = None, **proposal) -> dict:
     """Setup only. The tool's input_schema IS the proposal schema — structured
     outputs are incompatible with citations (a 400), and the proposal must carry
@@ -1730,7 +1869,7 @@ _TOOLS = {
     "record_driver_observation": lambda i, ctx: record_driver_observation(**i, ctx=ctx),
     "record_driver_forward": lambda i, ctx: record_driver_forward(**i, ctx=ctx),
     "driver_sensitivity": lambda i, ctx: driver_sensitivity(**i),
-    "build_budget_scenario": lambda i, ctx: build_budget_scenario(**i),
+    "build_budget_scenario": lambda i, ctx: build_budget_scenario_tool(**i),
     "cash_flow_projection": lambda i, ctx: cash_flow_projection(**i),
     "budget_outlook": lambda i, ctx: budget_outlook(),
     "lock_assumptions": lambda i, ctx: lock_assumptions_tool(**i),

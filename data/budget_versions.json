@@ -1,3 +1,764 @@
 {
-  "versions": []
+  "versions": [
+    {
+      "id": "9e1abbe24276420cb1d7c656194dffb7",
+      "version_no": 1,
+      "label": "2027 budget (as locked)",
+      "note": null,
+      "status": "approved",
+      "parent_version_id": null,
+      "scenario_id": "9c306c84e26640af9651449c80dddc6e",
+      "scenario_name": "2027 budget (as locked)",
+      "baseline": "budget_2027",
+      "basis": "locked",
+      "assumptions_snapshot": {
+        "drivers": {},
+        "volume": {},
+        "price": {},
+        "opex": {}
+      },
+      "price_pass_through": 0.35,
+      "opex_inflation_pct": 0.0,
+      "totals": {
+        "volume_tonnes": 153345.1,
+        "revenue_eur": 82466018.09,
+        "cogs_eur": 66586541.13,
+        "opex_eur": 4288232.85,
+        "gross_margin_eur": 15879476.96,
+        "ebitda_eur": 11591244.110000001,
+        "ebitda_margin_pct": 14.055782464662956,
+        "gross_margin_pct": 19.25578235470251
+      },
+      "by_month": [
+        {
+          "month": "2027-01",
+          "volume_tonnes": 11833.300000000001,
+          "revenue_eur": 6363767.99,
+          "cogs_eur": 5138374.68,
+          "opex_eur": 330915.96,
+          "gross_margin_eur": 1225393.3100000005,
+          "ebitda_eur": 894477.3500000006,
+          "ebitda_margin_pct": 14.055781911056133,
+          "gross_margin_pct": 19.25578229636245
+        },
+        {
+          "month": "2027-02",
+          "volume_tonnes": 12188.4,
+          "revenue_eur": 6554596.8100000005,
+          "cogs_eur": 5292457.9,
+          "opex_eur": 340839.01,
+          "gross_margin_eur": 1262138.9100000001,
+          "ebitda_eur": 921299.9000000001,
+          "ebitda_margin_pct": 14.055782936860767,
+          "gross_margin_pct": 19.255782568874743
+        },
+        {
+          "month": "2027-03",
+          "volume_tonnes": 12663.8,
+          "revenue_eur": 6810209.57,
+          "cogs_eur": 5498850.44,
+          "opex_eur": 354130.88,
+          "gross_margin_eur": 1311359.13,
+          "ebitda_eur": 957228.2499999999,
+          "ebitda_margin_pct": 14.055782574103661,
+          "gross_margin_pct": 19.255782315080793
+        },
+        {
+          "month": "2027-04",
+          "volume_tonnes": 13141.1,
+          "revenue_eur": 7067074.03,
+          "cogs_eur": 5706253.66,
+          "opex_eur": 367487.87,
+          "gross_margin_eur": 1360820.37,
+          "ebitda_eur": 993332.5000000001,
+          "ebitda_margin_pct": 14.055781724986401,
+          "gross_margin_pct": 19.25578201421501
+        },
+        {
+          "month": "2027-05",
+          "volume_tonnes": 13501.8,
+          "revenue_eur": 7260987.13,
+          "cogs_eur": 5862827.23,
+          "opex_eur": 377571.33,
+          "gross_margin_eur": 1398159.8999999994,
+          "ebitda_eur": 1020588.5699999994,
+          "ebitda_margin_pct": 14.055782660504445,
+          "gross_margin_pct": 19.25578265003755
+        },
+        {
+          "month": "2027-06",
+          "volume_tonnes": 13656.8,
+          "revenue_eur": 7344323.14,
+          "cogs_eur": 5930116.25,
+          "opex_eur": 381904.79,
+          "gross_margin_eur": 1414206.8899999997,
+          "ebitda_eur": 1032302.0999999996,
+          "ebitda_margin_pct": 14.055782681697195,
+          "gross_margin_pct": 19.255782500877267
+        },
+        {
+          "month": "2027-07",
+          "volume_tonnes": 13572.4,
+          "revenue_eur": 7298917.64,
+          "cogs_eur": 5893453.95,
+          "opex_eur": 379543.71,
+          "gross_margin_eur": 1405463.6899999995,
+          "ebitda_eur": 1025919.9799999995,
+          "ebitda_margin_pct": 14.05578238583878,
+          "gross_margin_pct": 19.255782286097965
+        },
+        {
+          "month": "2027-08",
+          "volume_tonnes": 13278.8,
+          "revenue_eur": 7141102.47,
+          "cogs_eur": 5766027.35,
+          "opex_eur": 371337.29,
+          "gross_margin_eur": 1375075.12,
+          "ebitda_eur": 1003737.8300000001,
+          "ebitda_margin_pct": 14.055782482000993,
+          "gross_margin_pct": 19.255781943708758
+        },
+        {
+          "month": "2027-09",
+          "volume_tonnes": 12863.1,
+          "revenue_eur": 6917497.19,
+          "cogs_eur": 5585479.0,
+          "opex_eur": 359709.83,
+          "gross_margin_eur": 1332018.1900000004,
+          "ebitda_eur": 972308.3600000003,
+          "ebitda_margin_pct": 14.055782507661565,
+          "gross_margin_pct": 19.255782162450004
+        },
+        {
+          "month": "2027-10",
+          "volume_tonnes": 12444.6,
+          "revenue_eur": 6692640.21,
+          "cogs_eur": 5403919.97,
+          "opex_eur": 348017.27999999997,
+          "gross_margin_eur": 1288720.2400000002,
+          "ebitda_eur": 940702.9600000002,
+          "ebitda_margin_pct": 14.05578262812368,
+          "gross_margin_pct": 19.255782464959374
+        },
+        {
+          "month": "2027-11",
+          "volume_tonnes": 12145.7,
+          "revenue_eur": 6531740.78,
+          "cogs_eur": 5274002.98,
+          "opex_eur": 339650.52,
+          "gross_margin_eur": 1257737.7999999998,
+          "ebitda_eur": 918087.2799999998,
+          "ebitda_margin_pct": 14.055782538265394,
+          "gross_margin_pct": 19.255782529691874
+        },
+        {
+          "month": "2027-12",
+          "volume_tonnes": 12055.3,
+          "revenue_eur": 6483161.13,
+          "cogs_eur": 5234777.72,
+          "opex_eur": 337124.38,
+          "gross_margin_eur": 1248383.4100000001,
+          "ebitda_eur": 911259.0300000001,
+          "ebitda_margin_pct": 14.055782537676958,
+          "gross_margin_pct": 19.25578255680343
+        }
+      ],
+      "by_product_line": [
+        {
+          "product_line": "Aqua Feed",
+          "volume_tonnes": 11837.5,
+          "revenue_eur": 13606901.77,
+          "cogs_eur": 10585791.19,
+          "opex_eur": 707558.86,
+          "gross_margin_eur": 3021110.58,
+          "ebitda_eur": 2313551.72,
+          "ebitda_margin_pct": 17.002781082030257,
+          "gross_margin_pct": 22.202780846561517
+        },
+        {
+          "product_line": "Cattle Feed",
+          "volume_tonnes": 34973.2,
+          "revenue_eur": 12865828.64,
+          "cogs_eur": 10874316.98,
+          "opex_eur": 669023.07,
+          "gross_margin_eur": 1991511.6600000001,
+          "ebitda_eur": 1322488.5900000003,
+          "ebitda_margin_pct": 10.27907822344508,
+          "gross_margin_pct": 15.479078073590758
+        },
+        {
+          "product_line": "Poultry Feed",
+          "volume_tonnes": 56495.4,
+          "revenue_eur": 28877045.91,
+          "cogs_eur": 23852515.69,
+          "opex_eur": 1501606.35,
+          "gross_margin_eur": 5024530.219999999,
+          "ebitda_eur": 3522923.8699999987,
+          "ebitda_margin_pct": 12.199737746650966,
+          "gross_margin_pct": 17.39973761741337
+        },
+        {
+          "product_line": "Premium Pet Nutrition",
+          "volume_tonnes": 8339.7,
+          "revenue_eur": 9610646.22,
+          "cogs_eur": 6646088.49,
+          "opex_eur": 499753.62,
+          "gross_margin_eur": 2964557.7300000004,
+          "ebitda_eur": 2464804.1100000003,
+          "ebitda_margin_pct": 25.646601212628966,
+          "gross_margin_pct": 30.846601384937884
+        },
+        {
+          "product_line": "Swine Feed",
+          "volume_tonnes": 41699.3,
+          "revenue_eur": 17505595.55,
+          "cogs_eur": 14627828.78,
+          "opex_eur": 910290.95,
+          "gross_margin_eur": 2877766.7700000014,
+          "ebitda_eur": 1967475.8200000015,
+          "ebitda_margin_pct": 11.239125309278618,
+          "gross_margin_pct": 16.439125203026876
+        }
+      ],
+      "driver_impact_eur": {},
+      "opex_bridge": {
+        "by_cost_centre": [
+          {
+            "cost_centre": "Production",
+            "driver_id": "wage_inflation",
+            "basis": "default",
+            "pct": 0.0,
+            "base_eur": 5498510.0,
+            "delta_eur": 0.0
+          },
+          {
+            "cost_centre": "Logistics",
+            "driver_id": "road_freight",
+            "basis": "default",
+            "pct": 0.0,
+            "base_eur": 3594148.0,
+            "delta_eur": 0.0
+          },
+          {
+            "cost_centre": "Sales & Marketing",
+            "driver_id": "wage_inflation",
+            "basis": "default",
+            "pct": 0.0,
+            "base_eur": 3004064.0,
+            "delta_eur": 0.0
+          },
+          {
+            "cost_centre": "R&D / Nutrition",
+            "driver_id": "wage_inflation",
+            "basis": "default",
+            "pct": 0.0,
+            "base_eur": 2025061.0,
+            "delta_eur": 0.0
+          },
+          {
+            "cost_centre": "Quality & Compliance",
+            "driver_id": "wage_inflation",
+            "basis": "default",
+            "pct": 0.0,
+            "base_eur": 1287456.0,
+            "delta_eur": 0.0
+          },
+          {
+            "cost_centre": "G&A",
+            "driver_id": "wage_inflation",
+            "basis": "default",
+            "pct": 0.0,
+            "base_eur": 2387158.0,
+            "delta_eur": 0.0
+          }
+        ],
+        "base_eur": 17796397.0,
+        "delta_eur": 0.0,
+        "weighted_pct": 0.0,
+        "default_pct": 0.0
+      },
+      "ebitda_bridge": {
+        "baseline_ebitda_eur": 11591244.110000001,
+        "projected_ebitda_eur": 11591244.110000001,
+        "volume_eur": 0.0,
+        "price_eur": 0.0,
+        "opex_eur": 0.0,
+        "drivers_eur": {},
+        "total_eur": 0.0,
+        "check_residual": 0.0
+      },
+      "driver_prices_used": {
+        "chicken_meal": 581.9069080514531,
+        "wheat": 237.1147,
+        "soybean_meal": 402.1980943306336,
+        "maize": 209.408,
+        "rapeseed_meal": 274.2309,
+        "fish_meal": 1635.281753215817,
+        "vitamin_premix": 6.9669,
+        "sea_freight": 1689.328823249166,
+        "road_freight": 839.7353,
+        "energy_gas": 32.9309,
+        "energy_power": 86.9916,
+        "packaging_film": 1495.123,
+        "eur_usd": 1.0495,
+        "wage_inflation": 3.919
+      },
+      "drivers_snapshot": [
+        {
+          "driver_id": "chicken_meal",
+          "name": "Chicken meal",
+          "unit": "USD/t",
+          "value": 610.7113,
+          "basis": "locked",
+          "latest_value": 707.9434,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "wheat",
+          "name": "Feed wheat",
+          "unit": "EUR/t",
+          "value": 237.1147,
+          "basis": "locked",
+          "latest_value": 225.5061,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "soybean_meal",
+          "name": "Soybean meal",
+          "unit": "USD/t",
+          "value": 422.1069,
+          "basis": "locked",
+          "latest_value": 430.4098,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "maize",
+          "name": "Maize",
+          "unit": "EUR/t",
+          "value": 209.408,
+          "basis": "locked",
+          "latest_value": 212.7117,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "rapeseed_meal",
+          "name": "Rapeseed meal",
+          "unit": "EUR/t",
+          "value": 274.2309,
+          "basis": "locked",
+          "latest_value": 274.3964,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "fish_meal",
+          "name": "Fish meal",
+          "unit": "USD/t",
+          "value": 1716.2282,
+          "basis": "locked",
+          "latest_value": 2024.0891,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "vitamin_premix",
+          "name": "Vitamin premix",
+          "unit": "EUR/kg",
+          "value": 6.9669,
+          "basis": "locked",
+          "latest_value": 6.8962,
+          "source_url": "",
+          "retrieved_at": "2026-07-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "sea_freight",
+          "name": "Sea freight",
+          "unit": "USD/FEU",
+          "value": 1772.9506,
+          "basis": "locked",
+          "latest_value": 2642.0671,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "road_freight",
+          "name": "Road freight",
+          "unit": "EUR/1000km",
+          "value": 839.7353,
+          "basis": "locked",
+          "latest_value": 850.1595,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "energy_gas",
+          "name": "Natural gas",
+          "unit": "EUR/MWh",
+          "value": 32.9309,
+          "basis": "locked",
+          "latest_value": 35.0895,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "energy_power",
+          "name": "Electricity",
+          "unit": "EUR/MWh",
+          "value": 86.9916,
+          "basis": "locked",
+          "latest_value": 93.2572,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "packaging_film",
+          "name": "Packaging film",
+          "unit": "EUR/t",
+          "value": 1495.123,
+          "basis": "locked",
+          "latest_value": 1543.2763,
+          "source_url": "",
+          "retrieved_at": "2026-07-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "eur_usd",
+          "name": "EUR/USD rate",
+          "unit": "USD per EUR",
+          "value": 1.0495,
+          "basis": "locked",
+          "latest_value": 1.0438,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        },
+        {
+          "driver_id": "wage_inflation",
+          "name": "Wage inflation",
+          "unit": "%/yr",
+          "value": 3.919,
+          "basis": "locked",
+          "latest_value": 3.8513,
+          "source_url": "",
+          "retrieved_at": "2026-08-04T05:07:03+00:00",
+          "locked_at": "2026-08-04T12:19:40+00:00",
+          "rationale": "Locked for the 2027 budget at the 2026-09 market level."
+        }
+      ],
+      "cash_snapshot": {
+        "scenario_id": "9c306c84e26640af9651449c80dddc6e",
+        "scenario": "2027 budget (as locked)",
+        "basis": "locked",
+        "year": "2027",
+        "currency": "EUR",
+        "days": {
+          "dso_days": 51.9,
+          "dio_days": 35.2,
+          "dpo_days": 40.1,
+          "cash_conversion_cycle_days": 47.0,
+          "basis": "measured",
+          "stated": [],
+          "measured_from": "2026-01..2026-12"
+        },
+        "opening_balances": {
+          "receivables": 11379461.12,
+          "inventory": 6334527.64,
+          "payables": 6951659.28
+        },
+        "opening_balances_implied": false,
+        "opening_cash_source": "working_capital",
+        "totals": {
+          "ebitda_eur": 11591244.11,
+          "working_capital_change_eur": -737457.16,
+          "tax_eur": 2781898.59,
+          "capex_eur": 6020000.0,
+          "free_cash_flow_eur": 3526802.68,
+          "d_receivables_eur": -535600.73,
+          "d_inventory_eur": -388729.35,
+          "d_payables_eur": -186872.92,
+          "opening_cash_eur": 3790363.88,
+          "closing_cash_eur": 7317166.56,
+          "cash_delta_eur": 3526802.68,
+          "cash_conversion_pct": 30.43,
+          "check_residual": 0.0
+        },
+        "months": [
+          {
+            "month": "2027-01",
+            "ebitda_eur": 894477.35,
+            "working_capital_change_eur": -922074.04,
+            "tax_eur": 214674.56,
+            "capex_eur": 0.0,
+            "free_cash_flow_eur": 1601876.83,
+            "closing_cash_eur": 5392240.71
+          },
+          {
+            "month": "2027-02",
+            "ebitda_eur": 921299.9,
+            "working_capital_change_eur": 1381005.96,
+            "tax_eur": 221111.98,
+            "capex_eur": 1750000.0,
+            "free_cash_flow_eur": -2430818.04,
+            "closing_cash_eur": 2961422.67
+          },
+          {
+            "month": "2027-03",
+            "ebitda_eur": 957228.25,
+            "working_capital_change_eur": -690676.08,
+            "tax_eur": 229734.78,
+            "capex_eur": 340000.0,
+            "free_cash_flow_eur": 1078169.55,
+            "closing_cash_eur": 4039592.22
+          },
+          {
+            "month": "2027-04",
+            "ebitda_eur": 993332.5,
+            "working_capital_change_eur": 761447.05,
+            "tax_eur": 238399.8,
+            "capex_eur": 1450000.0,
+            "free_cash_flow_eur": -1456514.35,
+            "closing_cash_eur": 2583077.88
+          },
+          {
+            "month": "2027-05",
+            "ebitda_eur": 1020588.57,
+            "working_capital_change_eur": -64412.46,
+            "tax_eur": 244941.26,
+            "capex_eur": 0.0,
+            "free_cash_flow_eur": 840059.78,
+            "closing_cash_eur": 3423137.66
+          },
+          {
+            "month": "2027-06",
+            "ebitda_eur": 1032302.1,
+            "working_capital_change_eur": 507411.36,
+            "tax_eur": 247752.5,
+            "capex_eur": 960000.0,
+            "free_cash_flow_eur": -682861.76,
+            "closing_cash_eur": 2740275.9
+          },
+          {
+            "month": "2027-07",
+            "ebitda_eur": 1025919.98,
+            "working_capital_change_eur": -448759.64,
+            "tax_eur": 246220.8,
+            "capex_eur": 0.0,
+            "free_cash_flow_eur": 1228458.83,
+            "closing_cash_eur": 3968734.73
+          },
+          {
+            "month": "2027-08",
+            "ebitda_eur": 1003737.83,
+            "working_capital_change_eur": -244028.63,
+            "tax_eur": 240897.08,
+            "capex_eur": 0.0,
+            "free_cash_flow_eur": 1006869.38,
+            "closing_cash_eur": 4975604.11
+          },
+          {
+            "month": "2027-09",
+            "ebitda_eur": 972308.36,
+            "working_capital_change_eur": 10789.98,
+            "tax_eur": 233354.01,
+            "capex_eur": 820000.0,
+            "free_cash_flow_eur": -91835.63,
+            "closing_cash_eur": 4883768.49
+          },
+          {
+            "month": "2027-10",
+            "ebitda_eur": 940702.96,
+            "working_capital_change_eur": -704244.42,
+            "tax_eur": 225768.71,
+            "capex_eur": 0.0,
+            "free_cash_flow_eur": 1419178.67,
+            "closing_cash_eur": 6302947.15
+          },
+          {
+            "month": "2027-11",
+            "ebitda_eur": 918087.28,
+            "working_capital_change_eur": 87868.56,
+            "tax_eur": 220340.95,
+            "capex_eur": 360000.0,
+            "free_cash_flow_eur": 249877.78,
+            "closing_cash_eur": 6552824.93
+          },
+          {
+            "month": "2027-12",
+            "ebitda_eur": 911259.03,
+            "working_capital_change_eur": -411784.77,
+            "tax_eur": 218702.17,
+            "capex_eur": 340000.0,
+            "free_cash_flow_eur": 764341.64,
+            "closing_cash_eur": 7317166.56
+          }
+        ],
+        "trough": {
+          "month": "2027-04",
+          "closing_cash_eur": 2583077.8792223968
+        },
+        "min_cash_eur": 3000000.0,
+        "breaches_minimum": true,
+        "months_below_minimum": [
+          "2027-02",
+          "2027-04",
+          "2027-06"
+        ],
+        "tax_rate_pct": 24.0,
+        "capex": {
+          "total_eur": 6020000.0,
+          "committed_eur": 5180000.0,
+          "proposed_eur": 840000.0,
+          "proposed_included": true,
+          "projects": [
+            {
+              "month": "2027-02",
+              "project": "Extruder line (phase 1)",
+              "category": "capacity",
+              "status": "committed",
+              "amount_eur": 1750000.0
+            },
+            {
+              "month": "2027-03",
+              "project": "Maintenance capex",
+              "category": "maintenance",
+              "status": "committed",
+              "amount_eur": 340000.0
+            },
+            {
+              "month": "2027-04",
+              "project": "Extruder line (phase 2)",
+              "category": "capacity",
+              "status": "committed",
+              "amount_eur": 1450000.0
+            },
+            {
+              "month": "2027-06",
+              "project": "Boiler replacement",
+              "category": "compliance",
+              "status": "committed",
+              "amount_eur": 620000.0
+            },
+            {
+              "month": "2027-06",
+              "project": "Maintenance capex",
+              "category": "maintenance",
+              "status": "committed",
+              "amount_eur": 340000.0
+            },
+            {
+              "month": "2027-09",
+              "project": "Maintenance capex",
+              "category": "maintenance",
+              "status": "committed",
+              "amount_eur": 340000.0
+            },
+            {
+              "month": "2027-09",
+              "project": "Warehouse racking",
+              "category": "capacity",
+              "status": "proposed",
+              "amount_eur": 480000.0
+            },
+            {
+              "month": "2027-11",
+              "project": "Fleet renewal",
+              "category": "efficiency",
+              "status": "proposed",
+              "amount_eur": 360000.0
+            },
+            {
+              "month": "2027-12",
+              "project": "Maintenance capex",
+              "category": "maintenance",
+              "status": "committed",
+              "amount_eur": 340000.0
+            }
+          ]
+        },
+        "bridge": [
+          {
+            "label": "EBITDA",
+            "value": 11591244.11,
+            "kind": "absolute"
+          },
+          {
+            "label": "Receivables (DSO)",
+            "value": 535600.73,
+            "kind": "delta"
+          },
+          {
+            "label": "Inventory (DIO)",
+            "value": 388729.35,
+            "kind": "delta"
+          },
+          {
+            "label": "Payables (DPO)",
+            "value": -186872.92,
+            "kind": "delta"
+          },
+          {
+            "label": "Cash tax",
+            "value": -2781898.59,
+            "kind": "delta"
+          },
+          {
+            "label": "Capex",
+            "value": -6020000.0,
+            "kind": "delta"
+          },
+          {
+            "label": "Free cash flow",
+            "value": 3526802.68,
+            "kind": "absolute"
+          }
+        ],
+        "caveats": [
+          "This is free cash flow before financing: EBITDA less the working-capital swing, capex and cash tax. Depreciation, interest, debt repayment and dividends are NOT modelled \u2014 there is no dataset for any of them \u2014 so this is not net income and not a closing bank balance you can reconcile.",
+          "Working-capital balances are implied by the days, not scheduled invoice by invoice: they carry the scenario's monthly revenue and cost shape, which is the point, but a single month's collection timing can differ."
+        ],
+        "datasets_used": [
+          "working_capital.parquet",
+          "capex_plan.parquet",
+          "scenarios.json"
+        ],
+        "note": "Free cash flow before financing: EBITDA less the working-capital swing, capex and cash tax. The days are stated in `days` with `basis` saying whether each was measured off the balance sheet or decided by the CFO \u2014 say which when you quote them. Read `caveats` before presenting any of this as a cash balance.",
+        "source_file": "working_capital.parquet"
+      },
+      "locked_at": "2026-08-04T12:19:40+00:00",
+      "created_at": 1785848695.618796,
+      "created_by": "NordFeed Group",
+      "submitted_by": null,
+      "submitted_at": null,
+      "approved_by": "NordFeed Group",
+      "approved_at": 1785848700.4721742
+    }
+  ]
 }
