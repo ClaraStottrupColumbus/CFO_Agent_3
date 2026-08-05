@@ -1631,7 +1631,25 @@ details.reasoning.is-live .reasoning-spinner {
 
 .version-freeze { margin-top: var(--space-4); display: flex; flex-direction: column;
   align-items: flex-start; gap: var(--space-1); }
-.version-freeze.hidden, .version-approve.hidden, .version-diff.hidden { display: none; }
+.version-freeze.hidden, .version-approve.hidden, .version-diff.hidden,
+.version-revoke-warn.hidden { display: none; }
+
+/* Withdrawing an approval. Warning-shaped rather than destructive-shaped: it
+   unfreezes a scenario and leaves nothing approved, which is consequential and
+   recoverable — the version itself survives, and Discard is the separate step.
+   Declares its own .hidden above, because neither stylesheet has a global rule. */
+.version-revoke-warn {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--cream-50, var(--bg-surface-alt));
+  font-size: .82rem;
+  line-height: 1.5;
+  color: var(--fg-2);
+  max-width: 62ch;
+}
+.version-revoke-warn .btn-ghost { margin: var(--space-2) var(--space-2) 0 0; }
 .version-freeze .btn-primary, .version-approve .btn-primary { margin-top: var(--space-3); }
 .version-freeze .hint, .version-approve .hint { margin: var(--space-2) 0 0; max-width: 52ch; }
 

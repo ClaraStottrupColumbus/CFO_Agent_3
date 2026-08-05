@@ -323,6 +323,23 @@ the whole point of the module:
   cannot be deleted or re-submitted. `approved_by` is required and free-text: this app has **no
   authentication**, so it is an *attestation*, not a signature, and both the API error and the UI
   copy say so rather than implying otherwise.
+- **`revoke_approval` is the undo, and it is a withdrawal rather than an erasure.** Approving the
+  wrong version used to be a one-way door: `approve` refused a second approval, `submit` refused an
+  approved version, `delete_version` refused it too, and the frozen scenario stayed read-only — so the
+  only way out was hand-editing `budget_versions.json`. That was a gap, not a decision. Four
+  properties make the undo safe, and [tests/test_budget_versions.py](tests/test_budget_versions.py)
+  pins each: `approved_by`/`approved_at` move to **`revoked_by`/`revoked_at`** rather than being
+  cleared, because "was approved and taken back" is a different fact from "was never approved"; the
+  version returns to **`submitted` if it had been submitted and `draft` otherwise**, since revoking an
+  approval is not undoing the whole review; a **superseded predecessor is not silently promoted**,
+  because "the budget is v1 again" is a second decision this function was not asked to make, so
+  revoking leaves *nothing* approved; and `by` is **optional** here where it is required for
+  approving — a revocation with no name is still better than a budget frozen on a mis-click. Deletion
+  stays a separate, deliberate second step, and `delete_version`'s refusal now **enumerates both ways
+  out** (revoke, or supersede), because a refusal that does not say what to do instead is exactly why
+  someone reaches for the JSON file. The route is `POST /api/budget/versions/{id}/revoke` and it 409s
+  rather than 400s on a non-approved version — the request is well formed and the object's state
+  forbids it, the same distinction `PUT /api/scenarios/{id}` draws for a frozen scenario.
 - **It snapshots the cash profile too** (`cash_snapshot`), for the same reason it snapshots the
   driver provenance: the working-capital days were *measured* off the balance sheet on the day it was
   approved, so next quarter's measurement must not silently rewrite the funding case the board signed
@@ -419,9 +436,10 @@ edit one would be absurd.
 Almost every route depends on `require_setup` and 409s with `{"error": "setup_incomplete"}` until the
 CFO confirms a company profile. `/api/settings`, `/api/profile*` (including
 `/api/profile/working-capital`) and `/api/budgetplan*` stay **ungated** so the settings panel, the
-setup wizard and the Budget tab work while gated. `/api/cash` is the exception on that page and is
-**gated**, because it reads the scenario engine and the datasets; the cash strip therefore just does
-not render until setup is done, the same way BOM mode does not offer itself. On the
+setup wizard and the Budget tab work while gated. `/api/cash` and `/api/budgetplan/comparison` are the
+two exceptions on that page and are **gated**, because both read the scenario engine and the datasets;
+the cash strip and the two budget selectors therefore just do not render until setup is done, the same
+way BOM mode does not offer itself. On the
 frontend, `profile` gates every route except `#/setup` and `#/budget`. Startup report generation is
 gated on both the API key and `setup_complete()`.
 
@@ -440,9 +458,22 @@ config-driven read, and it shipped a second budget for a second company alongsid
 There is one budget now. What survives is the *engine*, not the separateness:
 
 - **`derive()` is still pure and still does the whole page** — ranking, deltas, totals, margin — and
-  the two modes differ only in where `variables[]` comes from. That is what makes it one model
-  rather than two behind one tab, and it is why the whole of `tests/test_budget_plan.py` above the
+  the modes differ only in where `variables[]` comes from. That is what makes it one model
+  rather than several behind one tab, and it is why the whole of `tests/test_budget_plan.py` above the
   BOM section needed no changes.
+- **`derive()` takes amounts as well as percentages, and that is a pure extension.** A variable may
+  carry `next_amount` and the baseline `revenue_next`; absent, the arithmetic is byte-for-byte what it
+  always was, which
+  [tests/test_budget_comparison.py](tests/test_budget_comparison.py) asserts **first**, exactly as
+  `test_forward_curve.py` asserts the flat-curve no-op first. It exists because a cost line the
+  baseline does not carry has `current_amount == 0`, and `next = current × (1 + pct/100)` cannot
+  express a non-zero next amount from a zero current one — so the comparison below would silently
+  report zero for it. Patching rows after `derive()` returns, or copying its arithmetic into a second
+  function, would give the page two definitions of "delta"; this keeps one.
+  `expected_change_pct` is then **`None`, never 0, when the baseline side has no such line** — the same
+  rule as `driver_status`'s `forward_12m` and `cash.cash_conversion_pct`, and the reason `_pct_text`
+  and the frontend's `pct()` render "new" rather than "+0.0%" next to a delta of millions. Note
+  `1000 → 0` stays a defined **−100%**: the line existed and was removed. Only `0 → X` is undefined.
 - **BOM mode** (`bom_available()`: `bill_of_materials` + `budget_vs_actuals` both exist and are
   non-empty) materialises every line from the datasets via `materialise_from_datasets()`, each
   carrying the **`driver_id`** it was priced from. That id is the whole migration: a line that names
@@ -456,14 +487,56 @@ There is one budget now. What survives is the *engine*, not the separateness:
   centre, `budget_vs_actuals` by product line — solved the same scale-free way `opex_bridge` solves
   it. Do not substitute the opex plan's own total; the margin on the hero would stop being the real
   margin, and nothing below it would be defensible.
+- **Any two budgets, side by side, as a read-time overlay.** Two selects above the hero
+  (`#bo-compare`) pick a baseline and a comparison, and **three selection kinds** reduce to one
+  comparable *snapshot* which becomes the `variables[]` of a throwaway plan `derive()` then does the
+  arithmetic on: `budget:YYYY` (as booked in `budget_vs_actuals`), `actual:YYYY` (as outturned) and
+  `scenario:<id>`. Five things there are load-bearing:
+  - **Nothing is persisted.** `budget_plan.json`, `/api/budgetplan` and `tools.budget_outlook()` keep
+    reading the CFO's own configured budget, so a comparison cannot corrupt what the agent sees — and
+    `validate()`'s `budget_year = current_year + 1` therefore cannot truncate a 2024-vs-2027 pair,
+    because the overlay never goes near it. There is a test asserting it never does.
+  - **`actual:YYYY` is what keeps the page's own default view expressible.** `actual:<closed year>`
+    against `budget:<plan year>` is exactly the pair `materialise_from_datasets` freezes, which makes
+    "the comparison reproduces the persisted plan" a real regression test rather than an aspiration —
+    it is what stops the two orchestrations over the same leaves drifting apart. It is also the only
+    pairing where driver **prices** genuinely move, because a booked budget has no lock of its own
+    (see Demo data).
+  - **A scenario's driver spend is exact, not re-derived**: `budget.driver_exposure(…, driver_prices_used)
+    + driver_impact_eur[did]`. `project_pnl` builds its per-driver delta as
+    `(effective − locked) × qty × post-volume tonnage × unhedged` on top of `locked × qty × tonnage`, so
+    that sum carries the forward curve, the CFO's percentage and the hedge coverage without this module
+    knowing about any of them. Both sides then reconcile to their own COGS + opex exactly, which is the
+    property that keeps the margin on the hero the real margin.
+  - **The union of cost-line ids, and the gap is quantified rather than merely named.** A line on one
+    side only contributes 0 on the other and carries `coverage`, so the page says "not in the 2026
+    budget" instead of a −100% collapse. And `_gap_note` states what a missing *region* costs the
+    reader: in the seeded data 49% of the default pair's revenue step and 67% of its volume step is
+    Adriatic, a market with no 2026 budget at all. Naming it is not enough — a page that reports
+    "+13.3%" without that share is not wrong about the arithmetic and badly wrong about the business.
+  - **The options travel in every response, including the failures.** Same reason
+    `tools.scenario_options` exists next to `build_budget_scenario`'s teachable errors: two derivations
+    of "the budgets you may pick" is how a dropdown offers a value the resolver then rejects. It also
+    lets a select self-heal after a scenario is deleted in another tab. `compare()` returns
+    `available: false` plus a reason for every state that is a state, never a 4xx.
 - **Its gate is still its own** (`plan["configured"]`), independent of `setup_complete`, and the
-  `/api/budgetplan*` routes are still **ungated**: in simple mode there is nothing for a profile to
-  gate. BOM mode reads datasets that only exist after setup, so it simply does not offer itself until
-  they do — the mode follows the data, not the gate.
+  `/api/budgetplan*` routes are still **ungated** — with one exception, `GET
+  /api/budgetplan/comparison`, which is **gated** for the reason `/api/cash` on this page is: it reads
+  the datasets and the scenario store. A 409 leaves the selectors unrendered and the page falls back to
+  the persisted plan, which is exactly what it rendered before the feature existed. In simple mode
+  there is nothing for a profile to gate and nothing to compare, so the bar never draws — the mode
+  follows the data, not the gate.
 - **Numbers are computed, prose is not.** The model writes only the 2–4 sentence read (cached on
-  `fingerprint()`, falling back to `templated_narrative()` when the API is unreachable).
-- **The cash strip is the page's one gated block** and is not part of `derive()` at all: it reads
-  `/api/cash` (the active scenario's cash profile) into `#bo-cash`, showing free cash flow, the low
+  `fingerprint()`, falling back to `templated_narrative()` when the API is unreachable). A
+  **comparison's read is deterministic and ships inline** with the payload — `comparison_narrative()`,
+  no network, no model call, no cache to thrash, which is what makes trying a dozen pairs free. It is a
+  separate function from `templated_narrative` because that one's sentences are built around a year
+  ("the 2027 cost base") and a scenario name produces "the Pet cost breach — forward curve cost base";
+  a comparison leads with the difference instead, because that is what the two dropdowns ask. The
+  `computed` tag next to "The read" says which one is on screen, and `#bo-regen` hides when there is
+  nothing to rewrite.
+- **The cash strip follows the RIGHT-hand selection** and is not part of `derive()` at all: it reads
+  `/api/cash?scenario_id=` into `#bo-cash`, showing free cash flow, the low
   point against the CFO's floor, the cash conversion cycle with its `basis`, twelve bars of closing
   cash with the floor drawn across them, and the four bridge steps. Two rules in there: the **body and
   the form render into separate hosts** (`#bo-cash-body` / `#bo-cash-form-host`) so toggling "defer
@@ -472,17 +545,41 @@ There is one budget now. What survives is the *engine*, not the separateness:
   line share one positioning box** (`.bo-cash-bars`), because `bottom: N%` and `height: N%` measured
   against different boxes put a covenant line a few pixels off where the arithmetic put it. An empty
   cash form field means *not stated*, and its placeholder carries the measured figure so the field
-  says what leaving it blank does.
+  says what leaving it blank does. When the right-hand selection is a **dataset year** there is no
+  monthly shape to project from, so the strip stays visible and says so — `cash.scenario_id` is `None`
+  with a `reason`, written into `#bo-cash-body` alone so the form's half-typed values survive. An empty
+  section would have been the one outcome the CFO could not act on.
 - **There is no chat loop here any more.** `stream_chat` and `/api/budgetplan/chat*` are gone. A page
   whose cost lines name real drivers has no business answering questions about them without the
   tools, so every "ask" affordance hands off through `askFromBudget()` in app.js — the same
   `pendingHomeMessage` + `goHome()` path an alert, a driver card and a scenario card already use. The
   agent reads the page back through the **`budget_outlook`** tool, which is the only tool that sees
-  cost lines the bill of materials does not cover.
+  cost lines the bill of materials does not cover. `budget_outlook` reports the **configured** budget,
+  so when a comparison is on screen `ask()`'s prefix **names both sides** and the tool's own `note`
+  says which pair it is describing — the divergence is stated rather than left for the agent to answer
+  about a comparison nobody is looking at.
+- **The repaint hosts.** `renderOverview()` writes the shell once and `renderBody()` repaints
+  everything the dropdowns move. `#bo-compare` and the composer are **siblings** of
+  `#bo-overview-body`, never children, so a pair change cannot reach the two selects — the third
+  instance of the rule `#bo-cash-form-host` and `#scenario-edit` already follow. Two consequences that
+  fail silently if missed: `wireOverview()` runs **once**, so the document-level Escape handler and the
+  composer submit are never double-bound; and the `.bo-mix-seg` `title` assignment lives in
+  `renderHero()`, not `wireOverview()`, or every cost-mix tooltip disappears after the first dropdown
+  use. Mid-switch `#bo-overview-body` gets `.is-stale` and the previous figures **dim rather than
+  disappear** — a page that blanks on every dropdown change reads as broken even when it is working.
 
-Dataset reads in `budgetplan.py` are **lazy imports inside the two functions that need them**, so
+Dataset reads in `budgetplan.py` are **lazy imports inside the functions that need them**, so
 everything above `derive()` stays importable with no pandas and no data directory — which is what
-keeps most of `tests/test_budget_plan.py` fixture-free.
+keeps most of `tests/test_budget_plan.py` and the whole engine half of
+`tests/test_budget_comparison.py` fixture-free.
+
+One **pre-existing** limitation is worth knowing before trusting the stored plan's plan-year total: a
+persisted variable is "this year's amount × a percentage", so a cost line that starts in the plan year
+has `current_amount == 0`, `_pct_change(0, X)` is 0, and its money vanishes from `cost_next`. It never
+fires on the seeded data (every cost centre runs in every year, every driver keeps its BOM position),
+and `test_the_configured_pair_reproduces_the_persisted_plan` pins the divergence explicitly rather than
+hiding it. `derive()`'s `next_amount` is the mechanism for the fix; carrying it through
+`_clean_variable`/`validate`/`fingerprint` and the config table is the work.
 
 ### Autonomy
 
@@ -568,7 +665,13 @@ History button on `#/drivers` for as long as `.driver-history.hidden` was missin
 the table stayed, and the button's label never changed either. Declare the rule next to the element,
 and give the control a visible state (`History` / `Hide history` plus `aria-expanded`) so a dead toggle
 is visible immediately rather than a year later. `.error-text.hidden` and `#scenario-edit-form.hidden`
-were missing for the same reason.
+were missing for the same reason, and `.bo-compare.hidden`, `.bo-cmp-error.hidden`, `.bo-read-tag.hidden`
+and `.bo-regen.hidden` are declared next to their elements for the same reason.
+
+One more trap in the same family, in the other direction: **`style.css` ships a bare
+`select { max-width: 190px }`**, so any new `<select>` outside `.bo-field` silently inherits it — and
+`width: 100%` does not beat a `max-width`. `.bo-compare select` and `#model-select` both lift it
+explicitly. A scenario name clipped to 190px is a stub nobody can tell apart from the next one.
 
 `createStreamRenderer(container, bubble, opts)` is the extracted streaming reveal loop, shared by
 chat, the setup wizard and the reasoning disclosure. Its 130 ms cadence, `max(14, backlog/5)` batch
@@ -592,7 +695,11 @@ export formats, the forward-curve guards and per-month pricing, the BOM material
 reconciliation to the P&L, the cash projection's additivity, sign conventions and measured days, and —
 behind the CFO's edit form — the scenario store's replace-by-id semantics (overwrite in place,
 `created_at` preserved, `active` inherited from an absent key) and which scenario an *approved* version
-freezes.
+freezes. [tests/test_budget_comparison.py](tests/test_budget_comparison.py) splits the same way the
+module does: an engine half with no fixtures at all (`derive()`'s explicit amounts, `_pct_or_none`'s
+undefined case, the same-selection zero) and an orchestration half whose fixture deliberately carries a
+region with no budget and a cost centre absent from one year — the two shapes the seeded data never
+produces, and the only way to exercise a line that exists on one side only.
 
 Tests that need data `monkeypatch.setattr` the module-level path constants (`tools.DATA_DIR`,
 `drivers.PRICES_FILE`, `scenarios.SCENARIOS_FILE`, …) at a `tmp_path` and write **CSV** fixtures —
@@ -609,6 +716,24 @@ there"), and **no payroll dataset at all** — the agent must say so rather than
 Unit price and unit cost are not stored; they are derived as revenue/volume and cogs/volume in
 `tools.py` so there is one source of truth. Prices are stored in each driver's **own quote currency**
 and converted via the `eur_usd` driver, making FX real arithmetic the model must delegate.
+
+Two properties of that data the Budget page's comparison depends on, and which anybody "tidying"
+`_budget_vs_actuals_frame` would break:
+
+- **Budget unit COST is frozen at one lock month for every year it writes** (`lock_costs` at
+  `LOCK_MONTH`, 2026-09), while budget unit PRICE is per-year (`_budget_price_month`, the prior
+  September). So a booked budget year has no lock of its own, a budget-to-budget comparison is a volume
+  and mix story **by construction**, and the page says so rather than implying prices held flat. That is
+  also why `actual:YYYY` exists as a selection kind: it is where the price story is real. Changing
+  `lock_costs` to be per-year would move 2024–2026 budget COGS and therefore the seeded COGS-variance
+  findings, `budget_overview.csv`, `budget_plan.json` and the rule thresholds that fire on that
+  history — and `generate_data.py` has **no tests at all**, so it would be verified by eyeballing the
+  demo. Do it as its own change, with coverage, or not at all.
+- **Adriatic has a budget only in the plan year** (`if region == "Adriatic" and not is_budget_year`).
+  That is the "the data isn't there" hook, and it is bigger than it looks: 67% of the 2026-to-2027
+  volume step and roughly half the revenue step is a market the baseline never budgeted. The comparison
+  quantifies that share instead of merely mentioning the gap, because +13.3% reads as organic growth
+  otherwise.
 
 The cash hooks work the same way. DSO drifts out from 44 to 53 days across the history — a leak worth
 about a month of EBITDA that a P&L never shows and that has to be *measured* to be found. In the

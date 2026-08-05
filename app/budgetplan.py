@@ -457,6 +457,32 @@ def _f(value, default: float = 0.0) -> float:
     return default if not math.isfinite(out) else out
 
 
+def _pct_or_none(current: float, nxt: float) -> float | None:
+    """The percentage step between two amounts, or None when there is no step to
+    take a percentage OF.
+
+    "This cost line does not exist in the baseline budget" and "this cost line is
+    flat" are different claims, and 0% asserts the second. Same rule as
+    `driver_status`'s `forward_12m` and `cash.cash_conversion_pct`: None, never 0,
+    when the figure is undefined rather than nil.
+
+    Note 1000 -> 0 is a defined -100%: the line existed and was removed. Only
+    0 -> X is undefined.
+    """
+    if abs(current) > 1e-9:
+        return _pct_change(current, nxt)
+    return None if abs(nxt) > 1e-9 else 0.0
+
+
+def _pct_text(pct: float | None, digits: int = 1) -> str:
+    """A percentage for prose. The float branch's output is byte-for-byte what the
+    inline f-strings produced before `None` became possible, which is what keeps
+    the brief and the templated read stable."""
+    if pct is None:
+        return "new"
+    return f"{pct:+.{digits}f}%"
+
+
 def derive(plan: dict) -> dict:
     """Everything the overview and the drawer display, computed from the config.
 
@@ -469,8 +495,16 @@ def derive(plan: dict) -> dict:
     company = plan.get("company") or {}
 
     revenue = max(0.0, _f(baseline.get("revenue")))
-    revenue_pct = _f(baseline.get("revenue_change_pct"))
-    revenue_next = revenue * (1.0 + revenue_pct / 100.0)
+    # `revenue_next` is the second amount stated outright, the baseline's twin of
+    # a variable's `next_amount` below. Worth having even where the percentage
+    # would do: percentage -> multiply -> back is lossy, and the headline revenue
+    # on a comparison should be the other budget's own sum, not a round-trip of it.
+    if baseline.get("revenue_next") is None:
+        revenue_pct = _f(baseline.get("revenue_change_pct"))
+        revenue_next = revenue * (1.0 + revenue_pct / 100.0)
+    else:
+        revenue_next = max(0.0, _f(baseline.get("revenue_next")))
+        revenue_pct = _f(_pct_or_none(revenue, revenue_next))
 
     included = [v for v in (plan.get("variables") or []) if v.get("include", True)]
     excluded_count = len(plan.get("variables") or []) - len(included)
@@ -481,9 +515,30 @@ def derive(plan: dict) -> dict:
     for v in included:
         current = max(0.0, _f(v.get("current_amount")))
         pct = _f(v.get("expected_change_pct"))
-        nxt = current * (1.0 + pct / 100.0)
+        # `next_amount` is the SECOND AMOUNT stated outright, and it exists for the
+        # comparison view below: a cost line that only the right-hand budget
+        # carries has current == 0, and next = current x (1 + pct/100) can never
+        # express a non-zero next amount from a zero current one. The percentage
+        # is then derived rather than read, so `delta`, `direction`, `materiality`
+        # and the ranking all keep coming out of this one function — the
+        # alternative is a second definition of "delta" living somewhere else.
+        # Absent (the stored-config path — validate never emits it) the
+        # arithmetic below is byte-for-byte what it always was.
+        explicit = v.get("next_amount")
+        if explicit is None:
+            nxt = current * (1.0 + pct / 100.0)
+        else:
+            nxt = max(0.0, _f(explicit))
+            # None when the baseline carries no such line — see _pct_or_none.
+            pct = _pct_or_none(current, nxt)
         delta = nxt - current
-        if abs(pct) < FLAT_EPS_PCT:
+        # FLAT_EPS_PCT is measured on the percentage BECAUSE that is the field the
+        # user typed, so the label matches what they can see. An undefined
+        # percentage has no field to match, so that case keys off the delta — a
+        # line worth millions on one side only must not read as "flat".
+        if pct is None:
+            direction = "up" if delta > 0 else "down" if delta < 0 else "flat"
+        elif abs(pct) < FLAT_EPS_PCT:
             direction = "flat"
         else:
             direction = "up" if delta > 0 else "down"
@@ -496,6 +551,10 @@ def derive(plan: dict) -> dict:
             "assumption": (v.get("assumption") or "").strip(),
             "default_note": v.get("default_note") or "",
             "driver_id": v.get("driver_id") or None,
+            # "both" on every stored-config row; the comparison sets it so the
+            # page can say "not in the 2026 budget" rather than render a -100%
+            # collapse or an undefined percentage with no explanation next to it.
+            "coverage": v.get("coverage") or "both",
             "current_amount": current,
             "expected_change_pct": pct,
             "next_amount": nxt,
@@ -1031,6 +1090,33 @@ def _driver_assumption(meta: dict, plan_year: str) -> str:
     return ("; ".join(parts) + ".") if parts else ""
 
 
+def _opex_shares(tools, year: str) -> tuple[dict, dict]:
+    """({cost_centre: that year's planned amount}, {cost_centre: driver_id | None}).
+
+    The single read of `opex_plan` behind both the BOM materialisation and the
+    comparison snapshots below, so "how big is the Logistics cost centre" has one
+    answer rather than two that can drift apart. Only the SHARE of the returned
+    total ever crosses into the P&L — see the caller's docstring for why.
+    """
+    shares: dict[str, float] = {}
+    linked: dict[str, str | None] = {}
+    try:
+        plan, _ = tools._load("opex_plan")
+    except (FileNotFoundError, OSError, KeyError):
+        return shares, linked
+    if plan is None or plan.empty:
+        return shares, linked
+    column = "amount_budget_eur" if "amount_budget_eur" in plan.columns else "amount_eur"
+    for _, r in plan[plan["month"].astype(str).str.startswith(str(year))].iterrows():
+        centre = str(r["cost_centre"])
+        shares[centre] = shares.get(centre, 0.0) + float(r[column] or 0.0)
+        did = r.get("driver_id")
+        # `did != did` is the NaN test: pandas hands back a float NaN for an
+        # empty cell, and NaN is the one value not equal to itself.
+        linked.setdefault(centre, None if did != did or did in (None, "") else str(did))
+    return shares, linked
+
+
 def _opex_variables(tools, status: dict, base_year: str, plan_year: str,
                     opex_cur: float, opex_next: float) -> list[dict]:
     """One variable per cost centre, sized by SHARE of the opex plan.
@@ -1039,23 +1125,11 @@ def _opex_variables(tools, status: dict, base_year: str, plan_year: str,
     opex plan at all the whole opex level lands on a single line, which is
     honest — that is exactly how much is known about it.
     """
-    shares_cur, shares_next = {}, {}
-    linked: dict[str, str | None] = {}
-    labels: dict[str, str] = {}
-    try:
-        plan, _ = tools._load("opex_plan")
-    except (FileNotFoundError, OSError, KeyError):
-        plan = None
-    if plan is not None and not plan.empty:
-        column = ("amount_budget_eur" if "amount_budget_eur" in plan.columns else "amount_eur")
-        for year, sink in ((base_year, shares_cur), (plan_year, shares_next)):
-            rows = plan[plan["month"].astype(str).str.startswith(str(year))]
-            for _, r in rows.iterrows():
-                centre = str(r["cost_centre"])
-                sink[centre] = sink.get(centre, 0.0) + float(r[column] or 0.0)
-                did = r.get("driver_id")
-                labels[centre] = centre
-                linked.setdefault(centre, None if did != did or did in (None, "") else str(did))
+    shares_cur, linked_cur = _opex_shares(tools, base_year)
+    shares_next, linked_next = _opex_shares(tools, plan_year)
+    # The base year wins where both name a driver, which is the order the single
+    # combined loop this replaced established with setdefault.
+    linked: dict[str, str | None] = {**linked_next, **linked_cur}
 
     if not shares_cur and not shares_next:
         if opex_cur <= 0 and opex_next <= 0:
@@ -1080,7 +1154,7 @@ def _opex_variables(tools, status: dict, base_year: str, plan_year: str,
         meta = status.get(did) or {}
         out.append({
             "id": _slug(centre, "opex_"),
-            "label": f"{labels.get(centre, centre)} (opex)",
+            "label": f"{centre} (opex)",
             "category": "people" if str(meta.get("category")) == "labour" else "other",
             "description": (f"The {centre} cost centre's share of operating expenses, taken "
                             f"from the opex plan and applied to the P&L's opex level."),
@@ -1099,6 +1173,774 @@ def rebuild_from_datasets(company: dict | None = None) -> dict | str:
     if isinstance(payload, str):
         return payload
     return save_config(payload)
+
+
+# --------------------------------------------------------------------------
+# Comparison mode — any two budgets, side by side
+# --------------------------------------------------------------------------
+#
+# `derive()` was always a two-budget engine: every row carries a current and a
+# next amount, every total is _current / _next / _delta / _change_pct. What was
+# hardcoded was the CHOICE of the two sides — `materialise_from_datasets` picks
+# the latest closed year's actuals and the plan year's locked budget and freezes
+# the answer into budget_plan.json. This section makes the choice the CFO's, and
+# adds no second definition of "delta": both sides are reduced to one comparable
+# SNAPSHOT, the snapshots become the `variables[]` of a throwaway plan, and
+# `derive()` does the arithmetic exactly as it does for the stored one.
+#
+# Nothing here is persisted. `get_plan()`, `/api/budgetplan` and
+# `tools.budget_outlook()` keep reading the CFO's own configured budget, which is
+# why a comparison cannot corrupt what the agent sees — and why `validate()`'s
+# "budget_year = current_year + 1" does not stop a 2024-vs-2027 pair.
+#
+# Three selection kinds, and the asymmetry between them is the point:
+#
+#   * `budget:YYYY` — a budget as BOOKED in `budget_vs_actuals`: volumes and P&L
+#     off the `*_budget_eur` columns, cost lines valued at the locked set.
+#   * `actual:YYYY` — a year as OUTTURNED: the `*_actual_eur` columns, cost lines
+#     valued at the mean EUR price actually paid across that year. This kind is
+#     what keeps the page's own default view expressible — `actual:2026` against
+#     `budget:2027` is exactly the pair `materialise_from_datasets` freezes — and
+#     it is the only pairing in this dataset where the driver PRICES genuinely
+#     move, because a budget year's cost is frozen at one lock month (below).
+#   * `scenario:<id>` — a budget as PROJECTED: a stored scenario, carrying its own
+#     basis (locked / spot / forward), its own assumptions and its own monthly
+#     shape.
+#
+# All three are dataset reads, so every import in here is lazy, and all three are
+# gated at the route — the same reasoning /api/cash on this page is gated.
+
+SELECTION_KINDS = ("budget", "actual", "scenario")
+
+# A dataset budget year prices its cost lines at the locked assumption set. In
+# this dataset that is not a shortcut but the literal truth: generate_data
+# freezes `unit_cost_budget` at ONE lock month for every year it writes, so a
+# budget year has no lock of its own to price against. The consequence — a
+# budget-to-budget driver move is volume, not price — is stated on the snapshot
+# rather than left for the reader to discover, and it is why `actual:YYYY` exists.
+BUDGET_PRICE_NOTE = ("Booked budgets are valued at the locked assumption set, because a budget "
+                     "year's own lock is not recorded. Differences on the driver lines between "
+                     "two booked budgets are volume and mix; the price story is in the actuals.")
+
+ACTUAL_PRICE_NOTE = ("Cost lines are valued at the mean EUR price actually paid across the year, "
+                     "converted month by month, so this side carries what the business really "
+                     "spent rather than what it planned to.")
+
+# Which columns each dataset-year kind reads, and what to call it. The two kinds
+# differ ONLY in this table and in how their driver prices are resolved, which is
+# what keeps them one snapshot builder rather than two.
+_YEAR_KINDS = {
+    "budget": {"suffix": "budget", "label": "{year} budget (as booked)",
+               "note": BUDGET_PRICE_NOTE, "group": "Budget years"},
+    "actual": {"suffix": "actual", "label": "{year} actuals (as outturned)",
+               "note": ACTUAL_PRICE_NOTE, "group": "Actuals"},
+}
+
+
+def parse_selection(key: str) -> tuple[str, str] | None:
+    """'budget:2026' -> ('budget', '2026'); 'scenario:abc' -> ('scenario', 'abc').
+
+    None for anything else, so a caller always has one thing to check. Split on
+    the FIRST colon only: a scenario id is opaque and must survive intact.
+    """
+    text = str(key or "").strip()
+    if ":" not in text:
+        return None
+    kind, _, ident = text.partition(":")
+    kind, ident = kind.strip().lower(), ident.strip()
+    if kind not in SELECTION_KINDS or not ident:
+        return None
+    return kind, ident
+
+
+def _comparison_context() -> dict | str:
+    """Everything both snapshot builders read, read once.
+
+    One context per comparison, so a pair costs one pass over the datasets rather
+    than two — and so the two sides cannot be priced off different reads of the
+    same locked assumption set.
+    """
+    from . import drivers as drivers_mod
+    from . import tools
+
+    try:
+        bva, source = tools._load("budget_vs_actuals")
+        bom, _ = tools._load("bill_of_materials")
+    except (FileNotFoundError, OSError, KeyError):
+        return ("No budget or bill-of-materials dataset is available, so there is nothing to "
+                "compare. Build the budget from your data first.")
+    if bva.empty or bom.empty:
+        return ("The budget or bill-of-materials dataset is empty, so there is nothing to "
+                "compare.")
+
+    bom_rows = [{"product_line": str(r["product_line"]), "driver_id": str(r["driver_id"]),
+                 "qty_per_tonne": float(r["qty_per_tonne"])} for _, r in bom.iterrows()]
+    try:
+        status = {d["driver_id"]: d for d in drivers_mod.driver_status()}
+    except Exception:
+        status = {}
+    return {
+        "bva": bva, "bom_rows": bom_rows, "source": source,
+        "driver_ids": sorted({r["driver_id"] for r in bom_rows}),
+        "locked": _locked_eur_prices(drivers_mod, tools),
+        "status": status,
+        "plan_year": tools._budget_year(bva),
+        "budget_years": _years_with("budget", bva),
+        "actual_years": _years_with("actual", bva),
+        "drivers_mod": drivers_mod,
+        "tools": tools,
+        # Mean-EUR prices are twelve dataset reads per year, so they are resolved
+        # once per year and memoised for the life of one comparison.
+        "_mean_cache": {},
+    }
+
+
+def _years_with(kind: str, bva) -> list[str]:
+    """Every year carrying at least one row of that kind, newest first.
+
+    A year whose `*_actual_eur` columns are entirely empty is not an outturn, and
+    a year whose `*_budget_eur` columns are entirely empty is not a budget. The
+    plan year is the first case and the plan year alone.
+    """
+    column = f"revenue_{_YEAR_KINDS[kind]['suffix']}_eur"
+    if column not in bva.columns:
+        return []
+    months = bva["month"].astype(str)
+    return [year for year in sorted({m[:4] for m in months}, reverse=True)
+            if bva[months.str.startswith(year)][column].notna().any()]
+
+
+def _year_prices(kind: str, year: str, ctx: dict) -> dict:
+    """The EUR price each driver is valued at on one dataset-year side.
+
+    A booked budget has no lock of its own (see BUDGET_PRICE_NOTE), so it is
+    valued at the one locked set. An outturn is valued at what was actually paid.
+    This one branch is the whole difference between the two kinds.
+    """
+    if kind == "budget":
+        return ctx["locked"]
+    cached = ctx["_mean_cache"].get(year)
+    if cached is None:
+        cached = _mean_eur_prices(year, ctx["drivers_mod"], ctx["tools"])
+        ctx["_mean_cache"][year] = cached
+    return cached
+
+
+def _cost_line(line_id: str, label: str, category: str, description: str,
+               amount: float, driver_id: str | None, assumption: str = "") -> dict:
+    """One entry in a snapshot's `lines`. Same field names a variable uses, so
+    `compare` can hand them to `derive()` with no translation step."""
+    return {"id": line_id, "label": label, "category": category,
+            "description": description, "assumption": assumption,
+            "driver_id": driver_id, "amount": max(0.0, _f(amount))}
+
+
+def _sum_column(df, column: str) -> float:
+    return float(df[column].sum(min_count=1) or 0.0) if column in df.columns else 0.0
+
+
+def _year_snapshot(kind: str, year: str, ctx: dict) -> dict | str:
+    """One dataset year — booked budget or outturn — reduced to a snapshot.
+
+    The three cuts are `materialise_from_datasets`'s, for the same reason: the
+    priced material inputs, the conversion residual that keeps the cost base
+    equal to COGS, and the opex cost centres sized by their share of the plan.
+    Only the column family and the driver prices differ between the two kinds,
+    which is why both come through one function.
+    """
+    from . import budget as budget_mod
+
+    spec = _YEAR_KINDS[kind]
+    sfx = spec["suffix"]
+    available = ctx[f"{kind}_years"]
+    bva = ctx["bva"]
+    rows = bva[bva["month"].astype(str).str.startswith(str(year))]
+    if rows.empty:
+        return (f"There are no rows for {year}. Available {kind} years: "
+                f"{', '.join(available) or 'none'}.")
+    priced = (rows[rows[f"revenue_{sfx}_eur"].notna()]
+              if f"revenue_{sfx}_eur" in rows.columns else rows.iloc[0:0])
+    if priced.empty:
+        return (f"{year} carries no {kind} rows. Available {kind} years: "
+                f"{', '.join(available) or 'none'}.")
+
+    revenue = _sum_column(priced, f"revenue_{sfx}_eur")
+    cogs = _sum_column(priced, f"cogs_{sfx}_eur")
+    opex = _sum_column(priced, f"opex_{sfx}_eur")
+    volumes = _volumes(priced, f"volume_tonnes_{sfx}")
+    prices = _year_prices(kind, str(year), ctx)
+    priced_at = ("the locked price" if kind == "budget"
+                 else f"the mean EUR price paid across {year}")
+
+    lines: dict[str, dict] = {}
+    used = 0.0
+    for did in ctx["driver_ids"]:
+        spend = budget_mod.driver_exposure(ctx["bom_rows"], volumes,
+                                          prices.get(did, 0.0), did)
+        if spend <= 0:
+            continue
+        used += spend
+        meta = ctx["status"].get(did) or {}
+        lines[did] = _cost_line(
+            did, meta.get("name") or did,
+            _DRIVER_CATEGORIES.get(str(meta.get("category")), "materials"),
+            (f"Priced through the bill of materials: quantity per tonne × the {year} "
+             f"{kind} volume × {priced_at}, in "
+             f"{meta.get('unit') or 'the driver unit'}."),
+            spend, did, _driver_assumption(meta, ctx["plan_year"]))
+
+    residual = max(0.0, cogs - used)
+    if residual > 0:
+        lines[CONVERSION_ID] = _cost_line(
+            CONVERSION_ID, "Conversion & plant overhead", "facilities",
+            "What COGS carries beyond the bill of materials — labour on the line, "
+            "maintenance and plant overhead. Derived as COGS minus the priced material "
+            "inputs, so the cost base ties to the P&L.",
+            residual, None,
+            "Derived, not assumed: the part of COGS the bill of materials does not explain.")
+
+    for line in _opex_lines(ctx, str(year), opex):
+        lines[line["id"]] = line
+
+    return {
+        "key": f"{kind}:{year}", "kind": kind, "year": str(year),
+        "label": spec["label"].format(year=year),
+        "short_label": f"{year} {'budget' if kind == 'budget' else 'actuals'}",
+        "basis": None, "group": spec["group"],
+        "revenue": revenue, "cogs": cogs, "opex": opex,
+        "volume": math.fsum(volumes.values()),
+        "lines": lines,
+        "months": sorted({str(m) for m in priced["month"].astype(str)}),
+        "product_lines": sorted(volumes),
+        "regions": sorted(set(priced["region"].astype(str))) if "region" in priced.columns else [],
+        "notes": [spec["note"]] + _year_coverage(kind, rows, priced, year),
+    }
+
+
+def _year_coverage(kind: str, rows, priced, year: str) -> list[str]:
+    """What this side does not cover, said out loud.
+
+    A region that opened after the budget was set has actuals and no budget. That
+    is a real state — the whole reason `budget_vs_actuals` uses NaN rather than a
+    zero — and a comparison that silently summed over it would understate this
+    side against whatever it is being compared to. How MUCH it understates by is
+    `_gap_note`'s job, because only the pair knows that.
+    """
+    missing = len(rows) - len(priced)
+    if missing <= 0:
+        return []
+    note = f"{missing} of {len(rows)} {year} rows carry no {kind} figures and are excluded"
+    if "region" in rows.columns:
+        # Callers reach here only with a non-empty `priced`, so this is the set of
+        # regions present in the year with nothing of this kind recorded.
+        gone = sorted(set(rows["region"].astype(str)) - set(priced["region"].astype(str)))
+        if gone:
+            note += f" ({', '.join(gone)}: no {year} {kind} was set)"
+    return [note + "."]
+
+
+def _opex_lines(ctx: dict, year: str, opex_total: float,
+                rates: dict | None = None) -> list[dict]:
+    """One cost line per opex cost centre, sized by SHARE of the opex plan.
+
+    Same seam as `_opex_variables` and the same rule: `opex_plan` is cut by cost
+    centre and the P&L by product line, the two totals need not reconcile, and
+    only the scale-free share crosses over. `rates` optionally weights the split
+    by each centre's own movement — a scenario's `opex_bridge` supplies them — and
+    is renormalised so the lines still sum to `opex_total` exactly. Omit it and
+    this is the plain share, which is what makes the weighting a pure extension.
+    """
+    if opex_total <= 0:
+        return []
+    shares, linked = _opex_shares(ctx["tools"], year)
+    if not shares:
+        return [_cost_line("operating_expenses", "Operating expenses", "other",
+                           "Period cost from the P&L. No cost-centre plan is available to "
+                           "break it down.", opex_total, None)]
+
+    rates = rates or {}
+    weights = {c: (amount / (sum(shares.values()) or 1.0))
+                  * (1.0 + _f(rates.get(c)) / 100.0)
+               for c, amount in shares.items()}
+    total_weight = math.fsum(weights.values())
+    if total_weight <= 0:
+        return []
+
+    out = []
+    for centre in sorted(shares):
+        amount = opex_total * weights[centre] / total_weight
+        if amount <= 0:
+            continue
+        did = linked.get(centre)
+        meta = ctx["status"].get(did) or {}
+        out.append(_cost_line(
+            _slug(centre, "opex_"), f"{centre} (opex)",
+            "people" if str(meta.get("category")) == "labour" else "other",
+            f"The {centre} cost centre's share of operating expenses, taken from the opex "
+            f"plan and applied to the P&L's opex level.",
+            amount, did, _driver_assumption(meta, ctx["plan_year"]) if meta else ""))
+    return out
+
+
+def _scenario_year(scenario: dict) -> str:
+    """A scenario carries no year field — it is in the months it projected, and
+    in `baseline` ('budget_2027') as a fallback. Both, in that order."""
+    months = scenario.get("by_month") or []
+    if months and months[0].get("month"):
+        return str(months[0]["month"])[:4]
+    tail = str(scenario.get("baseline") or "").rpartition("_")[2]
+    return tail if tail.isdigit() else ""
+
+
+def _scenario_snapshot(scenario: dict, ctx: dict) -> dict | str:
+    """A stored scenario, reduced to the same snapshot shape.
+
+    Driver spend is EXACT rather than re-derived. `project_pnl` builds each
+    driver's delta as (effective − locked) × qty × post-volume tonnage × unhedged
+    on top of a baseline of locked × qty × tonnage, so the applied spend is
+    `driver_exposure(…, locked) + driver_impact_eur[did]` — which carries the
+    forward curve, the CFO's percentage and the hedge coverage without this
+    module knowing anything about any of them.
+    """
+    from . import budget as budget_mod
+
+    totals = scenario.get("totals") or {}
+    revenue = _f(totals.get("revenue_eur"))
+    cogs = _f(totals.get("cogs_eur"))
+    opex = _f(totals.get("opex_eur"))
+    if revenue <= 0 and cogs <= 0:
+        return (f"Scenario '{scenario.get('name')}' has no stored projection to compare. "
+                "Open it on the Scenarios page and recompute it first.")
+
+    volumes = {str(r.get("product_line")): _f(r.get("volume_tonnes"))
+               for r in (scenario.get("by_product_line") or [])}
+    locked_used = scenario.get("driver_prices_used") or {}
+    impact = scenario.get("driver_impact_eur") or {}
+    basis = str(scenario.get("basis") or "locked")
+    year = _scenario_year(scenario)
+
+    lines: dict[str, dict] = {}
+    used = 0.0
+    for did in ctx["driver_ids"]:
+        base_price = _f(locked_used.get(did, ctx["locked"].get(did, 0.0)))
+        qty_spend = budget_mod.driver_exposure(ctx["bom_rows"], volumes, base_price, did)
+        spend = qty_spend + _f(impact.get(did))
+        if spend <= 0:
+            continue
+        used += spend
+        meta = ctx["status"].get(did) or {}
+        lines[did] = _cost_line(
+            did, meta.get("name") or did,
+            _DRIVER_CATEGORIES.get(str(meta.get("category")), "materials"),
+            (f"Priced through the bill of materials at this scenario's own volumes, on the "
+             f"{basis} basis, in {meta.get('unit') or 'the driver unit'}."),
+            spend, did,
+            _scenario_line_assumption(meta, ctx["plan_year"], basis, base_price,
+                                      qty_spend, spend))
+
+    residual = max(0.0, cogs - used)
+    if residual > 0:
+        lines[CONVERSION_ID] = _cost_line(
+            CONVERSION_ID, "Conversion & plant overhead", "facilities",
+            "What COGS carries beyond the bill of materials. Derived as this scenario's COGS "
+            "minus its priced material inputs, so the cost base ties to its own P&L.",
+            residual, None,
+            "Derived, not assumed. A price basis moves only the bill-of-materials lines, so "
+            "this figure is the same on every basis.")
+
+    rates = {str(r.get("cost_centre")): _f(r.get("pct"))
+             for r in ((scenario.get("opex_bridge") or {}).get("by_cost_centre") or [])}
+    for line in _opex_lines(ctx, year or ctx["plan_year"], opex, rates):
+        lines[line["id"]] = line
+
+    name = str(scenario.get("name") or "Untitled scenario")
+    return {
+        "key": f"scenario:{scenario.get('id')}", "kind": "scenario", "year": year,
+        "label": name, "short_label": name, "basis": basis, "group": "Scenarios",
+        "revenue": revenue, "cogs": cogs, "opex": opex,
+        "volume": _f(totals.get("volume_tonnes")),
+        "lines": lines,
+        "months": [str(r.get("month")) for r in (scenario.get("by_month") or [])],
+        "product_lines": sorted(volumes),
+        # A scenario is cut by product line, never by region: it is projected off
+        # the plan year's budget rows, so its regional coverage is that year's.
+        # `_gap_note` reads the year rather than guessing.
+        "regions": [],
+        "notes": [SCENARIO_BASIS_NOTES.get(basis, "")] if basis in SCENARIO_BASIS_NOTES else [],
+        "scenario_id": scenario.get("id"),
+        "active": bool(scenario.get("active")),
+    }
+
+
+SCENARIO_BASIS_NOTES = {
+    "locked": "Drivers are priced at their locked values — the budget as frozen.",
+    "spot": "Drivers were re-priced at the latest observed market level before this "
+            "scenario's percentages were applied.",
+    "forward": "Drivers were priced off the published forward curve, month by month, before "
+               "this scenario's percentages were applied.",
+}
+
+
+def _scenario_line_assumption(meta: dict, plan_year: str, basis: str, locked_price: float,
+                              at_locked: float, applied: float) -> str:
+    """The sentence under a scenario's cost line.
+
+    The applied price is back-solved from the spend rather than looked up, which
+    is the only way to state it: a forward-basis line is priced month by month
+    and there is no single number in the store to read.
+    """
+    parts = []
+    if basis != "locked" and at_locked > 0 and locked_price > 0:
+        effective = locked_price * applied / at_locked
+        unit = meta.get("unit") or ""
+        parts.append(f"Applied at an average {effective:,.2f} {unit}".rstrip()
+                     + f" on the {basis} basis")
+    tail = _driver_assumption(meta, plan_year)
+    if tail:
+        parts.append(tail[:-1] if tail.endswith(".") else tail)
+    return ("; ".join(parts) + ".") if parts else ""
+
+
+def budget_snapshot(key: str, ctx: dict | None = None) -> dict | str:
+    """Resolve one selection key to a snapshot, or to a teachable sentence.
+
+    Teachable in the tools.py sense: every refusal ENUMERATES the valid options,
+    so a stale key from another tab tells the caller what to pick instead rather
+    than just failing.
+    """
+    from . import scenarios as scenarios_mod
+
+    if ctx is None:
+        ctx = _comparison_context()
+    if isinstance(ctx, str):
+        return ctx
+
+    parsed = parse_selection(key)
+    if parsed is None:
+        return (f"'{key}' is not a budget selection. Use 'budget:YYYY' for a booked budget, "
+                f"'actual:YYYY' for an outturn, or 'scenario:<id>' for a stored scenario.")
+    kind, ident = parsed
+
+    if kind in _YEAR_KINDS:
+        available = ctx[f"{kind}_years"]
+        if ident not in available:
+            return (f"There is no {ident} {kind}. Available {kind} years: "
+                    f"{', '.join(available) or 'none'}.")
+        return _year_snapshot(kind, ident, ctx)
+
+    scenario = scenarios_mod.get_scenario(ident)
+    if scenario is None:
+        names = [f"{s.get('name')} ({s.get('id')})" for s in scenarios_mod.list_scenarios()]
+        return (f"No scenario with id '{ident}' — it may have been deleted in another tab. "
+                f"Stored scenarios: {'; '.join(names) or 'none'}.")
+    return _scenario_snapshot(scenario, ctx)
+
+
+def _gap_note(left: dict, right: dict, ctx: dict) -> str:
+    """How much of the difference is a region the baseline never covered.
+
+    `_year_coverage` says a region is missing. This says what that COSTS the
+    reader, and it is the single most important sentence on the page: in the
+    seeded data 55% of the default pair's revenue step and 67% of its volume step
+    is Adriatic, a market that opened mid-2026 and has no 2026 budget at all. A
+    page that reports "+13.3%" without saying so is not wrong about the
+    arithmetic and is badly wrong about the business.
+
+    Measured off the right side's own YEAR in `budget_vs_actuals`, which is why a
+    scenario works too — a scenario is projected from that year's budget rows, so
+    the regions it covers are that year's.
+    """
+    if not left.get("regions") or not right.get("year"):
+        return ""
+    bva = ctx["bva"]
+    rows = bva[bva["month"].astype(str).str.startswith(str(right["year"]))]
+    if rows.empty or "region" not in rows.columns:
+        return ""
+    # The right side's year is a plan year for a scenario and its own year for a
+    # dataset side; either way the budget columns are the ones that describe it.
+    extra = sorted(set(rows["region"].astype(str)) - set(left["regions"]))
+    if not extra:
+        return ""
+    added = rows[rows["region"].astype(str).isin(extra)]
+    rev = _sum_column(added, "revenue_budget_eur")
+    vol = _sum_column(added, "volume_tonnes_budget")
+    rev_step = right["revenue"] - left["revenue"]
+    vol_step = _f(right.get("volume")) - _f(left.get("volume"))
+
+    shares = []
+    if rev > 0 and rev_step > 0:
+        shares.append(f"{rev / rev_step * 100:.0f}% of the revenue step")
+    if vol > 0 and vol_step > 0:
+        shares.append(f"{vol / vol_step * 100:.0f}% of the volume step")
+    if not shares:
+        return ""
+    return (f"{', '.join(extra)} appears on the {right['short_label']} side only — "
+            f"{left['short_label']} has no figures for it — so {' and '.join(shares)} "
+            f"is a market the baseline never covered, not growth in the rest of the business.")
+
+
+def comparison_options(ctx: dict | None = None) -> dict | str:
+    """The budgets both dropdowns offer, and which pair the page opens on.
+
+    The defaults are DERIVED, never hardcoded: the baseline is the booked budget
+    for the year before the one being planned, and the comparison is whatever
+    scenario the budget currently rests on. `scenarios.get_active()` already falls
+    back to the most recently updated scenario, so only an empty store reaches the
+    stated fallback below — and it is stated rather than silently substituted,
+    because "no scenario is active" and "this scenario is active" are different
+    answers.
+    """
+    from . import scenarios as scenarios_mod
+
+    if ctx is None:
+        ctx = _comparison_context()
+    if isinstance(ctx, str):
+        return ctx
+
+    years = ctx["budget_years"]
+    budgets = [{"key": f"{kind}:{y}", "kind": kind,
+                "label": _YEAR_KINDS[kind]["label"].format(year=y),
+                "year": y, "basis": None, "active": False,
+                "group": _YEAR_KINDS[kind]["group"]}
+               for kind in ("budget", "actual") for y in ctx[f"{kind}_years"]]
+
+    for s in scenarios_mod.list_scenarios():
+        budgets.append({
+            "key": f"scenario:{s.get('id')}", "kind": "scenario",
+            "label": str(s.get("name") or "Untitled scenario"),
+            "year": _scenario_year(s), "basis": s.get("basis") or "locked",
+            # The record's OWN flag, not get_active()'s answer. get_active() falls
+            # back to the most recently updated scenario, and a dropdown that
+            # labelled that one "active" would be asserting something false.
+            "active": bool(s.get("active")),
+            # Two seeded scenarios share a name, so the label alone cannot
+            # identify one in a dropdown. The basis and the date are what tell
+            # them apart, and both belong to the option rather than the name.
+            "updated_at": s.get("updated_at"),
+            "group": "Scenarios",
+        })
+
+    if len(budgets) < 2:
+        return ("There is only one budget to look at, so there is nothing to compare yet. "
+                "Build a scenario on the Scenarios page, or add another budget year to your "
+                "data.")
+
+    plan_year = str(ctx["plan_year"])
+    prior = str(int(plan_year) - 1) if plan_year.isdigit() else ""
+    keys = {b["key"] for b in budgets}
+    left = next((k for k in (f"budget:{prior}",
+                             f"budget:{years[0]}" if years else "",
+                             budgets[0]["key"]) if k in keys), budgets[0]["key"])
+
+    fallback = None
+    active = scenarios_mod.get_active()
+    if active is not None and active.get("active"):
+        right = f"scenario:{active.get('id')}"
+    elif active is not None:
+        right = f"scenario:{active.get('id')}"
+        fallback = {"field": "right", "reason": (
+            "No scenario is flagged active on the Scenarios page, so the comparison side "
+            f"falls back to the most recently updated one, \"{active.get('name')}\".")}
+    elif f"budget:{plan_year}" in keys:
+        right = f"budget:{plan_year}"
+        fallback = {"field": "right", "reason": (
+            "There are no scenarios yet, so the comparison side falls back to the "
+            f"{plan_year} budget as booked.")}
+    else:
+        right = next((b["key"] for b in budgets if b["key"] != left), budgets[0]["key"])
+        fallback = {"field": "right", "reason": (
+            "There are no scenarios yet, so the comparison side falls back to the next "
+            "budget in the list.")}
+    if right == left and len(budgets) > 1:
+        right = next(b["key"] for b in budgets if b["key"] != left)
+
+    return {"budgets": budgets, "defaults": {"left": left, "right": right},
+            "fallback": fallback, "plan_year": plan_year,
+            "source_file": ctx["source"]}
+
+
+def compare(left_key: str | None = None, right_key: str | None = None) -> dict:
+    """Two budget selections, one `derive()` output measuring the second against
+    the first, and the options both dropdowns need.
+
+    The union of cost-line ids is what makes the missing-line case honest: a line
+    the baseline never carried contributes 0 on that side and is NAMED, rather
+    than arriving as a −100% that reads like a cut somebody made.
+
+    The OPTIONS travel in every response, including the failures — the same reason
+    `tools.scenario_options` exists next to `build_budget_scenario`'s teachable
+    errors: two derivations of "the budgets you may pick" is how a dropdown offers
+    a value the resolver then rejects. It also means a select self-heals after a
+    scenario is deleted in another tab, instead of holding a dead key.
+
+    Returns a dict either way — `available: false` plus a reason for every state
+    that is a state rather than a failure, exactly as `/api/cash` does.
+    """
+    ctx = _comparison_context()
+    if isinstance(ctx, str):
+        return {"available": False, "error": ctx, "options": [], "defaults": None}
+
+    options = comparison_options(ctx)
+    if isinstance(options, str):
+        return {"available": False, "error": options, "options": [], "defaults": None}
+    envelope = {"options": options["budgets"], "defaults": options["defaults"],
+                "fallback": options["fallback"], "plan_year": options["plan_year"],
+                "source_file": ctx["source"]}
+
+    left_key = left_key or options["defaults"]["left"]
+    right_key = right_key or options["defaults"]["right"]
+    left = budget_snapshot(left_key, ctx)
+    if isinstance(left, str):
+        return {"available": False, "error": left, "field": "left", **envelope}
+    right = budget_snapshot(right_key, ctx)
+    if isinstance(right, str):
+        return {"available": False, "error": right, "field": "right", **envelope}
+
+    # Left's order first, then whatever only the right side carries — so the
+    # baseline's own shape leads and additions are visible as additions.
+    ids = list(left["lines"]) + [i for i in right["lines"] if i not in left["lines"]]
+    only_in = {}
+    variables = []
+    for line_id in ids:
+        a, b = left["lines"].get(line_id), right["lines"].get(line_id)
+        # Wording resolves RIGHT-first: the right side is the budget being
+        # proposed, and its description is the one the CFO is deciding about.
+        spec = b or a
+        coverage = "both"
+        if a is None:
+            coverage = only_in[line_id] = "right"
+        elif b is None:
+            coverage = only_in[line_id] = "left"
+        variables.append({
+            "id": line_id, "label": spec["label"], "category": spec["category"],
+            "description": spec["description"], "assumption": spec["assumption"],
+            "default_note": "", "driver_id": spec["driver_id"],
+            "current_amount": a["amount"] if a else 0.0,
+            "next_amount": b["amount"] if b else 0.0,
+            "coverage": coverage, "include": True,
+        })
+
+    # `current_year` / `budget_year` carry the two LABELS, not years. derive()
+    # copies them through untouched, so the page and the read both name the budget
+    # rather than a year — which matters when both sides are scenarios for the
+    # same year. The real years travel in left/right below. validate() is never
+    # involved: nothing here is persisted, which is also why a non-consecutive
+    # pair is expressible at all.
+    plan = {
+        "company": get_plan().get("company") or {},
+        "baseline": {"current_year": left["label"], "budget_year": right["label"],
+                     "revenue": left["revenue"], "revenue_next": right["revenue"]},
+        "variables": variables,
+    }
+    derived = derive(plan)
+
+    same = left["key"] == right["key"]
+    gap = "" if same else _gap_note(left, right, ctx)
+    notes = [n for n in (left.get("notes") or []) if n]
+    notes += [n for n in (right.get("notes") or []) if n and n not in notes]
+    if same:
+        notes.insert(0, "Both sides are the same budget, so every difference is zero.")
+    if gap:
+        notes.insert(0, gap)
+    period = _period_note(left, right)
+    if period:
+        notes.append(period)
+
+    return {
+        "available": True,
+        "left": _side(left), "right": _side(right),
+        "derived": derived,
+        "only_in": only_in,
+        "same": same,
+        "notes": notes,
+        "narrative": comparison_narrative(derived, left, right, same, gap),
+        # The cash strip projects from a scenario's own monthly shape, so a dataset
+        # year has nothing for it to read. None is the honest answer and the page
+        # renders it as a reason, not as an empty section.
+        "cash": ({"scenario_id": right.get("scenario_id")} if right["kind"] == "scenario"
+                 else {"scenario_id": None, "reason": (
+                     f"A cash profile is projected from a scenario's own monthly shape. "
+                     f"\"{right['label']}\" is a dataset {right['kind']}, so there is nothing "
+                     f"to project from — pick a scenario on the right to see cash.")}),
+        **envelope,
+    }
+
+
+def comparison_narrative(derived: dict, left: dict, right: dict, same: bool,
+                         gap: str = "") -> str:
+    """The read on a pair. Deterministic, computed, and never a model call.
+
+    `templated_narrative` is the read on ONE budget and its sentences are built
+    around a year ("the 2027 cost base"); fed a scenario name it produces "the Pet
+    cost breach — forward curve cost base". A comparison is a different sentence —
+    it leads with the difference, because that is the question the two dropdowns
+    ask — so it gets its own, and shares `_money` and the derived figures rather
+    than any arithmetic.
+    """
+    t = derived["totals"]
+    ccy = t["currency"]
+    ranked = derived["ranked"]
+    if same:
+        return (f"Both sides are {right['label']}, so every difference on this page is zero. "
+                f"Pick a different budget on either side to see a comparison.")
+    if not ranked:
+        return (f"Neither {left['label']} nor {right['label']} carries any cost lines, so "
+                f"there is nothing to compare.")
+
+    verb = ("carries" if t["cost_delta"] > 0 else "saves") if t["cost_delta"] else "matches"
+    if t["cost_delta"]:
+        head = (f"Against {left['label']}, {right['label']} {verb} "
+                f"{_money(abs(t['cost_delta']), ccy)} "
+                f"{'more' if t['cost_delta'] > 0 else 'less'} cost, "
+                f"{t['cost_change_pct']:+.1f}%.")
+    else:
+        head = (f"{right['label']} {verb} {left['label']} on cost at "
+                f"{_money(t['cost_next'], ccy)}.")
+
+    first = ranked[0]
+    parts = [head,
+             f"{first['label']} is the biggest mover at "
+             f"{_pct_text(first['expected_change_pct'])} "
+             f"({_money(first['delta'], ccy)}), {first['impact_share'] * 100:.0f}% of the "
+             f"total change."]
+    if len(ranked) > 1:
+        second = ranked[1]
+        parts.append(f"{second['label']} follows at {_pct_text(second['expected_change_pct'])} "
+                     f"({_money(second['delta'], ccy)}).")
+    # Stated in the read, not only in the caveat list. In the seeded data 55% of
+    # the default pair's revenue step is a region the baseline never budgeted, and
+    # a paragraph that explains "+13.3%" without saying so is confidently wrong.
+    if gap:
+        parts.append(gap)
+    parts.append(f"Revenue is {_money(t['revenue_delta'], ccy)} "
+                 f"({t['revenue_change_pct']:+.1f}%) and operating margin lands "
+                 f"{abs(t['margin_delta_pp']):.1f} points "
+                 f"{'lower' if t['margin_delta_pp'] < 0 else 'higher'} at "
+                 f"{t['margin_pct_next']:.1f}%.")
+    return " ".join(parts)
+
+
+def _side(snapshot: dict) -> dict:
+    """A snapshot without its `lines` — what the header and the selects render.
+    The lines already travel inside `derived`, and sending them twice would let
+    the two copies disagree."""
+    return {k: v for k, v in snapshot.items() if k != "lines"}
+
+
+def _period_note(left: dict, right: dict) -> str | None:
+    """Whether the two sides cover the same number of periods.
+
+    Compared on COUNT, not on the month strings: two budgets for different years
+    never share a month, and saying so every time would be noise. Twelve months
+    against nine is the real asymmetry, and annual totals are the only honest
+    comparison when it holds.
+    """
+    a, b = len(left.get("months") or []), len(right.get("months") or [])
+    if a == b or not a or not b:
+        return None
+    thin, thick = (left, right) if a < b else (right, left)
+    return (f"{thin['label']} covers {min(a, b)} months against {max(a, b)} for "
+            f"{thick['label']}. The totals compared here are each budget's own full period.")
 
 
 # --------------------------------------------------------------------------
@@ -1157,7 +1999,7 @@ def brief(plan: dict, derived: dict | None = None) -> str:
         line = (f"{r['rank']}. {r['label']} [{r['category']}] — "
                 f"{t['current_year']}: {_money(r['current_amount'], ccy)}, "
                 f"{t['budget_year']}: {_money(r['next_amount'], ccy)}, "
-                f"change {r['expected_change_pct']:+.1f}% "
+                f"change {_pct_text(r['expected_change_pct'])} "
                 f"({_money(r['delta'], ccy)}), "
                 f"{r['share_of_cost_pct']:.1f}% of the cost base, "
                 f"{r['impact_share'] * 100:.0f}% of total movement")
@@ -1197,12 +2039,13 @@ def templated_narrative(plan: dict, derived: dict | None = None) -> str:
         f"{company}'s {t['budget_year']} cost base is set to {direction} to "
         f"{_money(t['cost_next'], ccy)}, {t['cost_change_pct']:+.1f}% on {t['current_year']} "
         f"({_money(t['cost_delta'], ccy)}).",
-        f"{first['label']} is the single biggest mover at {first['expected_change_pct']:+.1f}% "
+        f"{first['label']} is the single biggest mover at "
+        f"{_pct_text(first['expected_change_pct'])} "
         f"({_money(first['delta'], ccy)}), {first['impact_share'] * 100:.0f}% of the total change.",
     ]
     if len(ranked) > 1:
         second = ranked[1]
-        parts.append(f"{second['label']} follows at {second['expected_change_pct']:+.1f}% "
+        parts.append(f"{second['label']} follows at {_pct_text(second['expected_change_pct'])} "
                      f"({_money(second['delta'], ccy)}).")
     parts.append(
         f"With revenue at {_money(t['revenue_next'], ccy)} ({t['revenue_change_pct']:+.1f}%), "

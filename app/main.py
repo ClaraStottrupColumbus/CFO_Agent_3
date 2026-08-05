@@ -459,6 +459,32 @@ def post_budget_narrative(force: bool = Query(False)) -> dict:
     return {"narrative": budgetplan.ensure_narrative(plan, model, force=force)}
 
 
+@app.get("/api/budgetplan/comparison", dependencies=Gated)
+def budget_comparison(left: str | None = Query(None),
+                      right: str | None = Query(None)) -> dict:
+    """Two budgets side by side, as a READ-TIME overlay on the same `derive()`.
+
+    GATED, unlike the rest of `/api/budgetplan*` — and it is the rule being
+    applied rather than an exception being invented. `/api/cash` is already the
+    exception on this page "because it reads the scenario engine and the
+    datasets"; this reads `budget_vs_actuals`, `bill_of_materials`, `opex_plan`,
+    `drivers`, `locked_assumptions` and `scenarios.json`, a strictly larger
+    footprint, plus the scenario engine's stored output. `/api/scenario-options`
+    is gated for the same reason.
+
+    The frontend consequence is the feature, not the cost: a 409 leaves the
+    selectors unrendered and the page falls back to the persisted plan, which is
+    exactly what it renders today. Nothing regresses before setup.
+
+    200 with `available: false` and a reason for every state that is a state
+    rather than a failure — one budget in the data, a scenario deleted in another
+    tab, a stale key in a select — the same shape `/api/cash` and
+    `/api/scenario-options` return. The options list travels even then, so a
+    select can always recover.
+    """
+    return budgetplan.compare(left, right)
+
+
 # The Budget page has no chat route of its own. It had one while the feature was
 # tool-less and citation-less; now its lines carry driver ids, so a question
 # about one is a question about the real watchlist and goes through
@@ -900,6 +926,30 @@ def approve_budget_version(version_id: str, payload: ApprovalRequest) -> dict:
         raise HTTPException(status_code=404, detail={"error": "version not found"})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": str(exc)})
+
+
+@app.post("/api/budget/versions/{version_id}/revoke", dependencies=Gated)
+def revoke_budget_version(version_id: str, payload: ApprovalRequest) -> dict:
+    """Withdraw an approval — the undo for approving the wrong version.
+
+    Reuses `ApprovalRequest`, so `by` is an attestation of who withdrew it on the
+    same terms it was an attestation of who granted it: this app has no
+    authentication either way. Unlike approving, `by` is optional — it falls back
+    to whoever the approval was attributed to, because a revocation with no name
+    on it is still better than a budget frozen on a mis-click.
+
+    With nothing approved, `approved_freeze()` is None and the scenario this was
+    frozen from is editable again, which is the whole point.
+    """
+    try:
+        return budgetversions.summary(
+            budgetversions.revoke_approval(version_id, payload.by, payload.note))
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"error": "version not found"})
+    except ValueError as exc:
+        # 409, not 400: the request is well formed and the object's state forbids
+        # it — the same distinction PUT /api/scenarios/{id} draws for a frozen one.
+        raise HTTPException(status_code=409, detail={"error": str(exc)})
 
 
 @app.delete("/api/budget/versions/{version_id}", dependencies=Gated)

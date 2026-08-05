@@ -3580,8 +3580,14 @@ function versionCard(v, data) {
   card.className = "card version-card" + (v.status === "approved" ? " is-approved" : "");
   const eur = (x) => x === null || x === undefined ? "—"
     : `€${(x / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`;
+  // A withdrawn approval outranks the submission and the creation date, because
+  // it is the thing a reader most needs to know about this version: it WAS the
+  // budget and no longer is.
   const provenance = v.approved_by
     ? `Approved by ${escapeHtml(v.approved_by)} ${escapeHtml(fmtWhen(v.approved_at))}`
+    : v.revoked_at
+      ? `Approval revoked by ${escapeHtml(v.revoked_by || "someone")} ${
+          escapeHtml(fmtWhen(v.revoked_at))}`
     : v.submitted_by ? `Submitted by ${escapeHtml(v.submitted_by)}`
     : `Created ${escapeHtml(fmtWhen(v.created_at))}`;
 
@@ -3604,11 +3610,20 @@ function versionCard(v, data) {
     <div class="driver-actions">
       ${v.status === "approved" ? "" : '<button class="btn-ghost vs-submit">Submit</button>'}
       ${v.status === "approved" ? "" : '<button class="btn-ghost vs-approve">Approve</button>'}
+      ${v.status === "approved" ? '<button class="btn-ghost vs-revoke">Revoke approval</button>' : ""}
       <button class="btn-ghost vs-diff">What changed</button>
       ${exportLinks(`/api/budget/versions/${encodeURIComponent(v.id)}`)}
       ${v.status === "approved" || v.status === "superseded" ? ""
         : '<button class="btn-ghost vs-delete">Discard</button>'}
     </div>
+    <p class="version-revoke-warn hidden">Revoking the approval does not delete this
+      version — it records that the approval was withdrawn, and
+      <strong>${escapeHtml(v.scenario_name || "the scenario it was frozen from")}</strong>
+      becomes editable again. No other version is promoted in its place, so nothing
+      will be approved until you approve one. Discard it afterwards if you want it gone.
+      <button class="btn-ghost vs-revoke-yes" type="button">Yes, revoke</button>
+      <button class="btn-ghost vs-revoke-no" type="button">Cancel</button>
+      <span class="error-text hidden"></span></p>
     <form class="version-approve hidden">
       <label class="field-label">Approved by</label>
       <input class="vs-approver" type="text" maxlength="80"
@@ -3662,11 +3677,49 @@ function versionCard(v, data) {
     refreshVersions();
   });
 
+  // Revoking is behind an inline warning rather than a confirm(), because what it
+  // does to the frozen scenario is the part worth reading before clicking.
+  const revoke = card.querySelector(".vs-revoke");
+  const revokeWarn = card.querySelector(".version-revoke-warn");
+  if (revoke) {
+    revoke.addEventListener("click", () => revokeWarn.classList.toggle("hidden"));
+    revokeWarn.querySelector(".vs-revoke-no")
+      .addEventListener("click", () => revokeWarn.classList.add("hidden"));
+    revokeWarn.querySelector(".vs-revoke-yes").addEventListener("click", async () => {
+      const err = revokeWarn.querySelector(".error-text");
+      const yes = revokeWarn.querySelector(".vs-revoke-yes");
+      yes.disabled = true;
+      yes.textContent = "Revoking…";
+      const resp = await fetch(`/api/budget/versions/${v.id}/revoke`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ by: data.default_approver || null }),
+      }).catch(() => null);
+      if (!resp || !resp.ok) {
+        const detail = resp ? await resp.json().catch(() => ({})) : {};
+        err.textContent = (detail.detail && detail.detail.error)
+          || "Could not revoke the approval.";
+        err.classList.remove("hidden");
+        yes.disabled = false;
+        yes.textContent = "Yes, revoke";
+        return;
+      }
+      // Both rails: the freeze that made a scenario read-only has just lifted.
+      refreshVersions();
+      refreshScenarios();
+    });
+  }
+
   const del = card.querySelector(".vs-delete");
   if (del) del.addEventListener("click", async () => {
     if (!confirm(`Discard v${v.version_no}? Its snapshot goes with it.`)) return;
-    await fetch(`/api/budget/versions/${v.id}`, { method: "DELETE" });
+    const resp = await fetch(`/api/budget/versions/${v.id}`, { method: "DELETE" });
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      alert((detail.detail && detail.detail.error) || "Could not discard this version.");
+      return;
+    }
     refreshVersions();
+    refreshScenarios();
   });
 
   // Load-once-then-toggle, the same shape as the driver history panel.

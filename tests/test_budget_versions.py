@@ -144,6 +144,111 @@ def test_an_approved_version_cannot_be_re_approved_or_re_submitted(store):
 def test_transitions_on_a_missing_version_raise_keyerror(store):
     with pytest.raises(KeyError):
         budgetversions.approve("nope", "A. Board")
+    with pytest.raises(KeyError):
+        budgetversions.revoke_approval("nope")
+
+
+# ---------- Revoking an approval: the undo for approving the wrong version ----------
+#
+# It was a gap rather than a decision: approve refused a second approval, submit
+# refused an approved version and delete_version refused it too, so a mis-click
+# left the budget frozen on a version nobody meant to commit to. What these pin is
+# that the undo does not become a way to erase what the company committed to.
+
+def test_revoking_an_approval_returns_the_version_to_where_it_came_from(store):
+    version = budgetversions.create_version(scenario())
+    budgetversions.approve(version["id"], "A. Board")
+
+    revoked = budgetversions.revoke_approval(version["id"], "N. Bentmann")
+    # Never submitted, so it goes back to draft rather than inventing a review.
+    assert revoked["status"] == "draft"
+    assert revoked["approved_by"] is None
+    assert revoked["approved_at"] is None
+    # The approval is WITHDRAWN, not erased: "was approved and taken back" is a
+    # different fact from "was never approved", and the record has to say which.
+    assert revoked["revoked_by"] == "N. Bentmann"
+    assert revoked["revoked_at"] is not None
+    assert budgetversions.summary(revoked)["revoked_by"] == "N. Bentmann"
+
+
+def test_revoking_returns_a_submitted_version_to_submitted(store):
+    version = budgetversions.create_version(scenario())
+    budgetversions.submit(version["id"], "N. Bentmann")
+    budgetversions.approve(version["id"], "A. Board")
+    assert budgetversions.revoke_approval(version["id"])["status"] == "submitted"
+
+
+def test_revoking_falls_back_to_the_name_the_approval_carried(store):
+    """A revocation with no name is still better than a budget frozen on a
+    mis-click, so `by` is optional here where it is required for approving."""
+    version = budgetversions.create_version(scenario())
+    budgetversions.approve(version["id"], "A. Board")
+    assert budgetversions.revoke_approval(version["id"])["revoked_by"] == "A. Board"
+
+
+def test_revoking_the_only_approval_unfreezes_its_scenario(store):
+    """The whole point of the undo: with nothing approved, the scenario the version
+    was frozen from is editable again."""
+    version = budgetversions.create_version(scenario(sid="sc1"))
+    budgetversions.approve(version["id"], "A. Board")
+    assert budgetversions.approved_freeze_of("sc1") is not None
+
+    budgetversions.revoke_approval(version["id"])
+    assert budgetversions.approved_version() is None
+    assert budgetversions.approved_freeze() is None
+    assert budgetversions.approved_freeze_of("sc1") is None
+
+
+def test_revoking_does_not_silently_promote_a_superseded_predecessor(store):
+    """Approving v2 supersedes v1; revoking v2 leaves NOTHING approved rather than
+    putting v1 back. "The budget is v1 again" is a second decision, and this
+    function was only asked to make the first one."""
+    first = budgetversions.create_version(scenario(sid="sc1"))
+    second = budgetversions.create_version(scenario("Re-lock", sid="sc2"))
+    budgetversions.approve(first["id"], "A. Board")
+    budgetversions.approve(second["id"], "A. Board")
+
+    budgetversions.revoke_approval(second["id"])
+    assert budgetversions.approved_version() is None
+    assert budgetversions.get_version(first["id"])["status"] == "superseded"
+    # And neither scenario is frozen, so both are editable until someone approves.
+    assert budgetversions.approved_freeze_of("sc1") is None
+    assert budgetversions.approved_freeze_of("sc2") is None
+
+
+def test_only_an_approved_version_can_be_revoked(store):
+    version = budgetversions.create_version(scenario())
+    with pytest.raises(ValueError) as exc:
+        budgetversions.revoke_approval(version["id"])
+    assert "draft" in str(exc.value)
+
+
+def test_revoking_makes_the_version_discardable_and_re_approvable(store):
+    """Both doors the refusal points at, exercised. Revoke then discard is how a
+    mistaken approval is removed entirely; revoke then approve is how a different
+    version becomes the budget."""
+    version = budgetversions.create_version(scenario())
+    budgetversions.approve(version["id"], "A. Board")
+    with pytest.raises(ValueError):
+        budgetversions.delete_version(version["id"])
+
+    budgetversions.revoke_approval(version["id"])
+    budgetversions.approve(version["id"], "A. Board")      # re-approvable
+    budgetversions.revoke_approval(version["id"])
+    assert budgetversions.delete_version(version["id"]) is True
+    assert budgetversions.list_versions() == []
+
+
+def test_the_refusal_to_delete_an_approved_version_names_both_ways_out(store):
+    """A refusal that does not say what to do instead is the reason someone
+    reaches for the JSON file by hand."""
+    version = budgetversions.create_version(scenario())
+    budgetversions.approve(version["id"], "A. Board")
+    with pytest.raises(ValueError) as exc:
+        budgetversions.delete_version(version["id"])
+    message = str(exc.value).lower()
+    assert "revoke" in message
+    assert "supersede" in message
 
 
 # ---------- Which scenario an approval freezes ----------

@@ -1,18 +1,20 @@
 {
   "versions": [
     {
-      "id": "9e1abbe24276420cb1d7c656194dffb7",
+      "id": "7554d7d1069f450dbccfbeedfe2e6823",
       "version_no": 1,
-      "label": "2027 budget (as locked)",
+      "label": "Chicken meal at forward mean, 35% pass-through",
       "note": null,
-      "status": "approved",
+      "status": "draft",
       "parent_version_id": null,
-      "scenario_id": "9c306c84e26640af9651449c80dddc6e",
-      "scenario_name": "2027 budget (as locked)",
+      "scenario_id": "6e1dfb40291249a996931a4b44cefe30",
+      "scenario_name": "Chicken meal at forward mean, 35% pass-through",
       "baseline": "budget_2027",
       "basis": "locked",
       "assumptions_snapshot": {
-        "drivers": {},
+        "drivers": {
+          "chicken_meal": 12.28
+        },
         "volume": {},
         "price": {},
         "opex": {}
@@ -21,146 +23,146 @@
       "opex_inflation_pct": 0.0,
       "totals": {
         "volume_tonnes": 153345.1,
-        "revenue_eur": 82466018.09,
-        "cogs_eur": 66586541.13,
+        "revenue_eur": 82749318.27610315,
+        "cogs_eur": 67395970.23315188,
         "opex_eur": 4288232.85,
-        "gross_margin_eur": 15879476.96,
-        "ebitda_eur": 11591244.110000001,
-        "ebitda_margin_pct": 14.055782464662956,
-        "gross_margin_pct": 19.25578235470251
+        "gross_margin_eur": 15353348.042951271,
+        "ebitda_eur": 11065115.192951271,
+        "ebitda_margin_pct": 13.371850576498009,
+        "gross_margin_pct": 18.55404777079004
       },
       "by_month": [
         {
           "month": "2027-01",
           "volume_tonnes": 11833.300000000001,
-          "revenue_eur": 6363767.99,
-          "cogs_eur": 5138374.68,
+          "revenue_eur": 6385629.802328224,
+          "cogs_eur": 5200837.000937784,
           "opex_eur": 330915.96,
-          "gross_margin_eur": 1225393.3100000005,
-          "ebitda_eur": 894477.3500000006,
-          "ebitda_margin_pct": 14.055781911056133,
-          "gross_margin_pct": 19.25578229636245
+          "gross_margin_eur": 1184792.8013904402,
+          "ebitda_eur": 853876.8413904402,
+          "ebitda_margin_pct": 13.371850041778394,
+          "gross_margin_pct": 18.554047730083887
         },
         {
           "month": "2027-02",
           "volume_tonnes": 12188.4,
-          "revenue_eur": 6554596.8100000005,
-          "cogs_eur": 5292457.9,
+          "revenue_eur": 6577114.461466763,
+          "cogs_eur": 5356794.0470478935,
           "opex_eur": 340839.01,
-          "gross_margin_eur": 1262138.9100000001,
-          "ebitda_eur": 921299.9000000001,
-          "ebitda_margin_pct": 14.055782936860767,
-          "gross_margin_pct": 19.255782568874743
+          "gross_margin_eur": 1220320.4144188697,
+          "ebitda_eur": 879481.4044188696,
+          "ebitda_margin_pct": 13.371842767394021,
+          "gross_margin_pct": 18.554039489024277
         },
         {
           "month": "2027-03",
           "volume_tonnes": 12663.8,
-          "revenue_eur": 6810209.57,
-          "cogs_eur": 5498850.44,
+          "revenue_eur": 6833605.000029215,
+          "cogs_eur": 5565694.525797757,
           "opex_eur": 354130.88,
-          "gross_margin_eur": 1311359.13,
-          "ebitda_eur": 957228.2499999999,
-          "ebitda_margin_pct": 14.055782574103661,
-          "gross_margin_pct": 19.255782315080793
+          "gross_margin_eur": 1267910.4742314573,
+          "ebitda_eur": 913779.5942314573,
+          "ebitda_margin_pct": 13.371852693088798,
+          "gross_margin_pct": 18.554049791084452
         },
         {
           "month": "2027-04",
           "volume_tonnes": 13141.1,
-          "revenue_eur": 7067074.03,
-          "cogs_eur": 5706253.66,
+          "revenue_eur": 7091351.545375471,
+          "cogs_eur": 5775617.989644203,
           "opex_eur": 367487.87,
-          "gross_margin_eur": 1360820.37,
-          "ebitda_eur": 993332.5000000001,
-          "ebitda_margin_pct": 14.055781724986401,
-          "gross_margin_pct": 19.25578201421501
+          "gross_margin_eur": 1315733.5557312677,
+          "ebitda_eur": 948245.6857312677,
+          "ebitda_margin_pct": 13.371861198302224,
+          "gross_margin_pct": 18.554059086089243
         },
         {
           "month": "2027-05",
           "volume_tonnes": 13501.8,
-          "revenue_eur": 7260987.13,
-          "cogs_eur": 5862827.23,
+          "revenue_eur": 7285931.181444515,
+          "cogs_eur": 5934095.948412898,
           "opex_eur": 377571.33,
-          "gross_margin_eur": 1398159.8999999994,
-          "ebitda_eur": 1020588.5699999994,
-          "ebitda_margin_pct": 14.055782660504445,
-          "gross_margin_pct": 19.25578265003755
+          "gross_margin_eur": 1351835.2330316165,
+          "ebitda_eur": 974263.9030316165,
+          "ebitda_margin_pct": 13.371851569403075,
+          "gross_margin_pct": 18.55404888361299
         },
         {
           "month": "2027-06",
           "volume_tonnes": 13656.8,
-          "revenue_eur": 7344323.14,
-          "cogs_eur": 5930116.25,
+          "revenue_eur": 7369553.872683498,
+          "cogs_eur": 6002204.057667137,
           "opex_eur": 381904.79,
-          "gross_margin_eur": 1414206.8899999997,
-          "ebitda_eur": 1032302.0999999996,
-          "ebitda_margin_pct": 14.055782681697195,
-          "gross_margin_pct": 19.255782500877267
+          "gross_margin_eur": 1367349.815016361,
+          "ebitda_eur": 985445.0250163609,
+          "ebitda_margin_pct": 13.37184098306249,
+          "gross_margin_pct": 18.55403785139118
         },
         {
           "month": "2027-07",
           "volume_tonnes": 13572.4,
-          "revenue_eur": 7298917.64,
-          "cogs_eur": 5893453.95,
+          "revenue_eur": 7323992.733220013,
+          "cogs_eur": 5965097.073485752,
           "opex_eur": 379543.71,
-          "gross_margin_eur": 1405463.6899999995,
-          "ebitda_eur": 1025919.9799999995,
-          "ebitda_margin_pct": 14.05578238583878,
-          "gross_margin_pct": 19.255782286097965
+          "gross_margin_eur": 1358895.6597342612,
+          "ebitda_eur": 979351.9497342613,
+          "ebitda_margin_pct": 13.371831259363997,
+          "gross_margin_pct": 18.554027963061877
         },
         {
           "month": "2027-08",
           "volume_tonnes": 13278.8,
-          "revenue_eur": 7141102.47,
-          "cogs_eur": 5766027.35,
+          "revenue_eur": 7165634.925967964,
+          "cogs_eur": 5836120.081337042,
           "opex_eur": 371337.29,
-          "gross_margin_eur": 1375075.12,
-          "ebitda_eur": 1003737.8300000001,
-          "ebitda_margin_pct": 14.055782482000993,
-          "gross_margin_pct": 19.255781943708758
+          "gross_margin_eur": 1329514.8446309222,
+          "ebitda_eur": 958177.5546309222,
+          "ebitda_margin_pct": 13.371844428726426,
+          "gross_margin_pct": 18.55404103567732
         },
         {
           "month": "2027-09",
           "volume_tonnes": 12863.1,
-          "revenue_eur": 6917497.19,
-          "cogs_eur": 5585479.0,
+          "revenue_eur": 6941261.4803054985,
+          "cogs_eur": 5653376.9723014245,
           "opex_eur": 359709.83,
-          "gross_margin_eur": 1332018.1900000004,
-          "ebitda_eur": 972308.3600000003,
-          "ebitda_margin_pct": 14.055782507661565,
-          "gross_margin_pct": 19.255782162450004
+          "gross_margin_eur": 1287884.508004074,
+          "ebitda_eur": 928174.6780040739,
+          "ebitda_margin_pct": 13.371844305787818,
+          "gross_margin_pct": 18.554041101292608
         },
         {
           "month": "2027-10",
           "volume_tonnes": 12444.6,
-          "revenue_eur": 6692640.21,
-          "cogs_eur": 5403919.97,
+          "revenue_eur": 6715631.257540175,
+          "cogs_eur": 5469608.677257641,
           "opex_eur": 348017.27999999997,
-          "gross_margin_eur": 1288720.2400000002,
-          "ebitda_eur": 940702.9600000002,
-          "ebitda_margin_pct": 14.05578262812368,
-          "gross_margin_pct": 19.255782464959374
+          "gross_margin_eur": 1246022.5802825335,
+          "ebitda_eur": 898005.3002825335,
+          "ebitda_margin_pct": 13.371867302485843,
+          "gross_margin_pct": 18.55406487489206
         },
         {
           "month": "2027-11",
           "volume_tonnes": 12145.7,
-          "revenue_eur": 6531740.78,
-          "cogs_eur": 5274002.98,
+          "revenue_eur": 6554179.263676675,
+          "cogs_eur": 5338112.933361929,
           "opex_eur": 339650.52,
-          "gross_margin_eur": 1257737.7999999998,
-          "ebitda_eur": 918087.2799999998,
-          "ebitda_margin_pct": 14.055782538265394,
-          "gross_margin_pct": 19.255782529691874
+          "gross_margin_eur": 1216066.3303147461,
+          "ebitda_eur": 876415.8103147461,
+          "ebitda_margin_pct": 13.371862060164435,
+          "gross_margin_pct": 18.55405965250596
         },
         {
           "month": "2027-12",
           "volume_tonnes": 12055.3,
-          "revenue_eur": 6483161.13,
-          "cogs_eur": 5234777.72,
+          "revenue_eur": 6505432.752065148,
+          "cogs_eur": 5298410.925900424,
           "opex_eur": 337124.38,
-          "gross_margin_eur": 1248383.4100000001,
-          "ebitda_eur": 911259.0300000001,
-          "ebitda_margin_pct": 14.055782537676958,
-          "gross_margin_pct": 19.25578255680343
+          "gross_margin_eur": 1207021.8261647243,
+          "ebitda_eur": 869897.4461647243,
+          "ebitda_margin_pct": 13.37186132449952,
+          "gross_margin_pct": 18.554058925312162
         }
       ],
       "by_product_line": [
@@ -189,38 +191,40 @@
         {
           "product_line": "Poultry Feed",
           "volume_tonnes": 56495.4,
-          "revenue_eur": 28877045.91,
-          "cogs_eur": 23852515.69,
+          "revenue_eur": 29094643.325520705,
+          "cogs_eur": 24474222.591487728,
           "opex_eur": 1501606.35,
-          "gross_margin_eur": 5024530.219999999,
-          "ebitda_eur": 3522923.8699999987,
-          "ebitda_margin_pct": 12.199737746650966,
-          "gross_margin_pct": 17.39973761741337
+          "gross_margin_eur": 4620420.734032977,
+          "ebitda_eur": 3118814.3840329773,
+          "ebitda_margin_pct": 10.719548437623475,
+          "gross_margin_pct": 15.880657763486386
         },
         {
           "product_line": "Premium Pet Nutrition",
           "volume_tonnes": 8339.7,
-          "revenue_eur": 9610646.22,
-          "cogs_eur": 6646088.49,
+          "revenue_eur": 9654447.78693895,
+          "cogs_eur": 6771235.824111286,
           "opex_eur": 499753.62,
-          "gross_margin_eur": 2964557.7300000004,
-          "ebitda_eur": 2464804.1100000003,
-          "ebitda_margin_pct": 25.646601212628966,
-          "gross_margin_pct": 30.846601384937884
+          "gross_margin_eur": 2883211.962827665,
+          "ebitda_eur": 2383458.3428276647,
+          "ebitda_margin_pct": 24.68767137621412,
+          "gross_margin_pct": 29.864079504663405
         },
         {
           "product_line": "Swine Feed",
           "volume_tonnes": 41699.3,
-          "revenue_eur": 17505595.55,
-          "cogs_eur": 14627828.78,
+          "revenue_eur": 17527496.753643505,
+          "cogs_eur": 14690403.64755287,
           "opex_eur": 910290.95,
-          "gross_margin_eur": 2877766.7700000014,
-          "ebitda_eur": 1967475.8200000015,
-          "ebitda_margin_pct": 11.239125309278618,
-          "gross_margin_pct": 16.439125203026876
+          "gross_margin_eur": 2837093.106090635,
+          "ebitda_eur": 1926802.156090635,
+          "ebitda_margin_pct": 10.993025320002433,
+          "gross_margin_pct": 16.186527636930688
         }
       ],
-      "driver_impact_eur": {},
+      "driver_impact_eur": {
+        "chicken_meal": 809429.1031518858
+      },
       "opex_bridge": {
         "by_cost_centre": [
           {
@@ -279,13 +283,15 @@
       },
       "ebitda_bridge": {
         "baseline_ebitda_eur": 11591244.110000001,
-        "projected_ebitda_eur": 11591244.110000001,
+        "projected_ebitda_eur": 11065115.192951271,
         "volume_eur": 0.0,
         "price_eur": 0.0,
         "opex_eur": 0.0,
-        "drivers_eur": {},
-        "total_eur": 0.0,
-        "check_residual": 0.0
+        "drivers_eur": {
+          "chicken_meal": -526128.9170487259
+        },
+        "total_eur": -526128.9170487259,
+        "check_residual": -4.0745362639427185e-09
       },
       "driver_prices_used": {
         "chicken_meal": 581.9069080514531,
@@ -474,8 +480,8 @@
         }
       ],
       "cash_snapshot": {
-        "scenario_id": "9c306c84e26640af9651449c80dddc6e",
-        "scenario": "2027 budget (as locked)",
+        "scenario_id": "6e1dfb40291249a996931a4b44cefe30",
+        "scenario": "Chicken meal at forward mean, 35% pass-through",
         "basis": "locked",
         "year": "2027",
         "currency": "EUR",
@@ -496,133 +502,133 @@
         "opening_balances_implied": false,
         "opening_cash_source": "working_capital",
         "totals": {
-          "ebitda_eur": 11591244.11,
-          "working_capital_change_eur": -737457.16,
-          "tax_eur": 2781898.59,
+          "ebitda_eur": 11065115.19,
+          "working_capital_change_eur": -710160.72,
+          "tax_eur": 2655627.65,
           "capex_eur": 6020000.0,
-          "free_cash_flow_eur": 3526802.68,
-          "d_receivables_eur": -535600.73,
-          "d_inventory_eur": -388729.35,
-          "d_payables_eur": -186872.92,
+          "free_cash_flow_eur": 3099648.26,
+          "d_receivables_eur": -498348.78,
+          "d_inventory_eur": -316453.08,
+          "d_payables_eur": -104641.15,
           "opening_cash_eur": 3790363.88,
-          "closing_cash_eur": 7317166.56,
-          "cash_delta_eur": 3526802.68,
-          "cash_conversion_pct": 30.43,
+          "closing_cash_eur": 6890012.14,
+          "cash_delta_eur": 3099648.26,
+          "cash_conversion_pct": 28.01,
           "check_residual": 0.0
         },
         "months": [
           {
             "month": "2027-01",
-            "ebitda_eur": 894477.35,
-            "working_capital_change_eur": -922074.04,
-            "tax_eur": 214674.56,
+            "ebitda_eur": 853876.84,
+            "working_capital_change_eur": -895279.87,
+            "tax_eur": 204930.44,
             "capex_eur": 0.0,
-            "free_cash_flow_eur": 1601876.83,
-            "closing_cash_eur": 5392240.71
+            "free_cash_flow_eur": 1544226.27,
+            "closing_cash_eur": 5334590.15
           },
           {
             "month": "2027-02",
-            "ebitda_eur": 921299.9,
-            "working_capital_change_eur": 1381005.96,
-            "tax_eur": 221111.98,
+            "ebitda_eur": 879481.4,
+            "working_capital_change_eur": 1384766.69,
+            "tax_eur": 211075.54,
             "capex_eur": 1750000.0,
-            "free_cash_flow_eur": -2430818.04,
-            "closing_cash_eur": 2961422.67
+            "free_cash_flow_eur": -2466360.83,
+            "closing_cash_eur": 2868229.32
           },
           {
             "month": "2027-03",
-            "ebitda_eur": 957228.25,
-            "working_capital_change_eur": -690676.08,
-            "tax_eur": 229734.78,
+            "ebitda_eur": 913779.59,
+            "working_capital_change_eur": -692557.19,
+            "tax_eur": 219307.1,
             "capex_eur": 340000.0,
-            "free_cash_flow_eur": 1078169.55,
-            "closing_cash_eur": 4039592.22
+            "free_cash_flow_eur": 1047029.68,
+            "closing_cash_eur": 3915259.0
           },
           {
             "month": "2027-04",
-            "ebitda_eur": 993332.5,
-            "working_capital_change_eur": 761447.05,
-            "tax_eur": 238399.8,
+            "ebitda_eur": 948245.69,
+            "working_capital_change_eur": 763519.97,
+            "tax_eur": 227578.96,
             "capex_eur": 1450000.0,
-            "free_cash_flow_eur": -1456514.35,
-            "closing_cash_eur": 2583077.88
+            "free_cash_flow_eur": -1492853.25,
+            "closing_cash_eur": 2422405.75
           },
           {
             "month": "2027-05",
-            "ebitda_eur": 1020588.57,
-            "working_capital_change_eur": -64412.46,
-            "tax_eur": 244941.26,
+            "ebitda_eur": 974263.9,
+            "working_capital_change_eur": -64587.38,
+            "tax_eur": 233823.34,
             "capex_eur": 0.0,
-            "free_cash_flow_eur": 840059.78,
-            "closing_cash_eur": 3423137.66
+            "free_cash_flow_eur": 805027.94,
+            "closing_cash_eur": 3227433.69
           },
           {
             "month": "2027-06",
-            "ebitda_eur": 1032302.1,
-            "working_capital_change_eur": 507411.36,
-            "tax_eur": 247752.5,
+            "ebitda_eur": 985445.03,
+            "working_capital_change_eur": 508793.49,
+            "tax_eur": 236506.81,
             "capex_eur": 960000.0,
-            "free_cash_flow_eur": -682861.76,
-            "closing_cash_eur": 2740275.9
+            "free_cash_flow_eur": -719855.27,
+            "closing_cash_eur": 2507578.42
           },
           {
             "month": "2027-07",
-            "ebitda_eur": 1025919.98,
-            "working_capital_change_eur": -448759.64,
-            "tax_eur": 246220.8,
+            "ebitda_eur": 979351.95,
+            "working_capital_change_eur": -449981.17,
+            "tax_eur": 235044.47,
             "capex_eur": 0.0,
-            "free_cash_flow_eur": 1228458.83,
-            "closing_cash_eur": 3968734.73
+            "free_cash_flow_eur": 1194288.65,
+            "closing_cash_eur": 3701867.08
           },
           {
             "month": "2027-08",
-            "ebitda_eur": 1003737.83,
-            "working_capital_change_eur": -244028.63,
-            "tax_eur": 240897.08,
+            "ebitda_eur": 958177.55,
+            "working_capital_change_eur": -244693.7,
+            "tax_eur": 229962.61,
             "capex_eur": 0.0,
-            "free_cash_flow_eur": 1006869.38,
-            "closing_cash_eur": 4975604.11
+            "free_cash_flow_eur": 972908.64,
+            "closing_cash_eur": 4674775.72
           },
           {
             "month": "2027-09",
-            "ebitda_eur": 972308.36,
-            "working_capital_change_eur": 10789.98,
-            "tax_eur": 233354.01,
+            "ebitda_eur": 928174.68,
+            "working_capital_change_eur": 10819.37,
+            "tax_eur": 222761.92,
             "capex_eur": 820000.0,
-            "free_cash_flow_eur": -91835.63,
-            "closing_cash_eur": 4883768.49
+            "free_cash_flow_eur": -125406.61,
+            "closing_cash_eur": 4549369.11
           },
           {
             "month": "2027-10",
-            "ebitda_eur": 940702.96,
-            "working_capital_change_eur": -704244.42,
-            "tax_eur": 225768.71,
+            "ebitda_eur": 898005.3,
+            "working_capital_change_eur": -706162.98,
+            "tax_eur": 215521.27,
             "capex_eur": 0.0,
-            "free_cash_flow_eur": 1419178.67,
-            "closing_cash_eur": 6302947.15
+            "free_cash_flow_eur": 1388647.01,
+            "closing_cash_eur": 5938016.11
           },
           {
             "month": "2027-11",
-            "ebitda_eur": 918087.28,
-            "working_capital_change_eur": 87868.56,
-            "tax_eur": 220340.95,
+            "ebitda_eur": 876415.81,
+            "working_capital_change_eur": 88108.02,
+            "tax_eur": 210339.79,
             "capex_eur": 360000.0,
-            "free_cash_flow_eur": 249877.78,
-            "closing_cash_eur": 6552824.93
+            "free_cash_flow_eur": 217967.99,
+            "closing_cash_eur": 6155984.11
           },
           {
             "month": "2027-12",
-            "ebitda_eur": 911259.03,
-            "working_capital_change_eur": -411784.77,
-            "tax_eur": 218702.17,
+            "ebitda_eur": 869897.45,
+            "working_capital_change_eur": -412905.98,
+            "tax_eur": 208775.39,
             "capex_eur": 340000.0,
-            "free_cash_flow_eur": 764341.64,
-            "closing_cash_eur": 7317166.56
+            "free_cash_flow_eur": 734028.04,
+            "closing_cash_eur": 6890012.14
           }
         ],
         "trough": {
           "month": "2027-04",
-          "closing_cash_eur": 2583077.8792223968
+          "closing_cash_eur": 2422405.751709859
         },
         "min_cash_eur": 3000000.0,
         "breaches_minimum": true,
@@ -706,27 +712,27 @@
         "bridge": [
           {
             "label": "EBITDA",
-            "value": 11591244.11,
+            "value": 11065115.19,
             "kind": "absolute"
           },
           {
             "label": "Receivables (DSO)",
-            "value": 535600.73,
+            "value": 498348.78,
             "kind": "delta"
           },
           {
             "label": "Inventory (DIO)",
-            "value": 388729.35,
+            "value": 316453.08,
             "kind": "delta"
           },
           {
             "label": "Payables (DPO)",
-            "value": -186872.92,
+            "value": -104641.15,
             "kind": "delta"
           },
           {
             "label": "Cash tax",
-            "value": -2781898.59,
+            "value": -2655627.65,
             "kind": "delta"
           },
           {
@@ -736,7 +742,7 @@
           },
           {
             "label": "Free cash flow",
-            "value": 3526802.68,
+            "value": 3099648.26,
             "kind": "absolute"
           }
         ],
@@ -753,12 +759,14 @@
         "source_file": "working_capital.parquet"
       },
       "locked_at": "2026-08-04T12:19:40+00:00",
-      "created_at": 1785848695.618796,
+      "created_at": 1785868854.832233,
       "created_by": "NordFeed Group",
       "submitted_by": null,
       "submitted_at": null,
-      "approved_by": "NordFeed Group",
-      "approved_at": 1785848700.4721742
+      "approved_by": null,
+      "approved_at": null,
+      "revoked_by": null,
+      "revoked_at": null
     }
   ]
 }

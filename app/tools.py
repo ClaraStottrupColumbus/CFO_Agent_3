@@ -1743,7 +1743,10 @@ def budget_outlook() -> dict:
             "current_amount": round(r["current_amount"], 2),
             "next_amount": round(r["next_amount"], 2),
             "delta": round(r["delta"], 2),
-            "expected_change_pct": round(r["expected_change_pct"], 3),
+            # None, never 0, when the baseline carries no such line at all —
+            # "this is new" and "this is flat" are different answers.
+            "expected_change_pct": (None if r["expected_change_pct"] is None
+                                    else round(r["expected_change_pct"], 3)),
             "share_of_cost_pct": round(r["share_of_cost_pct"], 2),
             "share_of_movement_pct": round(r["impact_share"] * 100.0, 2),
             "assumption": r["assumption"] or r["default_note"],
@@ -1752,7 +1755,10 @@ def budget_outlook() -> dict:
                 "large line moving a little outranks a small one moving a lot. A line with a "
                 "driver_id is priced off the watchlist and its locked value and source are in "
                 "driver_status; a line without one was entered by hand. These are the CFO's "
-                "own planning figures, not a forecast.",
+                "own planning figures, not a forecast. This is the CONFIGURED budget — the "
+                "closed year against the plan year. The Budget page can also compare any two "
+                "budgets or scenarios side by side, and when it does the question names both, "
+                "so read the question's own framing rather than assuming this pair.",
         "source_file": "budget_plan.json",
     }
 

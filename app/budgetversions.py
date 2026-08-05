@@ -143,6 +143,11 @@ def summary(version: dict) -> dict:
         "submitted_by": version.get("submitted_by"),
         "approved_by": version.get("approved_by"),
         "approved_at": version.get("approved_at"),
+        # A withdrawn approval is a fact about this version, not an absence of one,
+        # so the rail can say "approval revoked by X" rather than silently showing
+        # a draft that was briefly the budget.
+        "revoked_by": version.get("revoked_by"),
+        "revoked_at": version.get("revoked_at"),
         "locked_at": version.get("locked_at"),
         "assumption_count": sum(len(v) for v in spec.values()),
         "driver_count": len(version.get("drivers_snapshot") or []),
@@ -217,6 +222,8 @@ def create_version(scenario: dict, *, label: str | None = None, note: str | None
             "submitted_at": None,
             "approved_by": None,
             "approved_at": None,
+            "revoked_by": None,
+            "revoked_at": None,
         }
         items.append(record)
         _save_all(items)
@@ -271,18 +278,76 @@ def approve(version_id: str, by: str, note: str | None = None) -> dict:
     return _transition(version_id, "approved", by=by, note=note)
 
 
+def revoke_approval(version_id: str, by: str | None = None,
+                    note: str | None = None) -> dict:
+    """Withdraw an approval — the undo for approving the wrong version.
+
+    It existed as a gap rather than a decision: `approve` refused a second
+    approval of the same version, `submit` refused an approved one, and
+    `delete_version` refused it too, so a mis-click left the budget frozen on a
+    version nobody meant to commit to with no way out but hand-editing the JSON.
+
+    Three things make this safe rather than an escape hatch that erases history:
+
+      * **The record survives.** The approval is not deleted, it is WITHDRAWN:
+        `approved_by` / `approved_at` move to `revoked_by` / `revoked_at`, so the
+        trail says an approval happened and was taken back, which is a different
+        fact from never having been approved. Deletion is a separate, deliberate
+        second step — see `delete_version`.
+      * **It returns to the state it came from**, `submitted` if it had been
+        submitted and `draft` otherwise, rather than resetting the version.
+        Revoking an approval is not the same as un-doing the whole review.
+      * **A superseded predecessor is NOT silently restored.** Approving v2
+        supersedes v1; revoking v2 therefore leaves NOTHING approved rather than
+        promoting v1 back, because "the budget is now v1 again" is a second
+        decision and this function was only asked to make the first one. The
+        caller re-approves whichever version should be running.
+
+    With nothing approved, `approved_freeze()` is None again and the scenario the
+    version was frozen from becomes editable — which is the point of the undo.
+    """
+    now = time.time()
+    with _lock:
+        items = _load_all()
+        target = next((v for v in items if v.get("id") == version_id), None)
+        if target is None:
+            raise KeyError(version_id)
+        if (target.get("status") or "draft") != "approved":
+            raise ValueError(
+                f"Only an approved version can have its approval revoked; this one is "
+                f"'{target.get('status') or 'draft'}'. A draft or submitted version "
+                f"freezes nothing and can be discarded outright.")
+        target["revoked_by"] = (by or "").strip() or target.get("approved_by")
+        target["revoked_at"] = now
+        target["approved_by"] = None
+        target["approved_at"] = None
+        target["status"] = "submitted" if target.get("submitted_at") else "draft"
+        if note:
+            target["note"] = note
+        _save_all(items)
+        return target
+
+
 def delete_version(version_id: str) -> bool:
-    """Discard a version. An approved one raises instead: what the company was
-    running on is history, and history that can be deleted is not an audit
-    trail. Approve a later version to supersede it."""
+    """Discard a version. An approved one raises instead: what the company is
+    running on is history, and history that can be deleted in one click is not an
+    audit trail.
+
+    The way out of a mistaken approval is `revoke_approval` first — that records
+    the withdrawal and leaves this reachable — or approving a later version to
+    supersede this one. The error enumerates both, because a refusal that does not
+    say what to do instead is the reason someone reaches for the JSON file.
+    """
     with _lock:
         items = _load_all()
         target = next((v for v in items if v.get("id") == version_id), None)
         if target is None:
             return False
         if target.get("status") == "approved":
-            raise ValueError("An approved version cannot be deleted. Approve a "
-                             "later version to supersede it.")
+            raise ValueError("An approved version cannot be deleted while it is the "
+                             "budget the company is running on. Revoke the approval "
+                             "first and then discard it, or approve a later version "
+                             "to supersede it.")
         items.remove(target)
         _save_all(items)
         return True

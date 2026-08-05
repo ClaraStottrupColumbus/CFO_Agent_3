@@ -43,6 +43,17 @@
     cash: null,          // the whole GET /api/cash payload, or null when gated
     cashProposed: true,  // include the capex still marked proposed
     cashBarTitles: [],   // cash-bar titles, applied as properties after render
+
+    // The comparison. `cmp` is the whole GET /api/budgetplan/comparison payload;
+    // null means the route is gated or unreachable, and the page then renders the
+    // persisted plan exactly as it did before this feature existed.
+    cmp: null,
+    cmpLeft: null,       // the key each select is showing, held outside the
+    cmpRight: null,      // <select> so a repaint can never read state off an input
+    cmpOptionsKey: "",   // join of option keys — the selects are rebuilt only when
+                         // this moves, so a repaint cannot steal focus
+    cmpBusy: false,
+    cmpError: "",
   };
 
   const $ = id => document.getElementById(id);
@@ -67,7 +78,12 @@
     return sign + money(Math.abs(Number(value) || 0), currency, opts);
   }
 
+  // null/undefined is UNDEFINED, not zero. derive() sends null when the baseline
+  // budget carries no such line at all, and "+0.0%" next to a delta of millions
+  // would be a lie — the same rule as a driver's forward_12m and the cash
+  // conversion ratio. Callers that need a word rather than a figure get one.
   function pct(value, digits = 1) {
+    if (value === null || value === undefined) return "new";
     const v = Number(value) || 0;
     return `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(digits)}%`;
   }
@@ -122,8 +138,31 @@
   }
 
   function plan() { return (state.data && state.data.plan) || {}; }
-  function derived() { return (state.data && state.data.derived) || null; }
   function currency() { return (plan().company || {}).currency || "EUR"; }
+
+  // Is a live comparison driving the page? Everything below reads the numbers
+  // through derived(), so making THIS function pair-aware is what makes the hero,
+  // the cost mix, the ranked bands, the drawer and the ask rail all follow the two
+  // dropdowns without any of them learning that a comparison exists.
+  function cmpOn() { return !!(state.cmp && state.cmp.available && state.cmp.derived); }
+  function derived() {
+    if (cmpOn()) return state.cmp.derived;
+    return (state.data && state.data.derived) || null;
+  }
+  // The two selected budgets, or null when the page is on its persisted plan. In
+  // that case the hero falls back to the plan's own years, which is what it has
+  // always shown.
+  function leftSide() { return cmpOn() ? state.cmp.left : null; }
+  function rightSide() { return cmpOn() ? state.cmp.right : null; }
+  function leftName() {
+    const s = leftSide();
+    return s ? s.short_label : year((derived() || {}).totals ? derived().totals.current_year : "");
+  }
+  function rightName() {
+    const s = rightSide();
+    return s ? s.short_label : year((derived() || {}).totals ? derived().totals.budget_year : "");
+  }
+  function cmpOptions() { return (state.cmp && state.cmp.options) || []; }
 
   // Provenance for a materialised line, keyed by driver_id. Empty (never
   // absent) when there is no watchlist, so callers need no guard.
@@ -137,15 +176,48 @@
   // setup. A 409 therefore means "not yet", not "broken" — state.cash stays null
   // and the section simply does not render, the same way BOM mode does not offer
   // itself until the datasets are there. The mode follows the data.
-  async function loadCash() {
+  async function loadCash(scenarioId) {
     try {
-      const resp = await fetch("/api/cash?include_proposed_capex="
-                               + (state.cashProposed ? "true" : "false"));
+      const q = new URLSearchParams({
+        include_proposed_capex: state.cashProposed ? "true" : "false",
+      });
+      // The cash profile follows the RIGHT-hand selection, so the figure on this
+      // page and the figure in an answer describe the same budget. Absent, the
+      // route falls back to the active scenario, which is what it did before.
+      if (scenarioId) q.set("scenario_id", scenarioId);
+      const resp = await fetch(`/api/cash?${q}`);
       state.cash = resp.ok ? await resp.json() : null;
     } catch {
       state.cash = null;
     }
     return state.cash;
+  }
+
+  // The comparison lives behind the same gate as the cash strip and for the same
+  // reason: it reads the datasets and the scenario store. A 409 (or any failure)
+  // leaves state.cmp null and the page renders the persisted plan — today's page,
+  // exactly — rather than an error the CFO cannot act on.
+  async function loadComparison(left, right) {
+    const q = new URLSearchParams();
+    if (left) q.set("left", left);
+    if (right) q.set("right", right);
+    try {
+      const resp = await fetch(`/api/budgetplan/comparison${q.toString() ? `?${q}` : ""}`);
+      if (!resp.ok) { state.cmp = null; return null; }
+      const data = await resp.json();
+      state.cmp = data;
+      // The options travel on every response, including the failures, so the
+      // selects recover from a stale key rather than holding a dead one.
+      if (data.defaults) {
+        state.cmpLeft = (data.left && data.left.key) || data.defaults.left;
+        state.cmpRight = (data.right && data.right.key) || data.defaults.right;
+      }
+      state.cmpError = data.available ? "" : (data.error || "");
+      return data;
+    } catch {
+      state.cmp = null;
+      return null;
+    }
   }
   // Every "ask" leaves this page for the main agent. Guarded on setup because
   // the sessions API is gated: offering a button that 409s is worse than saying
@@ -164,6 +236,12 @@
       location.replace("#/budget/config");
       return;
     }
+    // Per VISIT, not once per session: a scenario built or activated in another
+    // tab, or a profile finished there, self-heals on the next navigation. In
+    // simple mode there is nothing to compare, so the request is never made and
+    // the selectors never render — the mode follows the data, as everywhere else
+    // on this page.
+    if (bomAvailable()) await loadComparison(state.cmpLeft, state.cmpRight);
     renderOverview();
   }
 
@@ -198,7 +276,7 @@
     state.mixLabels = segs.map(s => s.label);
 
     return `<div class="bo-mix">
-      <span class="bo-mix-label">Cost base ${escapeHtml(year(t.budget_year))} · what it's made of</span>
+      <span class="bo-mix-label">Cost base · ${escapeHtml(rightName())} · what it's made of</span>
       <span class="bo-mix-bar">${segs.map(s =>
         `<span class="bo-mix-seg" data-tone="${s.tone}" style="width:${s.share.toFixed(2)}%"></span>`
       ).join("")}</span>
@@ -226,98 +304,44 @@
       return;
     }
 
-    const t = d.totals;
-    const company = plan().company || {};
-    const industry = (state.data.industries || [])
-      .find(i => i.id === company.industry);
-
-    const by = escapeHtml(year(t.budget_year));
-
+    // The SHELL, written once per visit. Everything a pair change repaints lives
+    // inside #bo-overview-body; the two selects and the composer are siblings of
+    // it, never children. That is the same guarantee #bo-cash-form-host gives the
+    // cash form and #scenario-edit gives the assumption form — a repaint that
+    // could reach a control would wipe what the CFO is doing with it. Third
+    // instance of one rule.
     view.innerHTML = `
       <div class="bo-shell">
         <div class="bo-main">
-          <section class="bo-hero">
-            <div class="bo-eyebrow">
-              <span>${escapeHtml(company.name || "")}</span>
-              <span class="bo-dot">/</span>
-              <span>${escapeHtml(industry ? industry.label : "")}</span>
-              <span class="bo-dot">/</span>
-              <span>${by} budget</span>
-            </div>
+          <section class="bo-compare hidden" id="bo-compare"></section>
 
-            <div class="bo-metrics">
-              <div class="bo-metric">
-                <span class="bo-metric-label">Revenue ${by}</span>
-                <span class="bo-metric-value">${escapeHtml(money(t.revenue_next, t.currency))}</span>
-                ${badge(t.revenue_change_pct)}
-                <span class="bo-meter" role="presentation">
-                  <span class="bo-meter-fill" style="width:${meterPct(
-                    num(t.revenue_next) ? num(t.revenue_current) / num(t.revenue_next) * 100 : 0)}%"></span>
-                </span>
-                <span class="bo-metric-foot">from ${escapeHtml(money(t.revenue_current, t.currency))} in ${escapeHtml(year(t.current_year))}</span>
+          <div id="bo-overview-body">
+            <div id="bo-hero-host"></div>
+
+            <!-- The read, on the cream rather than the gradient: it is prose, and
+                 prose is easier to trust at body size on a light surface than as
+                 a display-serif headline in white. Both ids are load-bearing —
+                 renderNarrative() finds the paragraph and the button by id. -->
+            <section class="bo-readout">
+              <div class="bo-readout-head">
+                <span class="bo-readout-label">The read</span>
+                <span class="bo-read-tag hidden" id="bo-read-tag">computed</span>
+                <button class="bo-regen" id="bo-regen" type="button">Rewrite this read</button>
               </div>
+              <p class="bo-read is-loading" id="bo-read">Reading the numbers…</p>
+            </section>
 
-              <div class="bo-metric">
-                <span class="bo-metric-label">Cost base ${by}</span>
-                <span class="bo-metric-value">${escapeHtml(money(t.cost_next, t.currency))}</span>
-                ${badge(t.cost_change_pct)}
-                <span class="bo-meter" role="presentation">
-                  <span class="bo-meter-fill" style="width:${meterPct(
-                    num(t.revenue_next) ? num(t.cost_next) / num(t.revenue_next) * 100 : 0)}%"></span>
-                </span>
-                <span class="bo-metric-foot">${escapeHtml(signedMoney(t.cost_delta, t.currency))} · ${
-                  meterPct(num(t.revenue_next) ? num(t.cost_next) / num(t.revenue_next) * 100 : 0).toFixed(0)
-                }% of revenue</span>
-              </div>
+            <!-- Cash. Empty until renderCash() decides there is something to show:
+                 the route is gated, so on a fresh install this stays an empty
+                 section rather than an error the CFO cannot act on. -->
+            <section class="bo-cash hidden" id="bo-cash">
+              <div class="bo-cash-body" id="bo-cash-body"></div>
+              <div id="bo-cash-form-host"></div>
+            </section>
 
-              <div class="bo-metric">
-                <span class="bo-metric-label">Operating margin</span>
-                <span class="bo-metric-value">${num(t.margin_pct_next).toFixed(1)}%</span>
-                ${badge(t.margin_delta_pp, "pp")}
-                <span class="bo-meter" role="presentation">
-                  <span class="bo-meter-fill" style="width:${meterPct(t.margin_pct_next)}%"></span>
-                  <span class="bo-meter-tick" style="left:${meterPct(t.margin_pct_current)}%"
-                        title="${num(t.margin_pct_current).toFixed(1)}% today"></span>
-                </span>
-                <span class="bo-metric-foot">was ${num(t.margin_pct_current).toFixed(1)}% in ${escapeHtml(year(t.current_year))}</span>
-              </div>
-            </div>
-
-            ${costMix(d, t)}
-          </section>
-
-          <!-- The model's read, moved off the gradient and onto the cream: it is
-               prose, and prose is easier to trust at body size on a light
-               surface than as a display-serif headline in white. Both ids are
-               load-bearing — renderNarrative() and wireOverview() find the
-               paragraph and the button by id and are otherwise untouched. -->
-          <section class="bo-readout">
-            <div class="bo-readout-head">
-              <span class="bo-readout-label">The read</span>
-              <button class="bo-regen" id="bo-regen" type="button">Rewrite this read</button>
-            </div>
-            <p class="bo-read is-loading" id="bo-read">Reading the numbers…</p>
-          </section>
-
-          <!-- Cash. Empty until renderCash() decides there is something to show:
-               the route is gated, so on a fresh install this stays an empty
-               section rather than an error the CFO cannot act on. -->
-          <section class="bo-cash hidden" id="bo-cash">
-            <div class="bo-cash-body" id="bo-cash-body"></div>
-            <div id="bo-cash-form-host"></div>
-          </section>
-
-          <div class="bo-section-head">
-            <h2>What moves the ${escapeHtml(String(t.budget_year))} budget</h2>
-            <p class="bo-section-note">Ranked by materiality — share of the cost base × expected change</p>
-          </div>
-          <div class="bo-rows" id="bo-rows"></div>
-
-          <div class="bo-foot">
-            <p>${escapeHtml(String(t.included_count))} variable${t.included_count === 1 ? "" : "s"} included${
-              t.excluded_count ? `, ${escapeHtml(String(t.excluded_count))} excluded` : ""
-            }. These are your own planning assumptions, not a forecast.
-            <a href="#/budget/config">Edit configuration</a></p>
+            <div class="bo-section-head" id="bo-section-head"></div>
+            <div class="bo-rows" id="bo-rows"></div>
+            <div class="bo-foot" id="bo-foot"></div>
           </div>
         </div>
 
@@ -341,11 +365,300 @@
              aria-labelledby="bo-drawer-title" tabindex="-1"></aside>
     `;
 
+    renderCompareBar();
+    renderBody();
+    // Wired exactly ONCE per visit, so the document-level Escape handler, the
+    // composer submit and the scrim listener are never double-bound by a repaint.
+    wireOverview();
+  }
+
+  // Everything the two dropdowns move. Called on the first render and on every
+  // pair change; never touches #bo-compare or the composer.
+  function renderBody() {
+    renderHero();
+    renderSectionHead();
     renderRows();
+    renderFoot();
     renderNarrative();
     renderCash();
     renderAskRail();
-    wireOverview();
+  }
+
+  function renderHero() {
+    const d = derived();
+    const host = $("bo-hero-host");
+    if (!d || !host) return;
+    const t = d.totals;
+    const company = plan().company || {};
+    const industry = (state.data.industries || []).find(i => i.id === company.industry);
+    const rightLbl = escapeHtml(rightName());
+    const leftLbl = escapeHtml(leftName());
+    const costShare = meterPct(num(t.revenue_next)
+      ? num(t.cost_next) / num(t.revenue_next) * 100 : 0);
+
+    host.innerHTML = `
+      <section class="bo-hero">
+        <div class="bo-eyebrow">
+          <span>${escapeHtml(company.name || "")}</span>
+          <span class="bo-dot">/</span>
+          <span>${escapeHtml(industry ? industry.label : "")}</span>
+          <span class="bo-dot">/</span>
+          <span>${rightLbl}${cmpOn() ? ` vs ${leftLbl}` : " budget"}</span>
+        </div>
+
+        <div class="bo-metrics">
+          <div class="bo-metric">
+            <span class="bo-metric-label">Revenue · ${rightLbl}</span>
+            <span class="bo-metric-value">${escapeHtml(money(t.revenue_next, t.currency))}</span>
+            ${badge(t.revenue_change_pct)}
+            <span class="bo-meter" role="presentation">
+              <span class="bo-meter-fill" style="width:${meterPct(
+                num(t.revenue_next) ? num(t.revenue_current) / num(t.revenue_next) * 100 : 0)}%"></span>
+            </span>
+            <span class="bo-metric-foot">${escapeHtml(signedMoney(t.revenue_delta, t.currency))}
+              on ${escapeHtml(money(t.revenue_current, t.currency))} · ${leftLbl}</span>
+          </div>
+
+          <div class="bo-metric">
+            <span class="bo-metric-label">Cost base · ${rightLbl}</span>
+            <span class="bo-metric-value">${escapeHtml(money(t.cost_next, t.currency))}</span>
+            ${badge(t.cost_change_pct)}
+            <span class="bo-meter" role="presentation">
+              <span class="bo-meter-fill" style="width:${costShare}%"></span>
+            </span>
+            <span class="bo-metric-foot">${escapeHtml(signedMoney(t.cost_delta, t.currency))} on
+              ${escapeHtml(money(t.cost_current, t.currency))} · ${costShare.toFixed(0)}% of revenue</span>
+          </div>
+
+          <div class="bo-metric">
+            <span class="bo-metric-label">Operating margin</span>
+            <span class="bo-metric-value">${num(t.margin_pct_next).toFixed(1)}%</span>
+            ${badge(t.margin_delta_pp, "pp")}
+            <span class="bo-meter" role="presentation">
+              <span class="bo-meter-fill" style="width:${meterPct(t.margin_pct_next)}%"></span>
+              <span class="bo-meter-tick" style="left:${meterPct(t.margin_pct_current)}%"></span>
+            </span>
+            <span class="bo-metric-foot">${escapeHtml(signedMoney(t.margin_delta, t.currency))} ·
+              was ${num(t.margin_pct_current).toFixed(1)}% on ${leftLbl}</span>
+          </div>
+        </div>
+
+        ${costMix(d, t)}
+      </section>`;
+
+    // Segment labels are user text and title="" is an ATTRIBUTE, which escapeHtml
+    // does not make safe. They are assigned as properties here rather than
+    // interpolated — and here rather than in wireOverview(), because wireOverview
+    // runs once while this runs on every pair change: leaving the assignment there
+    // would silently drop every tooltip after the first dropdown use.
+    host.querySelectorAll(".bo-mix-seg").forEach((el, i) => {
+      el.title = (state.mixLabels || [])[i] || "";
+    });
+    const tick = host.querySelector(".bo-meter-tick");
+    if (tick) tick.title = `${num(t.margin_pct_current).toFixed(1)}% on ${leftName()}`;
+  }
+
+  function renderSectionHead() {
+    const host = $("bo-section-head");
+    const d = derived();
+    if (!host || !d) return;
+    const t = d.totals;
+    host.innerHTML = cmpOn()
+      ? `<h2>What separates ${escapeHtml(rightName())} from ${escapeHtml(leftName())}</h2>
+         <p class="bo-section-note">Ranked by materiality — share of the
+           ${escapeHtml(leftName())} cost base × the difference</p>`
+      : `<h2>What moves the ${escapeHtml(String(t.budget_year))} budget</h2>
+         <p class="bo-section-note">Ranked by materiality — share of the cost base ×
+           expected change</p>`;
+  }
+
+  function renderFoot() {
+    const host = $("bo-foot");
+    const d = derived();
+    if (!host || !d) return;
+    const t = d.totals;
+    host.innerHTML = cmpOn()
+      ? `<p>${escapeHtml(String(t.included_count))} cost line${
+          t.included_count === 1 ? "" : "s"} compared. Percentages are the difference
+          between the two budgets, not a forecast.
+          <a href="#/budget/config">Edit configuration</a></p>`
+      : `<p>${escapeHtml(String(t.included_count))} variable${
+          t.included_count === 1 ? "" : "s"} included${
+          t.excluded_count ? `, ${escapeHtml(String(t.excluded_count))} excluded` : ""
+        }. These are your own planning assumptions, not a forecast.
+        <a href="#/budget/config">Edit configuration</a></p>`;
+  }
+
+  // ============================================================
+  // The compare bar — two budgets, above the hero
+  // ============================================================
+  //
+  // Built ONCE and never repainted by a pair change, so a select cannot lose
+  // focus or its open dropdown mid-interaction. `syncCompareBar` updates the
+  // values, the hints and the caveats in place, and rebuilds the option lists only
+  // when the set of available budgets actually changes.
+  //
+  // The options are built IMPERATIVELY — createElement + .textContent + .label —
+  // rather than by interpolating into an innerHTML string. A scenario name is
+  // free text the model wrote, and an <optgroup label="…"> is an attribute, which
+  // escapeHtml does not make safe. Building the nodes removes the question instead
+  // of answering it, the same posture wireProvenance takes with a source URL.
+
+  function renderCompareBar() {
+    const host = $("bo-compare");
+    if (!host) return;
+    // Simple mode, or the route is gated: no selectors at all, and the page below
+    // is the persisted plan exactly as it has always rendered.
+    if (!bomAvailable() || !state.cmp || !cmpOptions().length) {
+      host.classList.add("hidden");
+      host.innerHTML = "";
+      return;
+    }
+    host.classList.remove("hidden");
+    host.innerHTML = `
+      <div class="bo-cmp-field">
+        <label class="bo-cmp-label" for="bo-cmp-left">Baseline budget</label>
+        <select id="bo-cmp-left"></select>
+        <span class="bo-cmp-hint" id="bo-cmp-left-hint"></span>
+      </div>
+      <span class="bo-cmp-vs" aria-hidden="true">vs</span>
+      <div class="bo-cmp-field">
+        <label class="bo-cmp-label" for="bo-cmp-right">Comparison budget</label>
+        <select id="bo-cmp-right"></select>
+        <span class="bo-cmp-hint" id="bo-cmp-right-hint"></span>
+      </div>
+      <p class="bo-cmp-status" id="bo-cmp-status" aria-live="polite"></p>
+      <p class="bo-cmp-error hidden" id="bo-cmp-error" role="alert"></p>
+      <ul class="bo-cmp-warnings" id="bo-cmp-warnings"></ul>`;
+
+    ["left", "right"].forEach(side => {
+      $(`bo-cmp-${side}`).addEventListener("change", e => onPairChange(side, e.target.value));
+    });
+    state.cmpOptionsKey = "";      // force the first option build
+    syncCompareBar();
+  }
+
+  function fillSelect(sel, selected) {
+    sel.innerHTML = "";
+    let group = null;
+    let groupName = null;
+    cmpOptions().forEach(o => {
+      if (o.group !== groupName) {
+        groupName = o.group;
+        group = document.createElement("optgroup");
+        group.label = groupName || "";       // a property, never an attribute
+        sel.appendChild(group);
+      }
+      const opt = document.createElement("option");
+      opt.value = o.key;
+      opt.textContent = optionLabel(o);
+      (group || sel).appendChild(opt);
+    });
+    // A key the options no longer carry keeps its own marked entry rather than
+    // silently snapping to another budget — the CFO's selection is not ours to
+    // change. Same rule as scRefreshKeys' "no longer in the datasets" option.
+    if (selected && !cmpOptions().some(o => o.key === selected)) {
+      const opt = document.createElement("option");
+      opt.value = selected;
+      opt.textContent = `${selected} (no longer available)`;
+      sel.appendChild(opt);
+    }
+    sel.value = selected || "";
+  }
+
+  // Two stored scenarios share the name "2027 budget (as locked)", so the name
+  // alone cannot identify one in a dropdown. The year and the basis carry always;
+  // the edit time is appended ONLY where a name is genuinely ambiguous, because
+  // fmtWhen renders a same-day timestamp as a bare clock time and "· 15.21" on
+  // every row reads as a number nobody can interpret.
+  function optionLabel(o) {
+    if (o.kind !== "scenario") return o.label;
+    const twins = cmpOptions().filter(x => x.kind === "scenario" && x.label === o.label);
+    const bits = [o.year, o.basis];
+    if (o.active) bits.push("active");
+    if (twins.length > 1 && o.updated_at) bits.push(`edited ${fmtWhen(o.updated_at)}`);
+    return `${o.label} · ${bits.filter(Boolean).join(" · ")}`;
+  }
+
+  function syncCompareBar() {
+    const host = $("bo-compare");
+    if (!host || host.classList.contains("hidden")) return;
+    const key = cmpOptions().map(o => o.key).join("|");
+    const rebuild = key !== state.cmpOptionsKey;
+    state.cmpOptionsKey = key;
+
+    [["left", state.cmpLeft], ["right", state.cmpRight]].forEach(([side, value]) => {
+      const sel = $(`bo-cmp-${side}`);
+      if (!sel) return;
+      if (rebuild) fillSelect(sel, value);
+      else sel.value = value || "";
+      sel.disabled = state.cmpBusy;
+      const snapshot = side === "left" ? leftSide() : rightSide();
+      $(`bo-cmp-${side}-hint`).textContent = snapshot
+        ? [snapshot.basis ? `${snapshot.basis} basis` : "",
+           snapshot.months && snapshot.months.length
+             ? `${snapshot.months.length} months` : ""].filter(Boolean).join(" · ")
+        : "";
+    });
+
+    const status = $("bo-cmp-status");
+    if (status) {
+      status.textContent = state.cmpBusy ? "Recomputing…"
+        : (state.cmp && state.cmp.fallback ? state.cmp.fallback.reason : "");
+    }
+    const err = $("bo-cmp-error");
+    if (err) {
+      err.textContent = state.cmpError || "";
+      err.classList.toggle("hidden", !state.cmpError);
+    }
+    const warn = $("bo-cmp-warnings");
+    if (warn) {
+      const notes = (state.cmp && state.cmp.notes) || [];
+      warn.innerHTML = "";
+      notes.forEach(n => {
+        const li = document.createElement("li");
+        li.textContent = n;               // server prose, into a text node
+        warn.appendChild(li);
+      });
+    }
+  }
+
+  async function onPairChange(side, key) {
+    const previous = { left: state.cmpLeft, right: state.cmpRight };
+    const next = { ...previous, [side]: key };
+    setCompareBusy(true);
+    const data = await loadComparison(next.left, next.right);
+    setCompareBusy(false);
+    if (!data || !data.available) {
+      // Revert to the pair that worked and say why, rather than leaving the page
+      // showing one budget's numbers under another budget's name.
+      state.cmpLeft = previous.left;
+      state.cmpRight = previous.right;
+      state.cmpError = (data && data.error)
+        || "Could not load that comparison. The figures below are unchanged.";
+      syncCompareBar();
+      return;
+    }
+    // The open drawer describes a row whose figures just changed underneath it.
+    closeDrawer({ silent: true });
+    state.showAll = false;
+    renderBody();
+    syncCompareBar();
+  }
+
+  function setCompareBusy(busy) {
+    state.cmpBusy = busy;
+    if (busy) state.cmpError = "";
+    const body = $("bo-overview-body");
+    // The previous numbers DIM rather than disappear: a page that blanks on every
+    // dropdown change reads as broken even when it is merely working.
+    if (body) body.classList.toggle("is-stale", busy);
+    ["left", "right"].forEach(side => {
+      const sel = $(`bo-cmp-${side}`);
+      if (sel) sel.disabled = busy;
+    });
+    const status = $("bo-cmp-status");
+    if (status && busy) status.textContent = "Recomputing…";
   }
 
   // Where the numbers came from, stated on the page rather than implied. In BOM
@@ -378,30 +691,45 @@
     </div>`;
   }
 
+  // "Not in the 2026 budget" instead of a −100% collapse or an unexplained
+  // "new". Which side is missing is the whole content of the chip.
+  function coverageChip(r) {
+    if (!cmpOn() || !r.coverage || r.coverage === "both") return "";
+    const other = r.coverage === "right" ? leftName() : rightName();
+    return `<span class="bo-flag">not in ${escapeHtml(other)}</span>`;
+  }
+
   function renderRows() {
     const d = derived();
     const t = d.totals;
     const rows = state.showAll ? d.ranked : d.top;
     const host = $("bo-rows");
 
+    const pair = cmpOn();
     host.innerHTML = rows.map(r => `
-      <button class="bo-row" type="button" data-id="${r.id}" data-direction="${r.direction}">
+      <button class="bo-row" type="button" data-id="${r.id}" data-direction="${r.direction}"
+              data-coverage="${escapeAttr(r.coverage || "both")}">
         <span class="bo-rank">${r.rank}</span>
         <span>
-          <span class="bo-name">${escapeHtml(r.label)}</span>
-          <span class="bo-meta">${escapeHtml(r.category)} · ${r.share_of_cost_pct.toFixed(1)}% of cost base</span>
+          <span class="bo-name">${escapeHtml(r.label)}${coverageChip(r)}</span>
+          <span class="bo-meta">${escapeHtml(r.category)} · ${r.share_of_cost_pct.toFixed(1)}%
+            of the ${escapeHtml(pair ? leftName() : "")} cost base</span>
           <span class="bo-bar"><span class="bo-bar-fill" style="width:${Math.max(1, r.impact_share * 100).toFixed(2)}%"></span></span>
         </span>
         <span class="bo-figures">
+          ${pair ? `<span class="bo-prev">${
+            escapeHtml(money(r.current_amount, t.currency))}</span>` : ""}
           <span class="bo-next">${escapeHtml(money(r.next_amount, t.currency))}</span>
           <span class="bo-delta"><span class="bo-arrow">${ARROWS[r.direction]}</span>
-            ${escapeHtml(signedMoney(r.delta, t.currency))} · ${escapeHtml(pct(r.expected_change_pct))} ${WORDS[r.direction]}</span>
+            ${escapeHtml(signedMoney(r.delta, t.currency))}${
+              r.expected_change_pct === null ? ""
+                : ` · ${escapeHtml(pct(r.expected_change_pct))} ${WORDS[r.direction]}`}</span>
         </span>
       </button>
     `).join("") + (d.rest.length ? `
       <button class="bo-showall" id="bo-showall" type="button">${
         state.showAll ? `Show top ${d.top.length} only`
-                      : `Show all ${d.ranked.length} variables →`
+                      : `Show all ${d.ranked.length} ${pair ? "cost lines" : "variables"} →`
       }</button>` : "");
 
     host.querySelectorAll(".bo-row").forEach(btn =>
@@ -415,10 +743,9 @@
 
   function wireOverview() {
     $("bo-regen").addEventListener("click", () => renderNarrative({ force: true }));
-    // Assigned as a property, never interpolated into the markup: see costMix.
-    document.querySelectorAll("#budget-view .bo-mix-seg").forEach((el, i) => {
-      el.title = (state.mixLabels || [])[i] || "";
-    });
+    // The .bo-mix-seg titles are assigned in renderHero(), not here: this runs
+    // once per visit and the hero repaints on every pair change, so a stale
+    // assignment here would drop every tooltip after the first dropdown use.
     $("bo-composer").addEventListener("submit", e => {
       e.preventDefault();
       const input = $("bo-input");
@@ -476,7 +803,23 @@
   async function renderNarrative({ force = false } = {}) {
     const el = $("bo-read");
     const btn = $("bo-regen");
+    const tag = $("bo-read-tag");
     if (!el) return;
+
+    // A comparison ships its read INLINE, computed deterministically server-side.
+    // No network, no model call, no cache to thrash — which is what makes trying
+    // a dozen pairs free. The model-written read stays the read on the CFO's own
+    // configured budget, and the tag says which one is on screen.
+    if (cmpOn() && state.cmp.narrative) {
+      el.textContent = state.cmp.narrative;
+      el.classList.remove("is-loading");
+      if (tag) tag.classList.remove("hidden");
+      if (btn) btn.classList.add("hidden");
+      return;
+    }
+    if (tag) tag.classList.add("hidden");
+    if (btn) btn.classList.remove("hidden");
+
     if (force) { el.classList.add("is-loading"); el.textContent = "Rewriting…"; }
     if (btn) btn.disabled = true;
     try {
@@ -512,7 +855,29 @@
   async function renderCash({ reload = true } = {}) {
     const section = $("bo-cash");
     if (!section) return;
-    if (reload) await loadCash();
+
+    // A cash profile is projected from a scenario's own monthly shape, so a
+    // dataset year has nothing to project from. That is a state with a reason, not
+    // an empty section: the strip stays visible and says which selection would
+    // give it something to read. Written into the BODY host only, so the form's
+    // half-typed values survive — the same split the capex toggle relies on.
+    const pairCash = cmpOn() ? state.cmp.cash : null;
+    if (pairCash && !pairCash.scenario_id) {
+      state.cash = null;                   // keeps askAboutCash() inert
+      section.classList.remove("hidden");
+      const host = $("bo-cash-body");
+      if (host) {
+        host.innerHTML = `<div class="bo-cash-head">
+            <span class="bo-cash-label">Cash</span>
+            <span class="bo-cash-basis">needs a scenario</span>
+          </div>
+          <p class="bo-cash-empty" id="bo-cash-na"></p>`;
+        $("bo-cash-na").textContent = pairCash.reason || "";
+      }
+      return;
+    }
+
+    if (reload) await loadCash(pairCash ? pairCash.scenario_id : null);
     const cash = state.cash;
     if (!cash) { section.classList.add("hidden"); return; }
     section.classList.remove("hidden");
@@ -800,16 +1165,26 @@
 
         <div class="bo-block">
           <h3>How it's derived</h3>
-          <div class="bo-derivation">${escapeHtml(
-            `${t.current_year} amount        ${money(row.current_amount, ccy, { compact: false })}\n` +
-            `expected change      ${pct(row.expected_change_pct)}\n` +
-            `${"─".repeat(40)}\n` +
-            `${t.budget_year} amount        ${money(row.next_amount, ccy, { compact: false })}\n` +
-            `change               ${signedMoney(row.delta, ccy, { compact: false })}`
+          <div class="bo-derivation">${escapeHtml(cmpOn()
+            ? `${leftName().padEnd(20)} ${money(row.current_amount, ccy, { compact: false })}\n` +
+              `${rightName().padEnd(20)} ${money(row.next_amount, ccy, { compact: false })}\n` +
+              `${"─".repeat(40)}\n` +
+              `difference           ${signedMoney(row.delta, ccy, { compact: false })}\n` +
+              `in percent           ${pct(row.expected_change_pct)}`
+            : `${t.current_year} amount        ${money(row.current_amount, ccy, { compact: false })}\n` +
+              `expected change      ${pct(row.expected_change_pct)}\n` +
+              `${"─".repeat(40)}\n` +
+              `${t.budget_year} amount        ${money(row.next_amount, ccy, { compact: false })}\n` +
+              `change               ${signedMoney(row.delta, ccy, { compact: false })}`
           )}</div>
-          <p>You entered the ${escapeHtml(String(t.current_year))} amount and the expected change in
-             configuration. Next year's figure is the one multiplication above — nothing is
-             modelled or extrapolated.</p>
+          <p>${cmpOn()
+            ? `Both figures are each budget's own, read off the datasets — the difference is the
+               one subtraction above. ${row.coverage && row.coverage !== "both"
+                 ? `This line exists on one side only, so its percentage is undefined rather
+                    than zero.` : ""}`
+            : `You entered the ${escapeHtml(String(t.current_year))} amount and the expected change in
+               configuration. Next year's figure is the one multiplication above — nothing is
+               modelled or extrapolated.`}</p>
         </div>
 
         <div class="bo-block">
@@ -830,23 +1205,25 @@
             <div class="bo-trend-col">
               <span class="bo-trend-value">${escapeHtml(money(row.current_amount, ccy))}</span>
               <span class="bo-trend-bar" style="height:${(row.current_amount / peak * 100).toFixed(1)}%"></span>
-              <span class="bo-trend-label">${escapeHtml(String(t.current_year))}</span>
+              <span class="bo-trend-label">${escapeHtml(leftName())}</span>
             </div>
             <div class="bo-trend-col is-next">
               <span class="bo-trend-value">${escapeHtml(money(row.next_amount, ccy))}</span>
               <span class="bo-trend-bar" style="height:${(row.next_amount / peak * 100).toFixed(1)}%"></span>
-              <span class="bo-trend-label">${escapeHtml(String(t.budget_year))}</span>
+              <span class="bo-trend-label">${escapeHtml(rightName())}</span>
             </div>
           </div>
-          <p>Two points, because that is all the configuration holds — this year and your
-             plan for next. No history is being implied.</p>
+          <p>${cmpOn()
+            ? "Two points, because two budgets are being compared. No history is being implied."
+            : `Two points, because that is all the configuration holds — this year and your
+               plan for next. No history is being implied.`}</p>
         </div>
 
         <div class="bo-block">
           <h3>Impact on the total budget</h3>
           <dl class="bo-facts">
             <dt>Change in spend</dt><dd>${escapeHtml(signedMoney(row.delta, ccy))}</dd>
-            <dt>Share of the ${escapeHtml(String(t.current_year))} cost base</dt><dd>${row.share_of_cost_pct.toFixed(1)}%</dd>
+            <dt>Share of the ${escapeHtml(leftName())} cost base</dt><dd>${row.share_of_cost_pct.toFixed(1)}%</dd>
             <dt>Share of total budget movement</dt><dd>${(row.impact_share * 100).toFixed(1)}%</dd>
             <dt>Effect on operating margin</dt><dd>${escapeHtml(pct(marginPp).replace("%", "pp"))}</dd>
             <dt>Cost base without this change</dt><dd>${escapeHtml(money(t.cost_next - row.delta, ccy))}</dd>
@@ -1012,9 +1389,19 @@
   // The single exit from this page into the agent. Prefixed so the answer is
   // about THIS budget rather than the scenario engine's view of it — the agent
   // reads the page through the budget_outlook tool.
+  //
+  // When a comparison is on screen the prefix NAMES BOTH SIDES, because
+  // budget_outlook reports the CFO's own configured budget and the page may be
+  // showing a different pair. Naming them is what stops the agent confidently
+  // answering about a comparison nobody is looking at.
   function ask(question) {
     if (!canAsk()) return;
-    askFromBudget(`About next year's budget (use budget_outlook to read it): ${question}`);
+    const scope = cmpOn()
+      ? `I am looking at the Budget outlook page comparing "${rightSide().label}" against `
+        + `"${leftSide().label}" (use budget_outlook for the configured budget, and `
+        + `query_budget_data or the scenario tools for these two specifically)`
+      : "About next year's budget (use budget_outlook to read it)";
+    askFromBudget(`${scope}: ${question}`);
   }
 
   // ============================================================

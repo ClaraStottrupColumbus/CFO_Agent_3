@@ -36,6 +36,122 @@
   background: var(--bg-canvas);
 }
 
+/* ---------------- Compare bar ----------------
+   Two budgets, above the hero. It sits on the cream canvas, not the navy
+   gradient, so it uses --fg-* rather than the hero's rgba(255,255,255,…) inverse
+   palette.
+
+   Structurally it is a SIBLING of #bo-overview-body, never a child: a pair change
+   repaints the body and must not be able to reach these two selects. Same rule as
+   #bo-cash-form-host and #scenario-edit — third instance. */
+
+.bo-compare {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-12) var(--space-5);
+  background: var(--bg-canvas);
+}
+/* budget.css ships no global .hidden — an element that toggles the class without
+   declaring it has a collapse that silently does nothing. See the note above the
+   BOM section. */
+.bo-compare.hidden { display: none; }
+
+.bo-cmp-field { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.bo-cmp-label {
+  font-size: var(--fs-caption);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+  font-weight: var(--fw-semibold);
+  color: var(--fg-3);
+}
+
+/* style.css:757 sets a bare `select { max-width: 190px }`, which clips a scenario
+   name like "Pet cost breach — forward curve" to a useless stub. width:100% does
+   NOT beat a max-width, so the cap has to be lifted explicitly — #model-select
+   overrides it the same way. */
+.bo-compare select {
+  max-width: none;
+  width: 100%;
+  font-family: inherit;
+  font-size: var(--fs-body);
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--fg-1);
+}
+.bo-compare select:focus { outline: 2px solid var(--columbus-navy); outline-offset: 1px; }
+.bo-compare select:disabled { opacity: 0.55; cursor: default; }
+
+.bo-cmp-vs {
+  align-self: center;
+  margin-bottom: 1.35rem;
+  padding: 0.15rem var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface-alt);
+  font-size: var(--fs-caption);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-3);
+}
+
+.bo-cmp-hint { font-size: var(--fs-caption); color: var(--fg-3); }
+.bo-cmp-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--fg-3);
+}
+.bo-cmp-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface-alt);
+  font-size: var(--fs-body-sm);
+  color: var(--fg-1);
+}
+.bo-cmp-error.hidden { display: none; }
+
+/* Every caveat the comparison stated, in full — nothing is truncated or hidden
+   behind a disclosure, because the first of these is routinely the sentence that
+   stops a data gap reading as growth.
+
+   The FIRST one is body-sized and the rest are caption-sized, and that is a real
+   hierarchy rather than a space saving: the leading note is pair-specific ("this
+   region is on one side only"), while the ones after it are standing properties of
+   the two kinds being compared. Keeping them all compact is what stops four true
+   sentences pushing the actual figures below the fold. */
+.bo-cmp-warnings {
+  grid-column: 1 / -1;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--fs-caption);
+  color: var(--fg-3);
+  line-height: var(--lh-normal);
+  max-width: 104ch;
+}
+.bo-cmp-warnings li:first-child {
+  font-size: var(--fs-body-sm);
+  color: var(--fg-2);
+}
+.bo-cmp-warnings li::before { content: "—"; opacity: 0.5; margin-right: var(--space-2); }
+
+/* Mid-switch the previous figures DIM rather than disappear: a page that blanks
+   on every dropdown change reads as broken even when it is merely working. */
+#bo-overview-body.is-stale {
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
 /* ---------------- Hero ---------------- */
 
 .bo-hero {
@@ -221,6 +337,21 @@
   text-transform: uppercase;
   color: var(--fg-3);
 }
+/* Which read is on screen: a comparison's is computed deterministically and costs
+   nothing, the configured budget's is model-written. Saying which is not a detail
+   — one is arithmetic and the other is prose somebody generated. */
+.bo-read-tag {
+  margin-right: auto;
+  padding: 0.05rem var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--fs-caption);
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-3);
+}
+.bo-read-tag.hidden { display: none; }
+.bo-regen.hidden { display: none; }
 .bo-read {
   font-family: var(--font-display);
   font-weight: var(--fw-regular);
@@ -348,11 +479,43 @@
 .bo-row[data-direction="flat"] .bo-bar-fill { background: var(--grey-300); }
 
 .bo-figures { text-align: right; }
+/* The baseline budget's figure, above the comparison's. Deliberately quieter: the
+   right-hand side is the budget being proposed and the one the eye should land on.
+   The "from" carries the relationship — an arrow here would collide with the
+   direction glyph in .bo-delta directly below, and a flat row would then read
+   "11.66m → 11.66m → EUR 0". */
+.bo-prev {
+  display: block;
+  font-size: var(--fs-body-sm);
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.bo-prev::before {
+  content: "from ";
+  font-variant-numeric: normal;
+  opacity: 0.7;
+}
 .bo-next {
   display: block;
   font-size: var(--fs-h5);
   font-weight: var(--fw-medium);
   font-variant-numeric: tabular-nums;
+}
+/* "not in the 2026 budget", next to the line's name. Neutral — a line existing on
+   one side only is a fact about coverage, not a good or a bad thing. */
+.bo-flag {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 0.05rem var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-regular);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--fg-3);
+  vertical-align: middle;
 }
 /* The delta is NOT coloured by sign. A cost line falling is good and a revenue
    line falling is bad; the arrow and the word carry the direction, and the
@@ -837,7 +1000,7 @@
     border-top: 1px solid var(--border-default);
     height: 70vh;
   }
-  .bo-hero, .bo-section-head, .bo-row, .bo-showall, .bo-foot {
+  .bo-compare, .bo-hero, .bo-section-head, .bo-row, .bo-showall, .bo-foot {
     padding-left: var(--space-6);
     padding-right: var(--space-6);
   }
@@ -851,6 +1014,10 @@
   .bo-metrics { grid-template-columns: minmax(0, 1fr); }
   .bo-read { font-size: var(--fs-h5); }
   .bo-readout-head { flex-wrap: wrap; }
+  /* One column, with "vs" as its own left-aligned row rather than a centred pill
+     wedged between two full-width selects. */
+  .bo-compare { grid-template-columns: minmax(0, 1fr); }
+  .bo-cmp-vs { justify-self: start; align-self: start; margin-bottom: 0; }
 }
 
 /* ---------------- BOM mode: source, rebuild, provenance ----------------
