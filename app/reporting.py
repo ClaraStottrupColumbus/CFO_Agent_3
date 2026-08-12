@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import threading
 from datetime import datetime, timezone
 
-from . import store
+from . import ingest, store
 from .agent import REPORT_PROMPTS, run_agent
 
 # Cap on concurrent BACKGROUND agent runs. Interactive chat never acquires this —
@@ -75,6 +77,73 @@ def derive_title(text: str) -> str:
     return t or "New chat"
 
 
+def _pdf_document_block(data: str) -> dict:
+    """The native base64 PDF block — what a scanned, image-only PDF falls back to
+    so the model reads the pages directly instead of an empty extraction."""
+    return {"type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": data}}
+
+
+def _file_block(name: str, kind: str, media_type: str, data: str) -> dict:
+    """One chat attachment as an API content block, via the ingest primitives.
+
+    Chat attachments are EPHEMERAL — inlined into this one message, never written
+    to the upload registry — but they go through the same extraction and
+    conversion as a Data ingestion upload, which buys three things:
+
+      * .xlsx / .docx / .pptx work here at all;
+      * what lands in the persisted session JSON is the converted TEXT rather
+        than the base64 payload, so a thread stops re-sending megabytes on every
+        subsequent turn;
+      * the conversion is content-hash cached, so attaching a file the CFO
+        already added on the Data ingestion page costs nothing.
+
+    A large table is truncated with the truncation stated, pointing the user at
+    the Data ingestion page to query all of it — ingest.summarise_table's job.
+    """
+    if kind == "image":
+        return {"type": "image", "source": {"type": "base64",
+                                            "media_type": media_type or "image/png",
+                                            "data": data}}
+
+    bucket = ingest.classify(name)
+    is_pdf = ingest.extension(name) == "pdf" or media_type == "application/pdf"
+    raw = None
+    if kind != "text":
+        try:
+            raw = base64.b64decode(data or "", validate=False)
+        except (ValueError, binascii.Error):
+            raw = None
+
+    if bucket == "tabular":
+        payload = raw if raw is not None else (data or "").encode("utf-8")
+        try:
+            return {"type": "text",
+                    "text": ingest.summarise_table(ingest.read_table(name, payload), name)}
+        except ValueError as exc:
+            return {"type": "text", "text": f"Attached file: {name}\n[{exc}]"}
+
+    if bucket == "document":
+        payload = raw if raw is not None else (data or "").encode("utf-8")
+        try:
+            converted = ingest.convert_cached(name, payload)
+        except ValueError as exc:
+            converted = None
+            if is_pdf and raw is not None:
+                return _pdf_document_block(data)
+            return {"type": "text", "text": f"Attached file: {name}\n[{exc}]"}
+        if converted == ingest.SCANNED_PDF:
+            # No extractable text: send the pages as a native document rather
+            # than pretending the file was empty.
+            return _pdf_document_block(data)
+        return {"type": "text", "text": converted}
+
+    if is_pdf and raw is not None:
+        return _pdf_document_block(data)
+    # Unsupported extension arriving from an older client: keep the old inline form.
+    return {"type": "text", "text": f"Attached file: {name}\n```\n{data or ''}\n```"}
+
+
 def build_user_content(message: str, attachments: list | None):
     """Return (api_content, display_attachments)."""
     if not attachments:
@@ -85,18 +154,9 @@ def build_user_content(message: str, attachments: list | None):
     display = []
     for att in attachments:
         att = att.model_dump() if hasattr(att, "model_dump") else dict(att)
-        name, kind = att.get("name", "file"), att.get("kind")
-        if kind == "image":
-            blocks.append({"type": "image", "source": {
-                "type": "base64", "media_type": att.get("media_type") or "image/png",
-                "data": att.get("data", "")}})
-        elif kind == "document":
-            blocks.append({"type": "document", "source": {
-                "type": "base64", "media_type": "application/pdf",
-                "data": att.get("data", "")}})
-        elif kind == "text":
-            blocks.append({"type": "text",
-                           "text": f"Attached file: {name}\n```\n{att.get('data', '')}\n```"})
+        name, kind = att.get("name", "file"), att.get("kind") or ""
+        blocks.append(_file_block(name, kind, att.get("media_type") or "",
+                                  att.get("data") or ""))
         display.append({"name": name, "kind": kind})
     if not blocks:
         blocks.append({"type": "text", "text": ""})

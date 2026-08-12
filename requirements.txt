@@ -1,6 +1,8 @@
 # requirements.txt — Python dependencies for the CFO Budgeting Agent.
-# No HTTP/scraping packages: web ingestion runs through Anthropic's
-# server-side web_search / web_fetch tools, so there is nothing to install.
+# No HTTP/scraping packages: web research runs through Anthropic's server-side
+# web_search / web_fetch tools, so nothing here fetches a URL. File ingestion is
+# a different matter — reading a CFO's own .docx or .pdf is local work, and the
+# readers for it are at the bottom of this file.
 anthropic>=0.116.0
 fastapi>=0.139.0
 uvicorn[standard]>=0.51.0
@@ -8,9 +10,19 @@ pandas>=2.2.0
 pyarrow>=17.0.0
 numpy>=1.26.0
 
-# Excel export (app/export.py). Imported lazily inside workbook(), so an
-# install that predates this line loses one route rather than the whole app.
+# Excel: writing exports (app/export.py) and reading .xlsx/.xls uploads
+# (app/ingest.py). Imported lazily inside workbook(), so an install that
+# predates this line loses one route rather than the whole app.
 openpyxl>=3.1.0
+
+# File ingestion (app/ingest.py): Word, PowerPoint and PDF text extraction for
+# files added on the Data ingestion page and for chat attachments. Each is
+# imported INSIDE its own extractor for the same reason as openpyxl above — a
+# checkout predating this block loses one file format, not the whole app.
+# CSV/TSV/Parquet need nothing extra: pandas + pyarrow already cover them.
+python-docx>=1.1
+python-pptx>=1.0
+pypdf>=5.0
 
 # Dev / tests
 pytest>=8.0

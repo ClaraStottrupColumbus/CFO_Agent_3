@@ -21,3 +21,8 @@ data/budget_plan.json
 # Generated demo datasets — rebuilt deterministically by app/generate_data.py.
 data/*.parquet
 data/*.csv
+
+# Files the CFO added on the Data ingestion page: the registry, the stored
+# datasets/documents and the converted-markdown cache. Their data, not source.
+data/user_uploads.json
+data/uploads/

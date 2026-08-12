@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import budget, drivers, scenarios
+from . import budget, drivers, ingest, scenarios, uploads
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -139,10 +139,27 @@ TOOL_DEFINITIONS = [
     {
         "name": "list_datasets",
         "description": "Discover what is available: the internal datasets (with columns, row "
-                       "counts and covered period), the driver watchlist, the saved budget "
-                       "scenarios and the currently locked assumptions. Call this first if "
-                       "unsure what data exists.",
+                       "counts and covered period), any datasets and documents the CFO has "
+                       "added on the Data ingestion page, the driver watchlist, the saved "
+                       "budget scenarios and the currently locked assumptions. Datasets and "
+                       "documents can be added or removed at any time, so call this first "
+                       "whenever you are unsure what data exists.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "read_document",
+        "description": "Read a document the CFO added on the Data ingestion page (PDF, Word, "
+                       "PowerPoint, text) as markdown. Call list_datasets first to see which "
+                       "documents exist. Cite the document by its file name in your answer.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string",
+                         "description": "Document name as reported by list_datasets."},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "query_budget_data",
@@ -154,7 +171,13 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "dataset": {"type": "string", "enum": list(DATASETS), "description": "Which dataset."},
+                # No enum. TOOL_DEFINITIONS is built once at import, but the CFO can add
+                # or remove datasets at runtime on the Data ingestion page, so an enum
+                # here would freeze the set at server start and silently exclude every
+                # upload. The name is validated on execution instead, and an unknown one
+                # comes back as a teachable error listing what does exist.
+                "dataset": {"type": "string",
+                            "description": "Which dataset, by name from list_datasets."},
                 "columns": {"type": "array", "items": {"type": "string"},
                             "description": "Columns to return (default: all)."},
                 "filters": {"type": "array", "description": "Row filters, ANDed together.",
@@ -458,20 +481,73 @@ TOOL_DEFINITIONS = [
 # Loading helpers
 # --------------------------------------------------------------------------
 
+def dataset_meta(dataset: str) -> dict | None:
+    """Resolve a dataset name to its metadata — built-in or CFO-uploaded.
+
+    THIS IS THE ONLY PLACE THAT DISTINCTION EXISTS. Uploaded datasets (uploads.py)
+    live in data/uploads/ and are otherwise identical: the same CSV+Parquet pair,
+    so _load below needs no special case, and neither does the model — it never
+    knows or cares where a dataset came from. Keeping that seam to one function is
+    what stops "add your own data" doubling the surface area of every tool that
+    touches data.
+
+    Returns None for an unknown name; callers turn that into a teachable error.
+    """
+    if dataset in DATASETS:
+        return {**DATASETS[dataset], "dir": DATA_DIR, "builtin": True}
+    record = uploads.get_by_name(dataset)
+    if record and record.get("kind") == "dataset":
+        return {"description": record["description"], "format": record["format"],
+                "dir": uploads.UPLOAD_DIR, "builtin": False,
+                "original_filename": record.get("original_filename")}
+    return None
+
+
+def dataset_names() -> list[str]:
+    return list(DATASETS) + uploads.dataset_names()
+
+
+def _source_label(path: Path) -> str:
+    """The citation string for a loaded file: its path relative to data/, with
+    forward slashes on every platform — 'budget_overview.csv' for a built-in
+    (unchanged, since a top-level file's relative path is its bare name) and
+    'uploads/board_pack.csv' for an upload.
+
+    Falls back to the bare filename when the file is not under DATA_DIR at all.
+    uploads.UPLOAD_DIR is derived from its OWN module constant, so the two roots
+    can legitimately diverge (a test patching one and not the other), and
+    relative_to would raise ValueError — which none of _load's callers catch,
+    since they guard FileNotFoundError/OSError. citations.dataset_record labels
+    off rsplit("/") anyway, so the bare name degrades cleanly.
+    """
+    try:
+        return str(path.relative_to(DATA_DIR)).replace("\\", "/")
+    except ValueError:
+        return path.name
+
+
 def _load(dataset: str) -> tuple[pd.DataFrame, str]:
-    """Load a dataset, returning the frame and the file name it came from.
-    Prefers Parquet; falls back to CSV so tests can use CSV fixtures."""
-    meta = DATASETS[dataset]
+    """Load a dataset, returning the frame and the file it came from.
+
+    Prefers Parquet; falls back to CSV so tests can use CSV fixtures. Built-in
+    and uploaded resolve through dataset_meta and are read by identical code —
+    the one seam is meta["dir"].
+    """
+    meta = dataset_meta(dataset)
+    if meta is None:
+        raise KeyError(dataset)
+    directory = meta["dir"]
     if meta["format"] == "parquet":
-        path = DATA_DIR / f"{dataset}.parquet"
+        path = directory / f"{dataset}.parquet"
         if path.exists():
-            return pd.read_parquet(path), path.name
-    path = DATA_DIR / f"{dataset}.csv"
-    return pd.read_csv(path), path.name
+            return pd.read_parquet(path), _source_label(path)
+    path = directory / f"{dataset}.csv"
+    return pd.read_csv(path), _source_label(path)
 
 
 def _unknown_dataset(dataset: str) -> dict:
-    return {"error": f"Unknown dataset '{dataset}'. Available: {', '.join(DATASETS)}."}
+    return {"error": f"Unknown dataset '{dataset}'. Available: {', '.join(dataset_names())}. "
+                     "Call list_datasets to see what exists."}
 
 
 def _unknown(kind: str, value, options) -> dict:
@@ -516,21 +592,45 @@ def _driver_eur_prices(month: str | None = None) -> tuple[dict, dict]:
 # 1. list_datasets
 # --------------------------------------------------------------------------
 
+def _dataset_info(name: str, meta: dict) -> dict:
+    """One list_datasets entry — or an error entry if the file has gone missing.
+    Built-in and uploaded differ only in the hint, never in the shape."""
+    try:
+        df, source = _load(name)
+    except (FileNotFoundError, OSError):
+        hint = ("data file missing — run app/generate_data.py" if meta.get("builtin")
+                else "uploaded file is missing — remove it on the Data ingestion page "
+                     "and add it again")
+        return {"name": name, "error": hint}
+    info = {"name": name, "description": meta["description"], "source_file": source,
+            "format": meta["format"], "columns": list(df.columns), "rows": len(df),
+            "uploaded": not meta.get("builtin")}
+    if "month" in df.columns and len(df):
+        info["period"] = f"{df['month'].min()} to {df['month'].max()}"
+    if "last_refreshed_utc" in df.columns and len(df):
+        info["last_refreshed_utc"] = str(df["last_refreshed_utc"].iloc[0])
+    return info
+
+
 def list_datasets() -> dict:
-    out = []
-    for name, meta in DATASETS.items():
-        try:
-            df, source = _load(name)
-        except (FileNotFoundError, OSError):
-            out.append({"name": name, "error": "data file missing — run app/generate_data.py"})
-            continue
-        info = {"name": name, "description": meta["description"], "source_file": source,
-                "format": meta["format"], "columns": list(df.columns), "rows": len(df)}
-        if "month" in df.columns and len(df):
-            info["period"] = f"{df['month'].min()} to {df['month'].max()}"
-        if "last_refreshed_utc" in df.columns and len(df):
-            info["last_refreshed_utc"] = str(df["last_refreshed_utc"].iloc[0])
-        out.append(info)
+    out = [_dataset_info(name, {**meta, "builtin": True}) for name, meta in DATASETS.items()]
+    for record in uploads.list_uploads("dataset"):
+        meta = dataset_meta(record["name"])
+        if meta:
+            # upload_id is what lets the Data ingestion page offer a Remove button;
+            # the built-ins have none, which is what makes them undeletable in the
+            # UI with no extra logic.
+            out.append({**_dataset_info(record["name"], meta), "upload_id": record["id"]})
+
+    documents = [{
+        "name": d["name"],
+        "file_name": d["original_filename"],
+        "format": d["format"],
+        "description": d["description"],
+        "upload_id": d["id"],
+        # "research" for an answer saved from a chat, "upload" for a file.
+        "origin": d.get("origin", "upload"),
+    } for d in uploads.list_uploads("document")]
 
     status = drivers.driver_status()
     locked = drivers.load_assumptions()
@@ -538,6 +638,7 @@ def list_datasets() -> dict:
 
     return {
         "datasets": out,
+        "documents": documents,
         "watchlist_drivers": [{"driver_id": d["driver_id"], "name": d["name"],
                                "category": d["category"], "unit": d["unit"],
                                "verify_status": d["verify_status"]} for d in status],
@@ -555,17 +656,47 @@ def list_datasets() -> dict:
 
 
 # --------------------------------------------------------------------------
+# 1b. read_document
+# --------------------------------------------------------------------------
+
+def read_document(name: str) -> dict:
+    """Return a CFO-added document as markdown, converted at upload time.
+
+    A missing cache entry is a teachable error rather than an exception, the same
+    as every other failure path here — the model relays it and the CFO knows to
+    re-add the file.
+    """
+    record = uploads.get_by_name(name)
+    if not record or record.get("kind") != "document":
+        available = [d["name"] for d in uploads.list_uploads("document")]
+        return {"error": f"Unknown document '{name}'." +
+                         (f" Available: {', '.join(available)}." if available else
+                          " No documents have been added on the Data ingestion page.")}
+    markdown = ingest.cached_markdown(record.get("cache_key") or "")
+    if markdown is None:
+        return {"error": f"The converted text for '{name}' is missing. Remove the document on "
+                         "the Data ingestion page and add it again."}
+    return {
+        "source_file": record["original_filename"],
+        "document": name,
+        "format": record["format"],
+        "content": markdown,
+    }
+
+
+# --------------------------------------------------------------------------
 # 2. query_budget_data
 # --------------------------------------------------------------------------
 
 def query_budget_data(dataset: str, columns=None, filters=None, group_by=None,
                       aggregate=None, sort=None, limit=None) -> dict:
-    if dataset not in DATASETS:
+    if dataset_meta(dataset) is None:
         return _unknown_dataset(dataset)
     try:
         df, source = _load(dataset)
     except (FileNotFoundError, OSError):
-        return {"error": f"Dataset '{dataset}' has no data file — run app/generate_data.py."}
+        return {"error": f"Dataset '{dataset}' has no data file — run app/generate_data.py, "
+                         "or re-add it on the Data ingestion page if you uploaded it."}
 
     for f in filters or []:
         col, op, val = f.get("column"), f.get("op"), f.get("value")
@@ -598,8 +729,14 @@ def query_budget_data(dataset: str, columns=None, filters=None, group_by=None,
         if missing:
             return _unknown("group_by column", missing[0], list(df.columns))
         if not aggregate:
-            aggregate = {c: "sum" for c in NUMERIC_COLUMNS.get(dataset, [])
-                         if c in df.columns}
+            # Curated datasets declare their summable columns above. An upload has
+            # nothing to declare, so infer them off the frame — a deliberate
+            # simplification: good enough for an ad-hoc file, not curated.
+            default = NUMERIC_COLUMNS.get(dataset)
+            if default is None:
+                default = [c for c in df.columns
+                           if c not in group_by and pd.api.types.is_numeric_dtype(df[c])]
+            aggregate = {c: "sum" for c in default if c in df.columns}
         if not aggregate:
             return {"error": "group_by needs an aggregate, e.g. "
                              "{\"revenue_actual_eur\": \"sum\"}."}
@@ -1868,6 +2005,7 @@ def render_chart(chart_type: str, title: str, series: list, unit: str | None = N
 
 _TOOLS = {
     "list_datasets": lambda i, ctx: list_datasets(),
+    "read_document": lambda i, ctx: read_document(**i),
     "query_budget_data": lambda i, ctx: query_budget_data(**i),
     "variance_analysis": lambda i, ctx: variance_analysis(**i),
     "cost_buildup": lambda i, ctx: cost_buildup(**i),

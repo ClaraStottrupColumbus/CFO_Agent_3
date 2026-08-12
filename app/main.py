@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 from contextlib import asynccontextmanager
@@ -22,13 +24,17 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import (alerts, budgetplan, budgetversions, config, drivers, export,
-               generate_data, profile as profile_mod, reporting, rules,
-               scenarios, scheduler, store, tasks, tools)
+               generate_data, ingest, profile as profile_mod, reporting, rules,
+               scenarios, scheduler, store, tasks, tools, uploads)
 from .agent import AVAILABLE_MODELS, EFFORT_LEVELS, volatile_context
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 DATA_DIR = ROOT / "data"
+
+# Per-file ceiling for chat attachments and Data-ingestion uploads. The browser
+# checks this too, but the server must not rely on that.
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
 
 def _load_dotenv() -> None:
@@ -137,6 +143,21 @@ class SessionRequest(BaseModel):
     kind: str = "chat"
     title: str | None = None
     parent_id: str | None = None
+
+
+class UploadRequest(BaseModel):
+    filename: str
+    data: str                 # base64 file contents
+
+
+class ResearchSaveRequest(BaseModel):
+    title: str
+    markdown: str
+
+
+class UploadUpdate(BaseModel):
+    markdown: str | None = None
+    title: str | None = None
 
 
 class ProposeRequest(BaseModel):
@@ -567,9 +588,142 @@ def preview_dataset(name: str, limit: int = Query(25)) -> dict:
     return result
 
 
+@app.get("/api/datasets/{name}/preview", dependencies=Gated)
+def dataset_preview(name: str, rows: int = Query(5)) -> dict:
+    """First rows of a dataset, for the Data ingestion page's preview tables.
+    A dataset the CFO uploaded is previewed through exactly the same path as a
+    built-in — tools._load is the only place that distinction is resolved."""
+    if tools.dataset_meta(name) is None:
+        raise HTTPException(status_code=404, detail={"error": f"Unknown dataset '{name}'."})
+    try:
+        df, source = tools._load(name)
+    except (FileNotFoundError, OSError):
+        raise HTTPException(status_code=404,
+                            detail={"error": f"Data file for '{name}' is missing."})
+    rows = max(1, min(int(rows), 20))
+    return {"name": name, "source_file": source, "columns": list(df.columns),
+            "rows_total": len(df), "records": ingest.json_safe(df, rows)}
+
+
 @app.post("/api/refresh", dependencies=Gated)
 def refresh_now() -> dict:
     return _scheduler.run_refresh_now()
+
+
+# --------------------------------------------------------------------------
+# Documents and uploads (the Data ingestion page)
+#
+# Second-door rule, as everywhere else here: these routes sit on top of the same
+# tools.read_document / tools._load the model calls, never a second
+# implementation, so the figure on the page and the figure in an answer cannot
+# disagree. Errors follow the house envelope — HTTPException(detail={"error": …})
+# — rather than a bare body, and every message raised out of ingest.py/uploads.py
+# is written to be shown to the CFO verbatim.
+# --------------------------------------------------------------------------
+
+@app.get("/api/documents/{name}/preview", dependencies=Gated)
+def document_preview(name: str, chars: int = Query(4000)) -> dict:
+    """Start of a document's converted markdown, for the Data ingestion page."""
+    result = tools.read_document(name)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result)
+    content = result["content"]
+    chars = max(200, min(int(chars), 20000))
+    return {"name": name, "source_file": result["source_file"],
+            "chars_total": len(content), "content": content[:chars]}
+
+
+@app.get("/api/documents/{name}/markdown", dependencies=Gated)
+def document_markdown(name: str) -> dict:
+    """A document's full markdown — what the editor on the Data page loads.
+    Separate from /preview, which truncates for display."""
+    result = tools.read_document(name)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result)
+    record = uploads.get_by_name(name)
+    return {"name": name, "content": result["content"],
+            "upload_id": record["id"] if record else None,
+            "title": (record or {}).get("title") or name}
+
+
+@app.post("/api/uploads", dependencies=Gated)
+def create_upload(req: UploadRequest) -> dict:
+    """Add a file: tabular files become queryable datasets, documents are
+    converted to markdown once (ingest.py) and read later via read_document.
+
+    The conversion happens here rather than at question time so the agent never
+    stalls mid-answer waiting on it.
+    """
+    try:
+        raw = base64.b64decode(req.data or "", validate=False)
+    except (ValueError, binascii.Error):
+        raise HTTPException(status_code=400,
+                            detail={"error": "The file data was not valid base64."})
+    if not raw:
+        raise HTTPException(status_code=400, detail={"error": "The file is empty."})
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail={
+            "error": f"'{req.filename}' is larger than "
+                     f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB."})
+    kind = ingest.classify(req.filename)
+    if kind == "image":
+        raise HTTPException(status_code=400, detail={
+            "error": "Images can't be added as data. Attach the image in a chat instead — "
+                     "the agent reads it there."})
+    if kind == "unsupported":
+        raise HTTPException(status_code=400, detail={
+            "error": f"'{req.filename}' isn't a supported file type. "
+                     f"Supported: {ingest.supported_note()}."})
+    try:
+        record = (uploads.add_dataset(req.filename, raw) if kind == "tabular"
+                  else uploads.add_document(req.filename, raw))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)})
+    return {"upload": record}
+
+
+@app.post("/api/uploads/research", dependencies=Gated)
+def save_research(req: ResearchSaveRequest) -> dict:
+    """Save an answer as a markdown document on the Data ingestion page.
+
+    The one bridge between the ephemeral world (a chat turn) and the persistent
+    one (the upload registry), and it is opt-in: nothing is saved until the CFO
+    clicks. A market scan saved this way is re-readable months later through
+    read_document, which a transcript is not.
+    """
+    if len(req.markdown.encode("utf-8")) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail={"error": "The document is too large to save."})
+    try:
+        record = uploads.add_markdown(req.title, req.markdown, origin="research")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)})
+    return {"upload": record}
+
+
+@app.patch("/api/uploads/{upload_id}", dependencies=Gated)
+def edit_upload(upload_id: str, update: UploadUpdate) -> dict:
+    """Edit a document's markdown (and title) from the Data ingestion page.
+    Correcting a bad extraction here fixes every future answer that cites it."""
+    if update.markdown is not None and \
+            len(update.markdown.encode("utf-8")) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail={"error": "The document is too large to save."})
+    try:
+        record = uploads.update_document(upload_id, markdown=update.markdown,
+                                         title=update.title)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"error": "Upload not found."})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)})
+    return {"upload": record}
+
+
+@app.delete("/api/uploads/{upload_id}", dependencies=Gated)
+def remove_upload(upload_id: str) -> dict:
+    if not uploads.delete_upload(upload_id):
+        raise HTTPException(status_code=404, detail={"error": "Upload not found."})
+    return {"deleted": True}
 
 
 # --------------------------------------------------------------------------

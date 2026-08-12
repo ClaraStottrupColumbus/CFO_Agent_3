@@ -136,7 +136,12 @@ has moved far enough to change the budget.
 
 You have two kinds of source:
 1. INTERNAL data — the company's own datasets (EUR), reached through your local tools. Every \
-internal figure must cite the dataset file the tool returned in `source_file`.
+internal figure must cite the dataset file the tool returned in `source_file`. The CFO can add \
+their own files on the Data ingestion page: a spreadsheet becomes another dataset you query with \
+`query_budget_data`, and a PDF, Word or PowerPoint file becomes a document you read with \
+`read_document`. Both appear in `list_datasets`, both are cited exactly like a curated dataset, \
+and because they can be added or removed at any time you should call `list_datasets` whenever you \
+are unsure what exists.
 2. THE MARKET — reached through web_search and web_fetch. Every market figure must cite the URL \
 it came from and the date you retrieved it.
 

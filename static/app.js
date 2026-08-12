@@ -33,6 +33,9 @@ const alertsListEl = document.getElementById("alerts-list");
 const datasetsListEl = document.getElementById("datasets-list");
 const dataRefreshStatus = document.getElementById("data-refresh-status");
 const dataRefreshNow = document.getElementById("data-refresh-now");
+const dataAddFile = document.getElementById("data-add-file");
+const dataFileInput = document.getElementById("data-file-input");
+const dataUploadStatus = document.getElementById("data-upload-status");
 const dataLink = document.getElementById("data-link");
 const messagesEl = document.getElementById("messages");
 const composer = document.getElementById("composer");
@@ -304,6 +307,59 @@ function addSources(bubble, sources) {
     wrap.appendChild(more);
   }
   bubble.appendChild(wrap);
+}
+
+// ---------- Saving an answer as a document ----------
+// The one bridge from the ephemeral world (a chat turn, which lives in a
+// transcript nobody re-reads) to the persistent one (a document the agent can
+// read back through read_document months later). Opt-in: nothing is saved until
+// this is clicked. Rides on the sources strip because that is already the row
+// where an answer's provenance lives.
+
+function addSaveAnswer(bubble, text, title) {
+  const markdown = String(text || "").trim();
+  if (!markdown) return;
+  bubble.querySelectorAll(".answer-save").forEach(el => el.remove());
+
+  const row = document.createElement("div");
+  row.className = "answer-save";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn-ghost answer-save-btn";
+  btn.textContent = "Save to Data ingestion";
+  const note = document.createElement("span");
+  note.className = "hint answer-save-note";
+  row.append(btn, note);
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    note.textContent = "Saving…";
+    note.classList.remove("error-text");
+    try {
+      const resp = await fetch("/api/uploads/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title || "Saved answer", markdown }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(apiError(body, resp.status));
+      const name = (body.upload && body.upload.name) || "the document";
+      row.innerHTML = "";
+      const done = document.createElement("span");
+      done.className = "answer-saved";
+      done.textContent = `✓ Saved as ${name} in `;
+      const link = document.createElement("a");
+      link.href = "#/data";                 // assigned, never interpolated
+      link.textContent = "Data ingestion";
+      done.appendChild(link);
+      row.appendChild(done);
+    } catch (err) {
+      note.textContent = `⚠ ${err.message}`;
+      note.classList.add("error-text");
+      btn.disabled = false;
+    }
+  });
+  bubble.appendChild(row);
 }
 
 // Rewrite literal "[3]" markers to superscript links, in ONE pass over TEXT
@@ -632,6 +688,18 @@ function addChart(bubble, spec) {
 
 // ---------- Session API ----------
 
+// This app raises HTTPException(detail={"error": …}), so a FastAPI error body is
+// {"detail": {"error": …}} — but a validation failure gives a plain string detail
+// and some handlers return {"error": …} directly. One unwrapper for all three,
+// falling back to the status so a message is never empty.
+function apiError(body, status) {
+  const detail = body && body.detail;
+  if (detail && typeof detail === "object" && detail.error) return detail.error;
+  if (typeof detail === "string" && detail) return detail;
+  if (body && body.error) return body.error;
+  return `Server error ${status}`;
+}
+
 async function apiListSessions(kind) {
   const resp = await fetch(`/api/sessions?kind=${encodeURIComponent(kind)}`);
   if (!resp.ok) throw new Error(`Could not list sessions (${resp.status})`);
@@ -789,7 +857,7 @@ async function startThread(reportId) {
 
 // Render a message thread into #messages. `hideFirstUser` drops the preset
 // report-generation prompt when showing a report overview.
-function renderThread(msgs, sources, { hideFirstUser = false } = {}) {
+function renderThread(msgs, sources, { hideFirstUser = false, title = "" } = {}) {
   msgs.forEach((m, i) => {
     if (m.role === "user") {
       if (hideFirstUser && i === 0) return;
@@ -809,6 +877,7 @@ function renderThread(msgs, sources, { hideFirstUser = false } = {}) {
       // citing a dozen URLs across three turns.
       if (m.sources && m.sources.length) addSources(bubble, m.sources);
       else if (i === msgs.length - 1 && !msgs.some(x => x.sources)) addSources(bubble, sources);
+      addSaveAnswer(bubble, m.content, title);
     }
   });
   scrollDown(messagesEl);
@@ -822,13 +891,14 @@ function renderChatView(session) {
     messagesEl.innerHTML = `<div class="msg assistant"><div class="bubble"><p class="thinking">New conversation — ask a question to begin.</p></div></div>`;
     return;
   }
-  renderThread(msgs, session.sources);
+  renderThread(msgs, session.sources, { title: session.title || "" });
 }
 
 // A report overview (the generated report, hiding its preset prompt).
 function renderReportView(report) {
   messagesEl.innerHTML = "";
-  renderThread(report.messages || [], report.sources, { hideFirstUser: true });
+  renderThread(report.messages || [], report.sources,
+               { hideFirstUser: true, title: report.title || report.period || "" });
 }
 
 // A chat thread under a report: a compact context banner + the thread's own turns.
@@ -849,7 +919,7 @@ function renderChildView(child, parent) {
     messagesEl.appendChild(hint);
     return;
   }
-  renderThread(msgs, child.sources);
+  renderThread(msgs, child.sources, { title: child.title || "" });
 }
 
 // ---------- Chat flow (send a turn to the active session) ----------
@@ -953,6 +1023,7 @@ function createStreamRenderer(container, bubble, opts = {}) {
       finalRender();
       if (pendingSources) { addSources(bubble, pendingSources); scrollDown(container); }
       pendingSources = null;
+      if (opts.saveable) addSaveAnswer(bubble, assistantText, opts.saveable());
       if (opts.onRevealDone) opts.onRevealDone();
     }
   }
@@ -1070,7 +1141,9 @@ async function sendMessage(text, attachments) {
 
   addUserMessage(messagesEl, text, attachments.map(a => ({ name: a.name })));
   const bubble = addAssistantMessage(messagesEl);
-  const stream = createStreamRenderer(messagesEl, bubble);
+  // saveable only here: the setup wizard and the scenario builder share this
+  // renderer, and neither produces an answer worth persisting as a document.
+  const stream = createStreamRenderer(messagesEl, bubble, { saveable: () => text });
   view.streaming = true;
   sendBtn.disabled = true;
 
@@ -1489,6 +1562,10 @@ function updateNav(kind) {
 
 // ---------- Data ingestion view (#/data) ----------
 
+// Two sections, never one list: a dataset is QUERIED (filter, group, aggregate)
+// and a document is READ (whole markdown body, one tool call). Mixing them would
+// misrepresent what the agent can actually do with each.
+
 async function renderData() {
   view.sessionId = null;
   showOnly(dataView);
@@ -1498,70 +1575,215 @@ async function renderData() {
     if (!dataResp.ok) throw new Error(`Server error ${dataResp.status}`);
     const data = await dataResp.json();
     const cfg = settingsResp.ok ? await settingsResp.json() : {};
-    renderDatasetCards(data.datasets || [], cfg.scheduler || {});
+    renderDatasetCards(data.datasets || [], data.documents || [], cfg.scheduler || {});
   } catch (err) {
     datasetsListEl.innerHTML = `<p class="error-text">⚠ Could not load datasets: ${escapeHtml(err.message)}</p>`;
   }
 }
 
-function renderDatasetCards(datasets, scheduler) {
+function renderDatasetCards(datasets, documents, scheduler) {
   dataRefreshStatus.textContent = scheduler.enabled
     ? `Scheduled refresh: every ${scheduler.interval_seconds}s`
     : "Scheduled refresh: off";
   datasetsListEl.innerHTML = "";
-  if (!datasets.length) {
+  if (!datasets.length && !documents.length) {
     datasetsListEl.innerHTML = `<p class="empty">No datasets found.</p>`;
     return;
   }
-  for (const d of datasets) {
-    const card = document.createElement("div");
-    card.className = "data-card";
-    if (d.error) {
-      card.innerHTML = `<div class="data-card-head"><h3>${escapeHtml(d.name)}</h3></div>
-        <p class="error-text">⚠ ${escapeHtml(d.error)}</p>`;
-      datasetsListEl.appendChild(card);
-      continue;
-    }
-    const meta = `${d.columns.length} columns · ${d.rows} rows` +
-      (d.period ? ` · ${escapeHtml(d.period)}` : "");
-    const freshness = d.last_refreshed_utc
-      ? `<p class="data-freshness">Last refreshed: <strong>${new Date(d.last_refreshed_utc).toLocaleString()}</strong> — kept fresh by the scheduled refresh job</p>`
-      : "";
-    card.innerHTML = `
-      <div class="data-card-head">
-        <h3>${escapeHtml(d.name)}</h3>
-        <span class="format-badge">${escapeHtml(d.format || "")}</span>
-      </div>
-      <p class="data-desc">${escapeHtml(d.description || "")}</p>
-      <div class="data-meta">
-        <span class="source-chip">data/${escapeHtml(d.source_file)}</span>
-        <span class="data-meta-text">${meta}</span>
-      </div>
-      <div class="data-columns">${d.columns.map(c => `<code>${escapeHtml(c)}</code>`).join("")}</div>
-      ${freshness}
-      <button type="button" class="secondary data-preview-btn">Preview</button>
-      <div class="data-preview hidden"></div>`;
-    wirePreview(card, d.name);
-    datasetsListEl.appendChild(card);
-  }
+  datasetsListEl.appendChild(dataSectionHead("Datasets",
+    "Queryable tables. The agent reads these with its data tools, and every figure it "
+    + "quotes cites the file it came from."));
+  for (const d of datasets) datasetsListEl.appendChild(datasetCard(d));
+
+  datasetsListEl.appendChild(dataSectionHead("Documents",
+    documents.length
+      ? "Markdown the agent reads with read_document — files converted on the way in, and "
+        + "answers you saved from a chat. Edit any of them here; the agent reads your version."
+      : "None yet — add a PDF, Word or PowerPoint file and it is converted for the agent, "
+        + "or save an answer from a chat."));
+  for (const d of documents) datasetsListEl.appendChild(documentCard(d));
 }
 
-// Lazy-load the first rows of a dataset on first click, then just toggle.
-function wirePreview(card, name) {
+function dataSectionHead(title, sub) {
+  const el = document.createElement("div");
+  el.className = "data-section-head";
+  el.innerHTML = `<h3>${escapeHtml(title)}</h3><p class="hint">${escapeHtml(sub)}</p>`;
+  return el;
+}
+
+// escapeAttr, not escapeHtml: this sits inside a quoted attribute, and a name
+// containing a double quote would otherwise close the value and open a handler.
+function removeButton(uploadId) {
+  if (!uploadId) return "";
+  return `<button type="button" class="ghost-danger data-remove-btn"
+    data-id="${escapeAttr(uploadId)}">Remove</button>`;
+}
+
+function datasetCard(d) {
+  const card = document.createElement("div");
+  card.className = "data-card";
+  if (d.error) {
+    card.innerHTML = `<div class="data-card-head"><h3>${escapeHtml(d.name)}</h3></div>
+      <p class="error-text">⚠ ${escapeHtml(d.error)}</p>`;
+    return card;
+  }
+  const meta = `${d.columns.length} columns · ${d.rows} rows` +
+    (d.period ? ` · ${escapeHtml(d.period)}` : "");
+  const freshness = d.last_refreshed_utc
+    ? `<p class="data-freshness">Last refreshed: <strong>${new Date(d.last_refreshed_utc).toLocaleString()}</strong> — kept fresh by the scheduled refresh job</p>`
+    : "";
+  card.innerHTML = `
+    <div class="data-card-head">
+      <h3>${escapeHtml(d.name)}</h3>
+      <span class="format-badge">${escapeHtml(d.format || "")}</span>
+      ${d.uploaded ? `<span class="format-badge uploaded">uploaded</span>` : ""}
+    </div>
+    <p class="data-desc">${escapeHtml(d.description || "")}</p>
+    <div class="data-meta">
+      <span class="source-chip">data/${escapeHtml(d.source_file)}</span>
+      <span class="data-meta-text">${meta}</span>
+    </div>
+    <div class="data-columns">${d.columns.map(c => `<code>${escapeHtml(c)}</code>`).join("")}</div>
+    ${freshness}
+    <div class="data-card-actions">
+      <button type="button" class="secondary data-preview-btn">Preview</button>
+      ${removeButton(d.upload_id)}
+    </div>
+    <div class="data-preview hidden"></div>`;
+  wirePreview(card, `/api/datasets/${encodeURIComponent(d.name)}/preview?rows=5`, renderTablePreview);
+  wireRemove(card, d.name);
+  return card;
+}
+
+function documentCard(d) {
+  const card = document.createElement("div");
+  card.className = "data-card";
+  const research = d.origin === "research";
+  card.innerHTML = `
+    <div class="data-card-head">
+      <h3>${escapeHtml(d.name)}</h3>
+      <span class="format-badge">${escapeHtml(d.format || "")}</span>
+      <span class="format-badge uploaded">${research ? "saved answer" : "uploaded"}</span>
+    </div>
+    <p class="data-desc">${escapeHtml(d.description || "")}</p>
+    <div class="data-meta">
+      <span class="source-chip">${escapeHtml(d.file_name || d.name)}</span>
+    </div>
+    <div class="data-card-actions">
+      <button type="button" class="secondary data-preview-btn">Preview</button>
+      ${d.upload_id ? `<button type="button" class="secondary data-edit-btn">Edit</button>` : ""}
+      ${removeButton(d.upload_id)}
+    </div>
+    <div class="data-preview hidden"></div>
+    <div class="doc-editor hidden">
+      <textarea spellcheck="false"></textarea>
+      <div class="doc-editor-actions">
+        <button type="button" class="primary-btn doc-save-btn" style="width:auto">Save changes</button>
+        <button type="button" class="secondary doc-cancel-btn">Cancel</button>
+        <span class="hint doc-editor-status"></span>
+      </div>
+    </div>`;
+  wirePreview(card, `/api/documents/${encodeURIComponent(d.name)}/preview`, renderDocPreview);
+  wireEdit(card, d);
+  wireRemove(card, d.name);
+  return card;
+}
+
+// Edit a document's markdown in place. The converted text is what the agent
+// actually reads (read_document), so correcting it here corrects every future
+// answer that cites it — without re-uploading.
+function wireEdit(card, d) {
+  const btn = card.querySelector(".data-edit-btn");
+  if (!btn) return;
+  const editor = card.querySelector(".doc-editor");
+  const textarea = editor.querySelector("textarea");
+  const status = editor.querySelector(".doc-editor-status");
+  const saveBtn = editor.querySelector(".doc-save-btn");
+
+  function closeEditor() {
+    editor.classList.add("hidden");
+    btn.textContent = "Edit";
+    status.textContent = "";
+  }
+
+  btn.addEventListener("click", async () => {
+    if (!editor.classList.contains("hidden")) { closeEditor(); return; }
+    if (!textarea.dataset.loaded) {
+      btn.disabled = true;
+      try {
+        const resp = await fetch(`/api/documents/${encodeURIComponent(d.name)}/markdown`);
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(apiError(body, resp.status));
+        textarea.value = body.content;
+        textarea.dataset.loaded = "1";
+      } catch (err) {
+        showUploadStatus(`⚠ ${err.message}`, true);
+        btn.disabled = false;
+        return;
+      }
+      btn.disabled = false;
+    }
+    editor.classList.remove("hidden");
+    btn.textContent = "Close editor";
+    textarea.focus();
+  });
+
+  editor.querySelector(".doc-cancel-btn").addEventListener("click", () => {
+    delete textarea.dataset.loaded;   // discard edits — reload from the server next time
+    closeEditor();
+  });
+
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.disabled = true;
+    status.textContent = "Saving…";
+    status.classList.remove("error-text");
+    try {
+      const resp = await fetch(`/api/uploads/${encodeURIComponent(d.upload_id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ markdown: textarea.value }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(apiError(body, resp.status));
+      await renderData();
+      showUploadStatus(`Saved changes to "${d.name}".`);
+    } catch (err) {
+      status.textContent = `⚠ ${err.message}`;
+      status.classList.add("error-text");
+      saveBtn.disabled = false;
+    }
+  });
+}
+
+function renderTablePreview(p) {
+  const head = p.columns.map(c => `<th>${escapeHtml(c)}</th>`).join("");
+  const body = p.records.map(r =>
+    "<tr>" + p.columns.map(c => `<td>${escapeHtml(String(r[c] ?? ""))}</td>`).join("") + "</tr>").join("");
+  return `<div class="data-table-wrap"><table class="data-table"><tr>${head}</tr>${body}</table></div>
+    <p class="hint">First ${p.records.length} of ${p.rows_total} rows · ${escapeHtml(p.source_file)}</p>`;
+}
+
+function renderDocPreview(p) {
+  const more = p.chars_total > p.content.length
+    ? ` — showing the first ${p.content.length} of ${p.chars_total} characters`
+    : "";
+  return `<div class="doc-preview">${renderMarkdown(p.content)}</div>
+    <p class="hint">Converted from ${escapeHtml(p.source_file)}${more}</p>`;
+}
+
+// Lazy-load a preview on first click, then just toggle. `render` turns the
+// endpoint's payload into HTML — table rows for datasets, markdown for documents.
+function wirePreview(card, url, render) {
   const btn = card.querySelector(".data-preview-btn");
   const box = card.querySelector(".data-preview");
   btn.addEventListener("click", async () => {
     if (!box.dataset.loaded) {
       btn.disabled = true;
       try {
-        const resp = await fetch(`/api/datasets/${encodeURIComponent(name)}/preview?rows=5`);
-        const p = await resp.json();
-        if (!resp.ok) throw new Error(p.error || `Server error ${resp.status}`);
-        const head = p.columns.map(c => `<th>${escapeHtml(c)}</th>`).join("");
-        const body = p.records.map(r =>
-          "<tr>" + p.columns.map(c => `<td>${escapeHtml(String(r[c] ?? ""))}</td>`).join("") + "</tr>").join("");
-        box.innerHTML = `<div class="data-table-wrap"><table class="data-table"><tr>${head}</tr>${body}</table></div>
-          <p class="hint">First ${p.records.length} of ${p.rows_total} rows · ${escapeHtml(p.source_file)}</p>`;
+        const resp = await fetch(url);
+        const p = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(apiError(p, resp.status));
+        box.innerHTML = render(p);
         box.dataset.loaded = "1";
       } catch (err) {
         box.innerHTML = `<p class="error-text">⚠ ${escapeHtml(err.message)}</p>`;
@@ -1574,11 +1796,77 @@ function wirePreview(card, name) {
   });
 }
 
+function wireRemove(card, name) {
+  const btn = card.querySelector(".data-remove-btn");
+  if (!btn) return;   // built-in datasets carry no upload_id and so can't be removed
+  btn.addEventListener("click", async () => {
+    if (!confirm(`Remove "${name}"? The agent will no longer be able to use it.`)) return;
+    btn.disabled = true;
+    try {
+      const resp = await fetch(`/api/uploads/${encodeURIComponent(btn.dataset.id)}`,
+                               { method: "DELETE" });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(apiError(body, resp.status));
+      }
+      await renderData();
+    } catch (err) {
+      showUploadStatus(`⚠ ${err.message}`, true);
+      btn.disabled = false;
+    }
+  });
+}
+
+// ---------- Adding files on the data page ----------
+
+function showUploadStatus(text, isError = false) {
+  dataUploadStatus.hidden = !text;
+  dataUploadStatus.textContent = text || "";
+  dataUploadStatus.classList.toggle("error-text", !!isError);
+}
+
+dataAddFile.addEventListener("click", () => dataFileInput.click());
+dataFileInput.addEventListener("change", async () => {
+  const files = [...dataFileInput.files];
+  dataFileInput.value = "";
+  if (!files.length) return;
+  dataAddFile.disabled = true;
+  let added = 0;
+  try {
+    for (const file of files) {
+      if (file.size > MAX_FILE_BYTES) {
+        showUploadStatus(`⚠ "${file.name}" is larger than 8 MB and was skipped.`, true);
+        continue;
+      }
+      // Documents are converted server-side on upload, which takes a moment —
+      // and is why the agent never waits for it at question time.
+      showUploadStatus(`Adding "${file.name}"…`);
+      try {
+        const resp = await fetch("/api/uploads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, data: await readBase64(file) }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(apiError(body, resp.status));
+        added++;
+      } catch (err) {
+        showUploadStatus(`⚠ ${file.name}: ${err.message}`, true);
+      }
+    }
+  } finally {
+    dataAddFile.disabled = false;
+  }
+  await renderData();
+  if (added) showUploadStatus(`Added ${added} file${added === 1 ? "" : "s"}.`);
+});
+
 // Manual refresh from the data view — re-render so last_refreshed_utc visibly moves.
 dataRefreshNow.addEventListener("click", async () => {
   dataRefreshNow.disabled = true;
   try {
-    await fetch("/api/refresh-now", { method: "POST" });
+    const resp = await fetch("/api/refresh", { method: "POST" });
+    if (!resp.ok) showUploadStatus(`⚠ Refresh failed (${resp.status}).`, true);
     await renderData();
     loadSettings();   // keep the header badge + settings panel in sync
   } finally {
@@ -2060,7 +2348,7 @@ refreshEnabled.addEventListener("change", () => pushSettings({ refresh_enabled: 
 refreshInterval.addEventListener("change", () =>
   pushSettings({ refresh_interval_seconds: parseInt(refreshInterval.value, 10) }));
 document.getElementById("refresh-now").addEventListener("click", async () => {
-  await fetch("/api/refresh-now", { method: "POST" });
+  await fetch("/api/refresh", { method: "POST" });
   loadSettings();
 });
 

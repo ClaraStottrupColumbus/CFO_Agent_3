@@ -3,8 +3,9 @@
   "configurations": [
     {
       "name": "cfo-agent-3",
-      "runtimeExecutable": ".venv/bin/uvicorn",
-      "runtimeArgs": ["app.main:app", "--port", "8323", "--reload"],
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8323", "--reload",
+                      "--reload-dir", "app", "--reload-dir", "static"],
       "port": 8323
     }
   ]

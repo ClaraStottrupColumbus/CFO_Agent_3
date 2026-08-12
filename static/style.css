@@ -731,6 +731,121 @@ h1 {
 }
 .data-table tr:last-child td { border-bottom: 0; }
 
+/* Section headings separating queryable datasets from readable documents. The
+   two are different kinds of thing — one is filtered and aggregated, the other
+   is read whole — so the page never runs them together in one list. */
+.data-section-head { margin: 0.5rem 0 -0.3rem; }
+.data-section-head h3 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  font-size: 1.1rem;
+  letter-spacing: var(--tracking-tight);
+  color: var(--fg-1);
+  margin: 0;
+}
+.data-section-head .hint { margin: 0.2rem 0 0; }
+.data-section-head + .data-card { margin-top: 0.3rem; }
+
+/* Inverted badge: an uploaded dataset reads as the CFO's own, not the demo's. */
+.format-badge.uploaded { background: var(--columbus-navy); color: var(--white); }
+.data-card-head { flex-wrap: wrap; }
+.data-card-head h3 { margin-right: auto; }
+.data-card-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+/* Converted markdown preview of a document */
+.doc-preview {
+  max-height: 22rem;
+  overflow-y: auto;
+  background: var(--white);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.2rem;
+  font-size: 0.85rem;
+  line-height: var(--lh-relaxed);
+  color: var(--fg-1);
+  box-shadow: 0 2px 8px rgba(1, 1, 144, 0.07);
+}
+.doc-preview table { width: 100%; border-collapse: collapse; margin: 0.7em 0; font-size: 0.95em; }
+.doc-preview th {
+  text-align: left;
+  padding: 0.45em 0.8em;
+  background: var(--columbus-navy);
+  color: var(--white);
+  font-weight: var(--fw-medium);
+}
+.doc-preview td { padding: 0.4em 0.8em; border-bottom: 1px solid rgba(1, 1, 144, 0.08); }
+.doc-preview h2, .doc-preview h3, .doc-preview h4 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-regular);
+  color: var(--columbus-navy);
+  margin: 0.9em 0 0.3em;
+}
+
+/* The document editor. The converted text is what the agent reads, so a
+   correction here corrects every future answer that cites it. */
+.doc-editor { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.doc-editor.hidden { display: none; }   /* no global .hidden — declare it here */
+.doc-editor textarea {
+  width: 100%;
+  min-height: 18rem;
+  resize: vertical;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--fg-1);
+}
+.doc-editor-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+/* Removing an upload is destructive but routine — an outline, not a red fill,
+   since orange is reserved for primary CTAs and red for breached thresholds. */
+button.ghost-danger {
+  background: transparent;
+  color: var(--fg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  padding: 0.45rem 0.95rem;
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out);
+}
+button.ghost-danger:hover { background: rgba(194, 69, 69, 0.12); color: var(--bad); }
+button.ghost-danger:disabled { opacity: 0.5; cursor: default; }
+
+/* "Add file" is the primary action on this page, so it gets the orange CTA. */
+#data-add-file {
+  font-family: var(--font-sans);
+  font-weight: var(--fw-medium);
+  font-size: 0.85rem;
+  padding: 0.5rem 1.1rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--cta);
+  color: var(--white);
+  cursor: pointer;
+  transition: background var(--duration-base) var(--ease-out),
+              box-shadow var(--duration-base) var(--ease-out);
+}
+#data-add-file:hover { background: var(--cta-hover); box-shadow: var(--shadow-glow-orange); }
+#data-add-file:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+#data-upload-status { margin: -0.8rem 0 1.1rem; }
+
+/* ---------------- Saving an answer as a document ---------------- */
+
+.answer-save {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+.answer-save .hint { margin: 0; }
+.answer-saved { font-size: 0.8rem; color: var(--fg-2); }
+.answer-saved a { color: var(--accent); }
+
 /* ---------------- Settings panel ---------------- */
 
 #settings-panel {

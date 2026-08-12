@@ -15,9 +15,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CFO Budgeting Agent</title>
-  <link rel="stylesheet" href="/static/columbus-tokens.css?v=40">
-  <link rel="stylesheet" href="/static/style.css?v=40">
-  <link rel="stylesheet" href="/static/budget.css?v=40">
+  <link rel="stylesheet" href="/static/columbus-tokens.css?v=41">
+  <link rel="stylesheet" href="/static/style.css?v=41">
+  <link rel="stylesheet" href="/static/budget.css?v=41">
 </head>
 <body>
   <header>
@@ -249,13 +249,20 @@
       <div class="data-header">
         <div>
           <h2>Data ingestion</h2>
-          <p class="feature-sub">The curated datasets every answer is sourced from — files, columns, coverage and freshness.</p>
+          <p class="feature-sub">Everything every answer is sourced from — the curated datasets, plus any spreadsheet or document you add. Files, columns, coverage and freshness.</p>
         </div>
         <div class="data-refresh">
           <span id="data-refresh-status" class="hint"></span>
+          <button id="data-add-file">Add file</button>
           <button id="data-refresh-now" class="secondary">Refresh now</button>
         </div>
       </div>
+      <p id="data-upload-status" class="hint" hidden></p>
+      <!-- Spreadsheets become queryable datasets; documents are converted to
+           markdown on the way in and read with read_document. Images are not
+           offered here on purpose — they belong on a chat message. -->
+      <input type="file" id="data-file-input" multiple hidden
+             accept=".csv,.tsv,.xlsx,.xls,.parquet,.pdf,.docx,.pptx,.txt,.md,.json,.log,.yaml,.yml,.xml">
       <div id="datasets-list"></div>
     </div>
   </main>
@@ -408,7 +415,7 @@
 
   <!-- budget.js BEFORE app.js: it only declares window.BudgetPlan, while app.js
        ends by calling boot() → route(), which needs it to already exist. -->
-  <script src="/static/budget.js?v=40"></script>
-  <script src="/static/app.js?v=40"></script>
+  <script src="/static/budget.js?v=41"></script>
+  <script src="/static/app.js?v=41"></script>
 </body>
 </html>
