@@ -188,8 +188,12 @@ date in the cached block means zero cache reads forever with nothing erroring to
 in `build_tools` is part of the cached prefix — reordering silently invalidates the cache.
 
 Event vocabulary yielded by `run_agent` (the backend↔browser contract, documented in its docstring):
-`text`, `reasoning`, `research`, `tool_call`, `tool_result`, `chart`, `citation`, `web_error`,
-`notice`, `sources`, `done`, `error`. `error` is **terminal** in the frontend's contract — a failed
+`text`, `reasoning`, `reasoning_summary`, `research`, `tool_call`, `tool_result`, `chart`, `citation`,
+`web_error`, `notice`, `sources`, `done`, `error`. `reasoning_summary` is a Haiku 4.5 one-liner gloss
+of one completed thinking block, fired once per burst from `content_block_stop` — cosmetic only, never
+persisted (`reporting.run_session_turn` doesn't special-case it, so it passes through to the SSE
+stream and nowhere else), and its failure is silently swallowed rather than raised, same as
+`web_error` being non-terminal. `error` is **terminal** in the frontend's contract — a failed
 web tool must yield `web_error` instead, and every error arm yields `done` after it so the frontend's
 streaming state clears.
 

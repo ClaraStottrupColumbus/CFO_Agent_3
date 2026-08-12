@@ -195,8 +195,9 @@ h1 {
 
 /* ---------------- Views ---------------- */
 
-.view { flex: 1; min-height: 0; display: flex; }
+.view { flex: 1; min-height: 0; display: flex; animation: view-fade-in var(--duration-base) var(--ease-out); }
 .view.hidden { display: none; }
+@keyframes view-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---------------- Feature view ---------------- */
 
@@ -367,8 +368,9 @@ h1 {
 
 /* ---------------- Chat bubbles ---------------- */
 
-.msg { display: flex; }
+.msg { display: flex; animation: msg-fade-in var(--duration-base) var(--ease-out) both; }
 .msg.user { justify-content: flex-end; }
+@keyframes msg-fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
 .bubble {
   max-width: 80%;
@@ -493,6 +495,14 @@ h1 {
 }
 
 .thinking { color: var(--fg-3); font-style: italic; }
+.thinking-dots { display: inline-flex; gap: 3px; margin-left: 4px; vertical-align: -1px; }
+.thinking-dots span {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--fg-3);
+  animation: bootPulse 1.1s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) { animation-delay: .15s; }
+.thinking-dots span:nth-child(3) { animation-delay: .3s; }
 .error-text { color: var(--bad); }
 /* Every inline error in app.js is hidden by adding `.hidden` to it, and this
    file has no global rule for that class — so without this line a message that
@@ -1103,18 +1113,25 @@ input[type="checkbox"] { width: 1.15rem; height: 1.15rem; accent-color: var(--co
 details.reasoning {
   margin: 0 0 10px; border-radius: 12px;
   background: rgba(1, 1, 144, 0.035);
+  animation: msg-fade-in var(--duration-base) var(--ease-out) both;
 }
 details.reasoning > summary {
   cursor: pointer; list-style: none; padding: 7px 12px;
   font-size: .8rem; color: var(--muted);
-  display: flex; align-items: center; gap: 2px;
+  display: flex; flex-direction: column; gap: 2px;
 }
 details.reasoning > summary::-webkit-details-marker { display: none; }
+.reasoning-row { display: flex; align-items: center; gap: 2px; }
 .reasoning-label { font-weight: 500; }
 .reasoning-spinner { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; }
 details.reasoning.is-live .reasoning-spinner {
   background: var(--accent); animation: bootPulse 1.1s ease-in-out infinite;
 }
+/* Below the "Reasoning" row, INSIDE summary — the only part of a collapsed
+   <details> the browser still renders, which is the whole point: visible
+   without expanding the box. Empty until the first summary event arrives. */
+.reasoning-status { font-size: .78rem; font-style: italic; color: var(--fg-3); }
+.reasoning-status:empty { display: none; }
 .reasoning-body {
   max-height: 11rem; overflow-y: auto;
   padding: 0 12px 10px; white-space: pre-wrap;

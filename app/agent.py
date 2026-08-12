@@ -81,6 +81,25 @@ DEFAULT_MODEL_HEAVY = "claude-opus-5"
 DEFAULT_MODEL_GENERAL = "claude-sonnet-5"
 DEFAULT_MODEL = DEFAULT_MODEL_HEAVY
 
+# A one-shot, non-conversational use of Haiku 4.5 — NOT added to MODEL_CAPS/AVAILABLE_MODELS.
+# It never needs web tools, thinking or effort, so the exclusion above does not apply to it:
+# it turns one completed reasoning burst into a short status line for the "Thinking…" indicator.
+REASONING_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
+REASONING_SUMMARY_MAX_TOKENS = 20
+REASONING_SUMMARY_MIN_CHARS = 25   # skip near-empty thinking bursts, not worth a round trip
+# Flush a line MID-BURST once this much unsummarized thinking has piled up,
+# rather than waiting for the block to end. Two reasons: a long think would
+# otherwise show nothing for its whole duration (the gap this feature exists to
+# fill), and a turn whose bursts all end below MIN_CHARS would show nothing at
+# all. Also gives progressive updates as the reasoning moves on.
+REASONING_SUMMARY_FLUSH_CHARS = 500
+REASONING_SUMMARY_SYSTEM = (
+    "Compress this fragment of an AI model's internal reasoning into ONE short status "
+    "line (max 8 words), present progressive tense, e.g. 'Checking chicken meal price' or "
+    "'Comparing forward curve to spot'. Plain text, no trailing punctuation, no quotes. "
+    "Output nothing else."
+)
+
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_EFFORT = "high"
 # Disabling thinking is effort-gated on claude-opus-5: {"type": "disabled"} is
@@ -462,6 +481,29 @@ def get_client() -> anthropic.Anthropic:
     return _client
 
 
+def _summarize_reasoning(client: anthropic.Anthropic, text: str) -> str | None:
+    """One completed thinking block -> one short status line, via Haiku 4.5.
+
+    Cosmetic and non-terminal by design, same as a web_error: any failure here
+    must never interrupt or error out the main model's turn, so it is caught
+    and simply skipped rather than surfaced.
+    """
+    if len(text) < REASONING_SUMMARY_MIN_CHARS:
+        return None
+    try:
+        response = client.messages.create(
+            model=REASONING_SUMMARY_MODEL,
+            max_tokens=REASONING_SUMMARY_MAX_TOKENS,
+            system=REASONING_SUMMARY_SYSTEM,
+            messages=[{"role": "user", "content": text[:2000]}],
+        )
+        summary = "".join(b.text for b in response.content
+                          if getattr(b, "type", None) == "text").strip()
+        return summary or None
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------------
 # The loop
 # --------------------------------------------------------------------------
@@ -475,6 +517,7 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
 
       {type: "text", text}                  assistant text delta
       {type: "reasoning", text}             summarized thinking delta
+      {type: "reasoning_summary", text}     one-line gloss of a completed thinking block
       {type: "research", tool, query|url}   a server-side web call started
       {type: "tool_call", name, input}      model invoked a local tool
       {type: "tool_result", name, result}   local tool execution result
@@ -548,6 +591,12 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
                 break
 
             first_in_turn = True
+            # Our own accumulation of the current thinking block's deltas.
+            # NOT block.thinking: with display "summarized" the SDK leaves that
+            # field EMPTY on some completed thinking blocks even though every
+            # delta streamed real text, so reading it made the one-liner fire
+            # only sometimes. The deltas are the reliable source.
+            thinking_buf = ""
             with client.beta.messages.stream(**request, messages=convo) as stream:
                 for event in stream:
                     etype = getattr(event, "type", None)
@@ -577,8 +626,14 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
                             any_text = True
                             yield {"type": "text", "text": text}
                         elif dtype == "thinking_delta":
-                            yield {"type": "reasoning",
-                                   "text": getattr(event.delta, "thinking", "")}
+                            chunk = getattr(event.delta, "thinking", "")
+                            thinking_buf += chunk
+                            yield {"type": "reasoning", "text": chunk}
+                            if len(thinking_buf) >= REASONING_SUMMARY_FLUSH_CHARS:
+                                summary = _summarize_reasoning(client, thinking_buf.strip())
+                                thinking_buf = ""
+                                if summary:
+                                    yield {"type": "reasoning_summary", "text": summary}
 
                     elif etype == "content_block_stop":
                         # A cited text block is complete: drop the marker in
@@ -587,6 +642,13 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
                         block = getattr(event, "content_block", None)
                         for marker in _markers_for(block, records):
                             yield marker
+                        # End of a thinking burst: summarize whatever the
+                        # mid-burst flush above has not already consumed.
+                        if getattr(block, "type", None) == "thinking":
+                            summary = _summarize_reasoning(client, thinking_buf.strip())
+                            thinking_buf = ""
+                            if summary:
+                                yield {"type": "reasoning_summary", "text": summary}
 
                 response = stream.get_final_message()
 

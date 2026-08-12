@@ -191,7 +191,7 @@ function addUserMessage(container, text, attachments) {
 function addAssistantMessage(container, initialText) {
   const div = document.createElement("div");
   div.className = "msg assistant";
-  div.innerHTML = `<div class="bubble"><div class="content thinking">Thinking…</div></div>`;
+  div.innerHTML = `<div class="bubble"><div class="content thinking">Thinking<span class="thinking-dots"><span></span><span></span><span></span></span></div></div>`;
   container.appendChild(div);
   const bubble = div.querySelector(".bubble");
   if (initialText) {
@@ -399,11 +399,14 @@ function ensureReasoning(bubble) {
   if (box) return box;
   box = document.createElement("details");
   box.className = "reasoning is-live";
-  box.open = true;
+  box.open = false;
   const summary = document.createElement("summary");
-  summary.innerHTML = '<span class="reasoning-label">Reasoning</span>' +
-                      '<span class="reasoning-meta"></span>' +
-                      '<span class="reasoning-spinner"></span>';
+  summary.innerHTML = '<div class="reasoning-row">' +
+                         '<span class="reasoning-label">Reasoning</span>' +
+                         '<span class="reasoning-meta"></span>' +
+                         '<span class="reasoning-spinner"></span>' +
+                       '</div>' +
+                       '<div class="reasoning-status"></div>';
   const body = document.createElement("div");
   body.className = "reasoning-body";
   box.appendChild(summary);
@@ -439,6 +442,16 @@ function updateReasoningMeta(box) {
   const steps = Number(box.dataset.steps || 1);
   box.querySelector(".reasoning-meta").textContent =
     ` · ${secs}s · ${steps} step${steps === 1 ? "" : "s"}`;
+}
+
+// One Haiku-generated one-liner per completed reasoning burst. Lives in the
+// box's own <summary>, below the "Reasoning" row — summary content is the
+// ONLY part of a <details> the browser still renders while collapsed, so this
+// is visible without expanding, unlike the full disclosure below it.
+function showReasoningStatus(bubble, text) {
+  const box = bubble.querySelector("details.reasoning");
+  if (!box) return;
+  box.querySelector(".reasoning-status").textContent = text;
 }
 
 function collapseReasoning(bubble) {
@@ -963,6 +976,8 @@ function createStreamRenderer(container, bubble, opts = {}) {
       else if (!revealRaf) revealRaf = requestAnimationFrame(revealTick);
     } else if (ev.type === "reasoning") {
       appendReasoning(bubble, ev.text);
+    } else if (ev.type === "reasoning_summary") {
+      showReasoningStatus(bubble, ev.text);
     } else if (ev.type === "research") {
       showResearchStatus(bubble, ev);
     } else if (ev.type === "citation") {
