@@ -1997,8 +1997,22 @@ function taskCard(t) {
 
   card.querySelector(".task-run").addEventListener("click", async (e) => {
     e.target.disabled = true;
-    try { await fetch(`/api/tasks/${t.id}/run-now`, { method: "POST" }); }
-    finally { setTimeout(refreshTaskList, 600); }
+    // POST /api/tasks/{id}/run — main.py:1278. This used to point at
+    // /api/tasks/{id}/run-now, which no route has ever served, and the handler
+    // never checked resp.ok — so "Run now" 404'd, the card refreshed, and the
+    // button looked like it had worked. Same failure as the report-generation
+    // one at apiGenerateReport; an unchecked fetch is how it hides both times.
+    try {
+      const resp = await fetch(`/api/tasks/${t.id}/run`, { method: "POST" });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error((data.detail && data.detail.error) || data.error
+                        || `Could not start this task (${resp.status})`);
+      }
+    } catch (err) {
+      alert(err.message);
+      e.target.disabled = false;
+    } finally { setTimeout(refreshTaskList, 600); }
   });
   card.querySelector(".task-edit").addEventListener("click", () => openTaskForm(t));
   card.querySelector(".task-enabled").addEventListener("change", async (e) => {

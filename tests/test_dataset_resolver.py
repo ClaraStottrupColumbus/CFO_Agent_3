@@ -93,19 +93,25 @@ def test_the_teachable_error_enumerates_builtins_and_uploads(store, builtin):
 
 # ---------- The model reaches an upload through the ordinary query tool ----------
 
+def _as_dicts(result: dict) -> list[dict]:
+    """The tool returns columns + positional rows to keep bulk data out of the
+    model's context; these tests assert on values, not on that shape."""
+    return tools.rows_as_records(result)["rows"]
+
+
 def test_query_budget_data_reads_an_upload(store, builtin):
     uploads.add_dataset("Board plan.csv", CSV)
     result = tools.query_budget_data("board_plan")
     assert result["row_count"] == 2
     assert result["source_file"] == "uploads/board_plan.parquet"
-    assert result["rows"][0]["region"] == "Nordics"
+    assert _as_dicts(result)[0]["region"] == "Nordics"
 
 
 def test_filters_and_sorting_work_on_an_upload(store, builtin):
     uploads.add_dataset("Board plan.csv", CSV)
     result = tools.query_budget_data(
         "board_plan", filters=[{"column": "region", "op": "==", "value": "Baltics"}])
-    assert result["row_count"] == 1 and result["rows"][0]["revenue_eur"] == 120
+    assert result["row_count"] == 1 and _as_dicts(result)[0]["revenue_eur"] == 120
 
 
 def test_group_by_infers_the_summable_columns_for_an_upload(store, builtin):
@@ -113,8 +119,41 @@ def test_group_by_infers_the_summable_columns_for_an_upload(store, builtin):
     uploads.add_dataset("Board plan.csv", CSV)
     result = tools.query_budget_data("board_plan", group_by=["region"])
     assert "error" not in result
-    assert {r["region"] for r in result["rows"]} == {"Nordics", "Baltics"}
-    assert result["rows"][0]["revenue_eur"] in (100, 120)
+    rows = _as_dicts(result)
+    assert {r["region"] for r in rows} == {"Nordics", "Baltics"}
+    assert rows[0]["revenue_eur"] in (100, 120)
+
+
+# ---------- The columnar result shape ----------
+
+def test_rows_are_positional_and_columns_are_named_once(store, builtin):
+    """The whole point: column names appear once in `columns`, not once per row.
+    At the 500-row cap that repetition was most of a ~160k-char result."""
+    uploads.add_dataset("Board plan.csv", CSV)
+    result = tools.query_budget_data("board_plan")
+    assert set(result["columns"]) == {"month", "region", "revenue_eur"}
+    # Every row is a bare list, positionally matching `columns` — no keys.
+    assert all(isinstance(row, list) and len(row) == len(result["columns"])
+               for row in result["rows"])
+    assert {row[result["columns"].index("region")] for row in result["rows"]} \
+        == {"Nordics", "Baltics"}
+
+
+def test_the_columnar_shape_round_trips_to_records(store, builtin):
+    uploads.add_dataset("Board plan.csv", CSV)
+    result = tools.query_budget_data("board_plan")
+    folded = tools.rows_as_records(result)
+    assert folded["rows"] == [dict(zip(result["columns"], row)) for row in result["rows"]]
+    assert {r["region"]: r["revenue_eur"] for r in folded["rows"]} \
+        == {"Nordics": 100, "Baltics": 120}
+    # Everything else is carried through untouched, and `columns` is consumed.
+    assert folded["source_file"] == result["source_file"]
+    assert "columns" not in folded
+
+
+def test_folding_an_error_result_is_a_no_op():
+    err = {"error": "Unknown dataset 'nope'."}
+    assert tools.rows_as_records(err) == err
 
 
 def test_an_unknown_column_on_an_upload_is_still_teachable(store, builtin):

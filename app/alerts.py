@@ -229,6 +229,31 @@ def run_drift_scan(params: dict, profile: dict | None = None) -> str:
     return detail
 
 
+def _narrative_params(params: dict) -> dict:
+    """The alert narrative's own run settings, narrowed from the caller's.
+
+    Two deliberate reductions, both about what this turn is FOR. `rules.py` has
+    already computed the finding deterministically; the model's job is to check
+    the figure against internal data and say why it matters in a few sentences —
+    not to research it on the open web. So:
+
+      * web research off. It was on, which let a single alert fan out into up to
+        8 searches and 8 fetches of unbounded page content, on a scan that runs
+        unattended and can produce three of these at a time. The local tools stay
+        enabled, so the figure is still verified against the company's own data —
+        which is the verification URGENCY_ANALYSIS_PROMPT actually asks for.
+      * medium effort. A ≤6-sentence briefing over a pre-computed finding does
+        not need the interactive default.
+
+    The model is already the general slot — run_agent_to_text has no session and
+    so no tier to pick.
+    """
+    narrowed = dict(params)
+    narrowed["research"] = {**(params.get("research") or {}), "enabled": False}
+    narrowed["effort"] = "medium"
+    return narrowed
+
+
 def _analyse(finding: dict, params: dict, profile: dict | None = None) -> str:
     """Agent-written narrative, with a deterministic fallback so alert creation
     never depends on the API being reachable."""
@@ -236,7 +261,8 @@ def _analyse(finding: dict, params: dict, profile: dict | None = None) -> str:
     try:
         with reporting.AGENT_SEMAPHORE:
             text, error = reporting.run_agent_to_text(
-                [{"role": "user", "content": prompt}], params, profile=profile)
+                [{"role": "user", "content": prompt}], _narrative_params(params),
+                profile=profile)
     except Exception as exc:   # belt and braces — run_agent normally yields errors
         text, error = "", str(exc)
     if text and not error:

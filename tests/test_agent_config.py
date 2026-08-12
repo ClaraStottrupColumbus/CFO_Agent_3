@@ -7,9 +7,10 @@
 import pytest
 
 from app.agent import (AVAILABLE_MODELS, DEFAULT_MODEL, DEFAULT_MODEL_GENERAL,
-                       DEFAULT_MODEL_HEAVY, EFFORT_LEVELS, FALLBACK_BETA, MODEL_CAPS,
-                       build_system, build_tools, clamp_effort, model_request_fields,
-                       volatile_context)
+                       DEFAULT_MODEL_HEAVY, EFFORT_LEVELS, FALLBACK_BETA,
+                       MESSAGE_CACHE_BREAKPOINTS, MODEL_CAPS, accumulate_usage,
+                       build_system, build_tools, clamp_effort, mark_cache_breakpoint,
+                       model_request_fields, volatile_context)
 
 
 # ---------- Constraint 1: the picker cannot offer a model that cannot research ----------
@@ -251,7 +252,7 @@ def test_the_cached_prefix_clears_the_1024_token_floor():
 
 
 def test_thinking_off_adds_a_generic_tag_guardrail():
-    text = build_system(None, None, reasoning=False)[0]["text"]
+    text = build_system(None, None, reasoning=False)[1]["text"]
     # Naming the tags is measurably less effective, and telling the model not
     # to reason makes the leakage worse — so neither appears.
     assert "internal or system XML tags" in text
@@ -261,6 +262,127 @@ def test_thinking_off_adds_a_generic_tag_guardrail():
 
 def test_thinking_on_omits_the_guardrail():
     assert "internal or system XML tags" not in build_system(None, None, reasoning=True)[0]["text"]
+
+
+def test_the_reasoning_toggle_never_forks_the_cached_block():
+    """The guardrail varies with the `reasoning` flag, so it must sit BELOW the
+    breakpoint. Background tasks run reasoning=False and chat runs
+    reasoning=True; if that difference reached the cached block the two would
+    warm separate prefixes and neither would ever read the other's — with
+    nothing erroring to say so."""
+    on = build_system(_render(PROFILE), volatile_context(2, 3), reasoning=True)
+    off = build_system(_render(PROFILE), volatile_context(2, 3), reasoning=False)
+    assert on[0]["text"] == off[0]["text"]
+    assert "internal or system XML tags" in off[1]["text"]
+    # The volatile line still has to survive alongside it.
+    assert "Today's date" in off[1]["text"]
+
+
+# ---------- Message-side cache breakpoints ----------
+#
+# The API caps cache_control at 4 blocks per request and build_system spends one.
+# Marks persist on the blocks they were set on, so an unbounded loop breaches the
+# cap on the FOURTH tool round — a 400 that a short smoke test never reaches and
+# that only shows up on the long research turns this optimisation exists for.
+
+def _tool_results(n: int = 2) -> list[dict]:
+    return [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "{}"}
+            for i in range(n)]
+
+
+def _marks(convo: list[dict]) -> list[dict]:
+    return [block
+            for message in convo if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if isinstance(block, dict) and "cache_control" in block]
+
+
+def _run_rounds(n: int) -> list[dict]:
+    """n tool rounds through the loop's real append sequence."""
+    convo: list[dict] = [{"role": "user", "content": "plain string content"}]
+    for _ in range(n):
+        blocks = _tool_results()
+        mark_cache_breakpoint(convo, blocks)
+        convo.append({"role": "user", "content": blocks})
+    return convo
+
+
+def test_the_breakpoint_lands_on_the_last_block_of_the_newest_turn():
+    convo = _run_rounds(1)
+    blocks = convo[-1]["content"]
+    assert "cache_control" not in blocks[0]
+    assert blocks[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_marks_never_exceed_the_budget_over_a_full_tool_loop():
+    # MAX_TOOL_TURNS is 8, so run past it. Unbounded, this would be 10.
+    for rounds in range(1, 11):
+        assert len(_marks(_run_rounds(rounds))) <= MESSAGE_CACHE_BREAKPOINTS
+
+
+def test_the_two_surviving_marks_are_the_most_recent_ones():
+    # Stripping the NEWEST instead of the oldest would keep the cache pinned to
+    # a stale prefix and quietly stop extending it.
+    convo = _run_rounds(4)
+    marked_turns = [i for i, m in enumerate(convo)
+                    if isinstance(m["content"], list)
+                    and any("cache_control" in b for b in m["content"])]
+    assert marked_turns == [len(convo) - 2, len(convo) - 1]
+
+
+def test_a_string_content_turn_is_left_alone():
+    # Incoming history from reporting.py carries plain-string content, which
+    # cannot take a subscript assignment.
+    convo = _run_rounds(3)
+    assert convo[0]["content"] == "plain string content"
+
+
+def test_non_dict_blocks_are_skipped():
+    """The pause_turn path appends response.content — SDK block objects, not
+    dicts. Scanning them for marks must not blow up on attribute access."""
+    class SDKBlock:                      # deliberately not a dict
+        type = "text"
+
+    convo: list[dict] = [{"role": "assistant", "content": [SDKBlock()]}]
+    blocks = _tool_results()
+    mark_cache_breakpoint(convo, blocks)          # must not raise
+    convo.append({"role": "user", "content": blocks})
+    assert len(_marks(convo)) == 1
+
+
+def test_an_empty_tool_result_list_is_a_no_op():
+    convo = _run_rounds(1)
+    before = len(_marks(convo))
+    mark_cache_breakpoint(convo, [])
+    assert len(_marks(convo)) == before
+
+
+# ---------- Usage accounting ----------
+
+def test_usage_accumulates_across_rounds():
+    class Usage:
+        input_tokens = 10
+        cache_creation_input_tokens = 20
+        cache_read_input_tokens = 30
+        output_tokens = 40
+
+    total = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+    accumulate_usage(total, Usage())
+    accumulate_usage(total, Usage())
+    assert total == {"input": 20, "cache_write": 40, "cache_read": 60, "output": 80}
+
+
+def test_usage_tolerates_missing_and_absent_fields():
+    """Some error paths return no usage, or usage with fields unset. Accounting
+    must never be the thing that breaks a turn."""
+    class Partial:
+        input_tokens = 5
+        cache_read_input_tokens = None
+
+    total = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+    accumulate_usage(total, None)
+    accumulate_usage(total, Partial())
+    assert total == {"input": 5, "cache_write": 0, "cache_read": 0, "output": 0}
 
 
 # ---------- Prompt integrity ----------

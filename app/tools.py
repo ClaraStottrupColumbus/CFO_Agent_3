@@ -31,6 +31,14 @@ CHART_MAX_SERIES = 4
 CHART_MAX_POINTS = 36
 WATERFALL_MAX_POINTS = 9
 
+# One read_document call returns at most this much markdown (~10k tokens), with
+# an offset to page through the rest. Ingest caps a CONVERTED document at
+# MAX_EXTRACT_CHARS (200k), but markdown added through add_markdown/save_research
+# never passes through that cap — and whatever a read returns is re-sent on every
+# remaining round of the turn, so an unbounded read can dominate a turn's spend.
+# Generous on purpose: a board memo or a contract should still arrive in one call.
+DOCUMENT_WINDOW_CHARS = 40_000
+
 DATASETS = {
     "budget_vs_actuals": {
         "description": "Monthly volumes, revenue, COGS and opex per product line and region — "
@@ -150,12 +158,19 @@ TOOL_DEFINITIONS = [
         "name": "read_document",
         "description": "Read a document the CFO added on the Data ingestion page (PDF, Word, "
                        "PowerPoint, text) as markdown. Call list_datasets first to see which "
-                       "documents exist. Cite the document by its file name in your answer.",
+                       "documents exist. Cite the document by its file name in your answer. "
+                       "Long documents come back one window at a time: if the result has "
+                       "`truncated: true`, call again with `offset` set to its `next_offset` "
+                       "to continue. Only page on if the part you have does not answer the "
+                       "question.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string",
                          "description": "Document name as reported by list_datasets."},
+                "offset": {"type": "integer",
+                           "description": "Character offset to read from. Omit for the start; "
+                                          "otherwise pass the previous result's next_offset."},
             },
             "required": ["name"],
             "additionalProperties": False,
@@ -165,9 +180,12 @@ TOOL_DEFINITIONS = [
         "name": "query_budget_data",
         "description": "Escape hatch for questions the purpose-built tools do not cover. "
                        "Filter, group, aggregate, sort and limit any internal dataset. "
-                       "Returns JSON records plus the source file. Do NOT use it to compute "
-                       "variances, sensitivities or projections — the dedicated tools do that "
-                       "correctly.",
+                       "Returns `columns` (names, in order) and `rows` (each row a list of "
+                       "values positionally matching `columns`), plus `total_matching_rows`, "
+                       "a `truncated` flag and the source file. Prefer `columns`/`group_by`/"
+                       "`filters` to narrow the query over pulling wide rows and reading them "
+                       "yourself. Do NOT use it to compute variances, sensitivities or "
+                       "projections — the dedicated tools do that correctly.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -659,12 +677,22 @@ def list_datasets() -> dict:
 # 1b. read_document
 # --------------------------------------------------------------------------
 
-def read_document(name: str) -> dict:
+def read_document(name: str, offset: int = 0) -> dict:
     """Return a CFO-added document as markdown, converted at upload time.
 
     A missing cache entry is a teachable error rather than an exception, the same
     as every other failure path here — the model relays it and the CFO knows to
     re-add the file.
+
+    Windowed rather than whole-file, for the same reason `query_budget_data` caps
+    at 500 rows. Ingest bounds a converted document at MAX_EXTRACT_CHARS (200k,
+    ~55k tokens) and markdown added via `add_markdown`/`save_research` is not
+    bounded at all — and whatever comes back here is re-sent on every remaining
+    round of the turn. One unlucky read could dominate a whole turn's spend.
+
+    The window is stated in the result, in the same shape the other bulk tool
+    uses (`truncated` + a total), so the model can ask for the next one rather
+    than silently reasoning over a document it only half saw.
     """
     record = uploads.get_by_name(name)
     if not record or record.get("kind") != "document":
@@ -676,12 +704,26 @@ def read_document(name: str) -> dict:
     if markdown is None:
         return {"error": f"The converted text for '{name}' is missing. Remove the document on "
                          "the Data ingestion page and add it again."}
-    return {
+
+    total = len(markdown)
+    start = max(0, int(offset or 0))
+    if start >= total and total:
+        return {"error": f"offset {start} is past the end of '{name}', which is "
+                         f"{total} characters. Use an offset below that."}
+    window = markdown[start:start + DOCUMENT_WINDOW_CHARS]
+    end = start + len(window)
+    result = {
         "source_file": record["original_filename"],
         "document": name,
         "format": record["format"],
-        "content": markdown,
+        "content": window,
+        "char_offset": start,
+        "total_chars": total,
+        "truncated": end < total,
     }
+    if end < total:
+        result["next_offset"] = end
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -762,13 +804,50 @@ def query_budget_data(dataset: str, columns=None, filters=None, group_by=None,
     total = len(df)
     cap = min(int(limit or 100), 500)
     df = df.head(cap)
-    return {"rows": _records(df), "row_count": len(df), "total_matching_rows": total,
+    columns, rows = _columnar(df)
+    return {"columns": columns, "rows": rows,
+            "row_count": len(df), "total_matching_rows": total,
             "truncated": total > len(df), "source_file": source}
 
 
 def _records(df: pd.DataFrame) -> list[dict]:
     """JSON-safe records: NaN becomes None, numpy scalars become Python scalars."""
     return df.replace({np.nan: None}).to_dict(orient="records")
+
+
+def _columnar(df: pd.DataFrame) -> tuple[list[str], list[list]]:
+    """The same rows as `_records`, as a header plus positional rows.
+
+    This is the ONE result shape in this module that is not a list of dicts, and
+    the reason is size rather than taste. `query_budget_data` is the only tool
+    that returns bulk rows — up to 500 — and a list of dicts repeats every column
+    name on every row. On `budget_vs_actuals` at the 500 cap that repetition was
+    most of a ~160k-char result, which then rode along in the conversation for
+    every remaining round of the turn.
+
+    Nothing is lost: `columns` carries the same names, in order, once. Keep the
+    small structured results elsewhere as dicts — there the key on each value is
+    what makes the result readable, and there are a handful of rows, not 500.
+    """
+    clean = df.replace({np.nan: None})
+    columns = [str(c) for c in clean.columns]
+    return columns, clean.to_numpy(dtype=object).tolist()
+
+
+def rows_as_records(result: dict) -> dict:
+    """`query_budget_data`'s payload with `columns`/`rows` folded back into the
+    list-of-dicts shape, for HTTP callers.
+
+    The columnar shape exists to keep bulk rows out of the MODEL's context. An
+    HTTP response is not under that pressure, and a JSON API should not change
+    shape underneath its callers because of an unrelated token optimisation —
+    so the saving is applied where it pays and reversed where it does not.
+    """
+    if "columns" not in result or "rows" not in result:
+        return result
+    folded = {k: v for k, v in result.items() if k != "columns"}
+    folded["rows"] = [dict(zip(result["columns"], row)) for row in result["rows"]]
+    return folded
 
 
 # --------------------------------------------------------------------------

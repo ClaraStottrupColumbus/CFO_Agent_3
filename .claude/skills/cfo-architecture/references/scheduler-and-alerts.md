@@ -28,6 +28,31 @@ happened; anything that is merely true belongs on a screen.
 Background agent runs take `reporting.AGENT_SEMAPHORE` (bounded at 2); interactive chat never
 acquires it, so user requests can't queue behind an 03:00 market scan.
 
+## Idle burn — one scan, one owner, one cheap narrative
+
+The concurrency cap bounds how many background turns run *at once*; it says nothing about how many
+run *at all*. Three changes address that, and each reverses something this file previously described
+as fine:
+
+- **`data_refresh` no longer runs the drift scan.** It did, *and* the dedicated `drift_scan` task ran
+  the same scan on the same hourly interval — so every finding was evaluated twice an hour, each scan
+  spending up to `MAX_ANALYSES_PER_SCAN` full agent turns. `data/alerts.json` showed it plainly: 6
+  alerts at 10:00 and 6 at 11:00 with nobody using the app. Refreshing data and reacting to it are
+  two jobs; the task named for one must not quietly do both.
+- **The seeded drift scan is six-hourly** (`DRIFT_SCAN_INTERVAL`), not hourly — it scans *simulated
+  jittered* data, so hourly bought very little signal. `tasks._migrate` lifts an already-seeded
+  install off the old default, because changing `default_tasks` alone is inert on every machine that
+  has already run the app. It only touches a value that is exactly the old default and stamps the
+  task, so a deliberate hourly choice is not silently overridden on the next load.
+- **`alerts._narrative_params` narrows the narrative turn**: web research off, effort `medium`. One
+  alert could otherwise fan out into 8 searches and 8 fetches of unbounded page content, unattended,
+  three at a time — to caption a finding `rules.py` had already computed. Local tools stay on, so the
+  figure is still verified, which is the verification `URGENCY_ANALYSIS_PROMPT` actually asks for
+  (it names `driver_status` and `driver_sensitivity`, never the web). It must not mutate the caller's
+  params — the scan reuses one dict across alerts.
+
+Covered by `tests/test_idle_burn.py`.
+
 ## See also
 
 - `references/sessions.md` — `TASK_KIND` maps onto the session kinds, and `get_run_params` is

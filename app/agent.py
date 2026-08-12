@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date
 from typing import Generator
@@ -22,6 +23,8 @@ import anthropic
 
 from . import citations as cit
 from .tools import TOOL_DEFINITIONS, execute_tool
+
+log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
 # Capability registry
@@ -211,11 +214,16 @@ before you quote a closing figure. Third, the lever: capex marked `proposed` can
 (`include_proposed_capex: false`) and committed capex cannot, so if the trough falls before the \
 proposed projects, say that deferring them does not fix it and name what would."""
 
-# Tacked onto the cached block only when the reasoning toggle is off. Disabling
+# Added to the UNCACHED block only when the reasoning toggle is off. Disabling
 # thinking on claude-opus-5 can leak internal XML into the visible answer; the
 # documented mitigation is a GENERIC instruction that does not name the tags,
 # and NOT an instruction telling the model not to reason (which makes the
 # leakage worse).
+#
+# Uncached is deliberate — see build_system. It used to be appended to the cached
+# block, which forked the prefix in two: background tasks run reasoning=False and
+# chat runs reasoning=True, so the two never shared a cache entry and each warmed
+# a prefix the other could not read.
 NO_THINKING_GUARDRAIL = """
 
 Respond with your final answer only. Do not include internal or system XML tags in your response."""
@@ -459,21 +467,117 @@ def model_request_fields(model: str, effort: str) -> dict:
 def build_system(profile_text: str | None, volatile: str | None,
                  reasoning: bool = True) -> list[dict]:
     """Two blocks: a cached one (static prompt + the stable company profile) and
-    an uncached one (today's date, staleness counts).
+    an uncached one (today's date, staleness counts, the no-thinking guardrail).
 
     The reference marks the WHOLE system prompt ephemeral. The profile is stable
     per CFO and belongs inside that block; today's date cannot be — f-stringing
     it in means zero cache reads forever, with no error to tell you.
+
+    NO_THINKING_GUARDRAIL is in the uncached block for the same class of reason,
+    one step subtler. It is 99 chars, so its own token cost is nil either way —
+    but it varies with the `reasoning` flag, and anything that varies inside the
+    cached block forks the prefix. Background tasks run reasoning=False while
+    chat runs reasoning=True, so putting it above the breakpoint produced two
+    prefixes that each warmed a cache the other could never read. Nothing errors
+    when that happens; the reads simply never appear.
+
+    The rule this encodes: what goes in the cached block is decided by whether a
+    value VARIES, not by how big it is.
     """
     static = SYSTEM_PROMPT
-    if not reasoning:
-        static += NO_THINKING_GUARDRAIL
     if profile_text:
         static += "\n\n---\n\nThe company you are budgeting for:\n\n" + profile_text
     blocks = [{"type": "text", "text": static, "cache_control": {"type": "ephemeral"}}]
-    if volatile:
-        blocks.append({"type": "text", "text": volatile})
+
+    tail = [part for part in (volatile, NO_THINKING_GUARDRAIL.strip() if not reasoning else None)
+            if part]
+    if tail:
+        blocks.append({"type": "text", "text": "\n\n".join(tail)})
     return blocks
+
+
+# How many ephemeral breakpoints the message list is allowed to hold at once.
+#
+# TWO, not one, and not more. The API allows 4 cache_control blocks per request
+# in total and build_system already spends one, so 2 here leaves a spare rather
+# than sitting on the ceiling. Two rather than one because a breakpoint only
+# looks back 20 content blocks to find a prior cache entry: a single agentic
+# round can append a multi-block assistant turn (thinking + text + several
+# tool_use) plus a matching run of tool_result blocks, so a lone trailing mark
+# can drift out of range and quietly stop hitting.
+MESSAGE_CACHE_BREAKPOINTS = 2
+
+
+def mark_cache_breakpoint(convo: list[dict], blocks: list[dict]) -> None:
+    """Move the message-side cache breakpoint onto the newest tool-result turn.
+
+    `blocks` is the tool_result list about to be appended to `convo`; it is NOT
+    in `convo` yet.
+
+    Why this exists at all: the loop re-POSTs the whole of `convo` on every
+    round, and one tool result can be tens of thousands of tokens. With only the
+    system breakpoint, the ~6k-token tools+system prefix is cached and every
+    accumulated tool result is re-billed at full price on every subsequent
+    round — so the biggest term in the request is the one term never cached.
+
+    Stripping the older marks is load-bearing, not tidiness. Marks accumulate on
+    the blocks they were set on, so letting all 8 tool rounds keep theirs is a
+    hard 400 ('A maximum of 4 blocks with cache_control may be provided'), and
+    it would fail on round 4 of a long research turn rather than in any test
+    that runs a short one.
+
+    Only tool-result turns are marked. The pause_turn path appends
+    `response.content` — SDK block objects rather than dicts — which cannot take
+    a subscript assignment, and needs no mark of its own: the next tool-result
+    turn's breakpoint covers everything before it.
+    """
+    if not blocks:
+        return
+    blocks[-1]["cache_control"] = {"type": "ephemeral"}
+
+    marked = [block
+              for message in convo if isinstance(message.get("content"), list)
+              for block in message["content"]
+              if isinstance(block, dict) and "cache_control" in block]
+    keep = MESSAGE_CACHE_BREAKPOINTS - 1
+    for block in (marked[:-keep] if keep else marked):
+        block.pop("cache_control", None)
+
+
+def accumulate_usage(total: dict, usage) -> None:
+    """Fold one response's usage into the running per-turn total.
+
+    Defensive about every field: usage is absent or partial on some error paths,
+    and an accounting helper must never be the thing that breaks a turn.
+    """
+    if usage is None:
+        return
+    for key, field in (("input", "input_tokens"),
+                       ("cache_write", "cache_creation_input_tokens"),
+                       ("cache_read", "cache_read_input_tokens"),
+                       ("output", "output_tokens")):
+        total[key] += getattr(usage, field, 0) or 0
+
+
+def log_usage(model: str, rounds: int, total: dict) -> None:
+    """One line per turn, so the cache is observable.
+
+    A cache that has silently stopped working produces no error — just a bigger
+    bill and `cache_read` pinned at 0. Note prompt size is the SUM of the three
+    input figures: `input_tokens` alone is only the uncached remainder, so
+    reading it as "the prompt" makes a well-cached turn look tiny.
+    """
+    prompt = total["input"] + total["cache_write"] + total["cache_read"]
+    cached_pct = (total["cache_read"] / prompt * 100) if prompt else 0.0
+    # ASCII only. The default Windows console encoding is cp1252, so a '·' in
+    # this line arrives as mojibake in the one output whose job is to be read.
+    log.info(
+        "agent turn | model=%s rounds=%d | prompt=%d "
+        "(uncached=%d write=%d read=%d, %.0f%% cached) | output=%d",
+        model, rounds, prompt,
+        total["input"], total["cache_write"], total["cache_read"],
+        cached_pct, total["output"],
+    )
 
 
 _client: anthropic.Anthropic | None = None
@@ -584,6 +688,9 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
     # carried one, so every proposal's provenance was None.
     ctx = {"fetched_urls": fetched, "profile": profile or {}, "model": model}
 
+    usage_total = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+    rounds = 0
+
     try:
         any_text = False
         tool_turns = 0
@@ -657,6 +764,9 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
 
                 response = stream.get_final_message()
 
+            rounds += 1
+            accumulate_usage(usage_total, getattr(response, "usage", None))
+
             # Check stop_reason BEFORE reading content: a refusal can come back
             # HTTP 200 with empty content, and stop_details can be null even
             # then — so branch on stop_reason, never on stop_details.
@@ -717,6 +827,9 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
                     "content": json.dumps(result, default=str),
                     "is_error": bool(isinstance(result, dict) and result.get("error")),
                 })
+            # Breakpoint goes on before the append, while tool_results is still
+            # the plain-dict list this loop built — see mark_cache_breakpoint.
+            mark_cache_breakpoint(convo, tool_results)
             convo.append({"role": "user", "content": tool_results})
             tool_turns += 1
 
@@ -741,6 +854,16 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
         yield {"type": "done"}
     # Every arm yields `done` after `error`. The reference's four except arms
     # yield only `error`, which leaves the frontend's streaming state uncleared.
+    finally:
+        # `finally`, not a line before the success-path `done`: a turn that errors
+        # or that the client abandons mid-stream still spent tokens, and those are
+        # exactly the turns worth seeing in the log. Guarded because a generator's
+        # finally can run during interpreter teardown.
+        if rounds:
+            try:
+                log_usage(model, rounds, usage_total)
+            except Exception:
+                pass
 
 
 def _get(obj, key):

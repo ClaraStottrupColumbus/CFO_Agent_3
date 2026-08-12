@@ -24,10 +24,43 @@ correctness-critical and commented as such:
   **in that order**. Never widen the list on its own.
   `web_search` and `web_fetch` carry separate version keys deliberately (pre-4.6 dates differ).
 
-Also: `build_system` splits the system prompt into a **cached** block (static prompt + stable company
-profile) and an **uncached** one (`volatile_context`: today's date, staleness counts). Putting the
-date in the cached block means zero cache reads forever with nothing erroring to tell you. Tool order
-in `build_tools` is part of the cached prefix — reordering silently invalidates the cache.
+## Prompt caching, and why it is two-sided
+
+`build_system` splits the system prompt into a **cached** block (static prompt + stable company
+profile) and an **uncached** one (`volatile_context`: today's date, staleness counts, and
+`NO_THINKING_GUARDRAIL`). Putting the date in the cached block means zero cache reads forever with
+nothing erroring to tell you. Tool order in `build_tools` is part of the cached prefix — reordering
+silently invalidates the cache. Render order is `tools` → `system` → `messages`, so the single
+breakpoint on the last system block covers **both** tools and system.
+
+The guardrail is uncached for a subtler version of the same reason, and the rule it encodes is the
+one to keep: **what belongs above the breakpoint is decided by whether a value varies, not by how
+big it is.** It is 99 chars, so its own cost is nil either way — but it varies with the `reasoning`
+flag, background tasks run `reasoning=False` and chat runs `reasoning=True`, so above the breakpoint
+it produced two prefixes that each warmed a cache the other could never read.
+
+`mark_cache_breakpoint` puts the **message-side** breakpoint on the newest tool-result turn. This is
+the half that matters most and the half that was missing: the loop re-POSTs the whole of `convo`
+every round, so without it the ~6k-token prefix was cached and every accumulated tool result —
+easily tens of thousands of tokens — was re-billed at full price on every subsequent round. Three
+constraints hold it together:
+
+- **At most 2 marks alive at once, older ones stripped.** The API allows 4 `cache_control` blocks per
+  request and `build_system` spends one. Marks persist on the blocks they were set on, so letting all
+  8 tool rounds keep theirs is a hard 400 — on round 4 of a long research turn, not in any short test.
+- **Two rather than one**, because a breakpoint looks back only 20 content blocks for a prior entry;
+  one round can append a multi-block assistant turn plus a run of tool_result blocks, and a lone
+  trailing mark drifts out of range and quietly stops hitting.
+- **Tool-result turns only.** The `pause_turn` path appends `response.content` — SDK block objects,
+  not dicts — and needs no mark: the next tool-result breakpoint covers everything before it.
+
+`accumulate_usage` / `log_usage` emit one line per turn, and exist because **a cache that stops
+working produces no error, just a bigger bill**. Prompt size is the SUM of the three input figures —
+`input_tokens` alone is only the uncached remainder, so reading it as "the prompt" makes a
+well-cached turn look tiny. `0% cached` on turn 2+ of a session is the signal that something above
+invalidated the prefix. Measured on a 3-round tool turn after this landed: 97% cached, 416 uncached
+tokens out of 49,451. `main.py` calls `logging.basicConfig` for this — uvicorn leaves the root logger
+bare, so app-level INFO would otherwise be dropped silently.
 
 Event vocabulary yielded by `run_agent` (the backend↔browser contract, documented in its docstring):
 `text`, `reasoning`, `reasoning_summary`, `research`, `tool_call`, `tool_result`, `chart`, `citation`,

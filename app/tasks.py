@@ -47,6 +47,16 @@ _lock = threading.Lock()
 
 # ---------- Persistence ----------
 
+# Six-hourly, not hourly. Each scan can spend up to MAX_ANALYSES_PER_SCAN full
+# agent turns writing alert narratives, and it scans SIMULATED jittered data —
+# so hourly bought very little signal for four scans' worth of tokens a day.
+DRIFT_SCAN_INTERVAL = 21_600
+# What the app used to ship. Kept only so _migrate can recognise its own old
+# default and lift it; see there for why it is not simply "anything hourly".
+_LEGACY_DRIFT_SCAN_INTERVAL = 3_600
+_INTERVAL_MIGRATED = "interval_default_migrated"
+
+
 def _builtin_refresh_task() -> dict:
     now = time.time()
     return {
@@ -96,17 +106,54 @@ def default_tasks() -> list[dict]:
         # regardless of the configured model. It inherits the configured one now.
         task("Assumption refresh", "assumption_refresh",
              {"mode": "daily", "time": "06:00"}),
-        task("Drift scan", "drift_scan", {"mode": "interval", "interval_seconds": 3600}),
+        task("Drift scan", "drift_scan",
+             {"mode": "interval", "interval_seconds": DRIFT_SCAN_INTERVAL}),
     ]
+
+
+def _migrate(items: list[dict]) -> tuple[list[dict], bool]:
+    """Lift an already-seeded drift scan off the old hourly default.
+
+    Changing `default_tasks` only affects installs that have not seeded yet, so
+    without this the new interval would do nothing on every machine that has
+    already run the app — including the one you test the change on.
+
+    Two guards keep it from overriding a real choice. It only touches a value
+    that is EXACTLY the old shipped default, so a CFO who picked 30 minutes or
+    two hours is left alone; and it stamps the task, so someone who deliberately
+    sets hourly back afterwards does not get silently overridden on next load.
+    A stored 3600 that the CFO chose by hand is the one case this gets wrong,
+    and it is indistinguishable from the default it replaced — the stamp at
+    least makes it a one-time event rather than a setting that will not stick.
+    """
+    changed = False
+    for task in items:
+        schedule = task.get("schedule") or {}
+        if (task.get("type") == "drift_scan"
+                and not task.get(_INTERVAL_MIGRATED)
+                and schedule.get("mode") == "interval"
+                and schedule.get("interval_seconds") == _LEGACY_DRIFT_SCAN_INTERVAL):
+            schedule["interval_seconds"] = DRIFT_SCAN_INTERVAL
+            task["schedule"] = schedule
+            task[_INTERVAL_MIGRATED] = True
+            changed = True
+    return items, changed
 
 
 def _load_all() -> list[dict]:
     if not TASKS_FILE.exists():
         return [_builtin_refresh_task()]
     try:
-        return json.loads(TASKS_FILE.read_text())
+        items = json.loads(TASKS_FILE.read_text())
     except (json.JSONDecodeError, OSError):
         return [_builtin_refresh_task()]
+    items, changed = _migrate(items)
+    if changed:
+        # Every caller holds _lock, so persisting here is safe. Writing it back
+        # rather than migrating on each read keeps the file and the running
+        # schedule agreed — the Tasks screen reads the file.
+        _save_all(items)
+    return items
 
 
 def _save_all(items: list[dict]) -> None:
@@ -398,9 +445,16 @@ def execute_task(task: dict, params: dict, profile: dict | None = None) -> str:
 
     if ttype == "data_refresh":
         # Small jitter simulates fresh numbers arriving from source systems.
+        #
+        # This deliberately does NOT run the drift scan any more. It used to, and
+        # the dedicated `Drift scan` task ran the same scan on the same hourly
+        # interval — so every finding was evaluated twice an hour, and each scan
+        # spends up to MAX_ANALYSES_PER_SCAN full agent turns writing narratives.
+        # `data/alerts.json` showed the symptom plainly: 6 alerts at 10:00 and 6
+        # at 11:00 with nobody using the app. Refreshing data and reacting to it
+        # are two jobs; the task named for one should not quietly do both.
         result = generate_data.refresh_overview(jitter=random.uniform(-0.004, 0.004))
-        scan = alerts.run_drift_scan(run_params, profile)
-        return f"refreshed {result['refreshed_utc']} · {scan}"
+        return f"refreshed {result['refreshed_utc']}"
 
     if ttype in TASK_KIND:
         kind = TASK_KIND[ttype]

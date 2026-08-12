@@ -31,7 +31,13 @@ DEFAULT_SETTINGS: dict = {
     # thinking is rejected above `high` effort. The coupling is expressed here
     # and in the payload rather than discovered as an API error.
     "reasoning": {"enabled": True, "effort": DEFAULT_EFFORT},
-    "research": {"enabled": True, "max_searches": 8, "max_fetches": 8},
+    # max_content_tokens caps what ONE fetched page contributes. build_tools has
+    # always passed it through to the web_fetch tool, but nothing ever produced
+    # the key, so the branch was dead and every fetch returned at full size — an
+    # unbounded amount of third-party text that then rides along in the
+    # conversation for the rest of the turn.
+    "research": {"enabled": True, "max_searches": 8, "max_fetches": 8,
+                 "max_content_tokens": 20_000},
     "notifications": {"browser": False},
     "show_debug": False,
 }
@@ -96,6 +102,11 @@ def _normalise(cfg: dict) -> dict:
         "enabled": bool(research.get("enabled", True)),
         "max_searches": max(1, min(20, int(research.get("max_searches") or 8))),
         "max_fetches": max(1, min(20, int(research.get("max_fetches") or 8))),
+        # Floor of 1000: build_tools treats a falsy value as "unset" and omits
+        # the field, so a stored 0 would silently restore the old unbounded
+        # behaviour rather than doing what "0" looks like it asks for.
+        "max_content_tokens": max(1_000, min(100_000,
+                                             int(research.get("max_content_tokens") or 20_000))),
     }
     cfg["notifications"] = {"browser": bool((cfg.get("notifications") or {}).get("browser"))}
     cfg["show_debug"] = bool(cfg.get("show_debug"))

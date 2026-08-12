@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,6 +32,17 @@ from .agent import AVAILABLE_MODELS, EFFORT_LEVELS, volatile_context
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 DATA_DIR = ROOT / "data"
+
+# Uvicorn installs handlers on its OWN loggers and leaves the root logger bare,
+# so an app-level log.info() reaches logging's last-resort handler, which emits
+# WARNING and above — and drops INFO silently, with nothing anywhere to say it
+# had. That is the wrong failure mode for agent.py's per-turn token accounting,
+# whose entire job is to make a silently-missing cache visible. basicConfig is a
+# no-op if handlers already exist, so this cannot fight a real logging setup.
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s | %(message)s",
+)
 
 # Per-file ceiling for chat attachments and Data-ingestion uploads. The browser
 # checks this too, but the server must not rely on that.
@@ -585,7 +597,9 @@ def preview_dataset(name: str, limit: int = Query(25)) -> dict:
     result = tools.query_budget_data(name, limit=min(limit, 200))
     if "error" in result:
         raise HTTPException(status_code=404, detail=result)
-    return result
+    # The tool returns columns + positional rows to keep bulk data out of the
+    # model's context; HTTP callers keep the record shape they were written for.
+    return tools.rows_as_records(result)
 
 
 @app.get("/api/datasets/{name}/preview", dependencies=Gated)
