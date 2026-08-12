@@ -520,6 +520,32 @@ screen) and `#scenario-edit-form.hidden` had no rule behind the class the JS was
 
 ---
 
+## Phase 7 — Two model tiers ✅ COMPLETE
+
+**The gap:** every turn in the app ran on `claude-opus-5`, and nothing else was selectable.
+`AVAILABLE_MODELS` derived the picker from `caps["fallbacks"]`, which excluded `claude-sonnet-5`
+because the loop once sent `betas` + `fallbacks` unconditionally and a model that cannot accept them
+400s on the first turn. By the time of this phase the request builder already gated those two lines
+on the cap — the exact condition the comment above the derivation named before widening the list —
+so the exclusion had outlived its reason. Meanwhile every alert narrative, Budget-page read, driver
+check and chat turn paid Opus rates for work that does not need Opus depth.
+
+**What landed.** `AVAILABLE_MODELS` now derives from what the loop needs of *every* model (the two
+web tools, adaptive thinking, effort), and the model-dependent request fields moved into one pure
+`agent.model_request_fields`, which is what makes that derivation safe rather than lucky. Settings
+carries two slots — `models.heavy` (default `claude-opus-5`) and `models.general` (default
+`claude-sonnet-5`) — with a read-side migration off the flat `model` key. `reporting.model_for_session`
+picks between them off the session: a `weekly`/`monthly` session **with no `parent_id`** is heavy,
+everything else general. The `parent_id` half is load-bearing and was a real bug caught in review —
+report follow-ups are created with the *report's* kind, so keying on kind alone put every question
+anyone asked about a report onto the expensive model.
+
+**Status: done.** 496 tests green (new `tests/test_model_tiers.py` +21, `test_agent_config.py` net +3,
+and the cached-prefix floor raised 512 → 1024 because Sonnet 5's minimum cacheable prefix is twice
+Opus 5's). Asset links bumped to `?v=36`.
+
+---
+
 ## Verification
 
 **Automated**

@@ -11,13 +11,22 @@ import json
 import threading
 from pathlib import Path
 
-from .agent import (AVAILABLE_MODELS, DEFAULT_EFFORT, DEFAULT_MODEL, EFFORT_LEVELS,
-                    clamp_effort)
+from .agent import (AVAILABLE_MODELS, DEFAULT_EFFORT, DEFAULT_MODEL_GENERAL,
+                    DEFAULT_MODEL_HEAVY, EFFORT_LEVELS, clamp_effort)
 
 SETTINGS_FILE = Path(__file__).resolve().parent.parent / "data" / "settings.json"
 
+# Model slots, not a single model. `heavy` runs the two reports — the weekly
+# market scan and the monthly budget revision — because those are the turns
+# whose reasoning has to survive a board asking why. `general` runs everything
+# else: chat, the setup proposal, alert narratives, driver verification and the
+# Budget page's read. Which surface gets which is decided in reporting.py, off
+# the session, and never here.
+MODEL_SLOTS = ("heavy", "general")
+DEFAULT_MODEL_FOR_SLOT = {"heavy": DEFAULT_MODEL_HEAVY, "general": DEFAULT_MODEL_GENERAL}
+
 DEFAULT_SETTINGS: dict = {
-    "model": DEFAULT_MODEL,
+    "models": dict(DEFAULT_MODEL_FOR_SLOT),
     # The reasoning toggle and the effort selector are coupled: disabling
     # thinking is rejected above `high` effort. The coupling is expressed here
     # and in the payload rather than discovered as an API error.
@@ -41,9 +50,37 @@ def _merge(base: dict, override: dict) -> dict:
     return out
 
 
+def _migrate(stored: dict) -> dict:
+    """Lift a pre-split settings file onto the two-slot schema.
+
+    Runs on the RAW stored dict, before the defaults are merged in — which is
+    the whole trick. Done inside _normalise it would be dead code: _merge has
+    already populated `models` from DEFAULT_SETTINGS by then, so "the slot is
+    unset" is never true and the legacy value could never win. Here, an absent
+    `models.heavy` genuinely means the file predates the split.
+
+    It seeds `heavy` because that is where a stored single model belongs — it
+    was chosen for the whole app, reports included — and the general slot takes
+    its own default. The flat key is dropped rather than left to sit in the file
+    forever, dead but still readable, which is how two homes for one setting
+    start to disagree.
+    """
+    stored = dict(stored)
+    legacy = stored.pop("model", None)
+    if isinstance(legacy, str):
+        models = dict(stored.get("models") or {})
+        models.setdefault("heavy", legacy)   # a real two-slot payload still wins
+        stored["models"] = models
+    return stored
+
+
 def _normalise(cfg: dict) -> dict:
-    if cfg.get("model") not in AVAILABLE_MODELS:
-        cfg["model"] = DEFAULT_MODEL
+    # Coerced per slot, independently: one bad value must not reset the other.
+    models = cfg.get("models") or {}
+    cfg["models"] = {slot: (models.get(slot) if models.get(slot) in AVAILABLE_MODELS
+                            else DEFAULT_MODEL_FOR_SLOT[slot])
+                     for slot in MODEL_SLOTS}
+    cfg.pop("model", None)   # belt and braces: nothing downstream reads it
 
     reasoning = cfg.get("reasoning") or {}
     enabled = bool(reasoning.get("enabled", True))
@@ -73,7 +110,7 @@ def get_settings() -> dict:
                 stored = json.loads(SETTINGS_FILE.read_text())
             except (json.JSONDecodeError, OSError):
                 stored = {}
-    return _normalise(_merge(DEFAULT_SETTINGS, stored))
+    return _normalise(_merge(DEFAULT_SETTINGS, _migrate(stored)))
 
 
 def save_settings(update: dict) -> dict:
@@ -92,10 +129,24 @@ def get_run_params() -> dict:
     Widened from the reference's `get_model` so background runs carry the same
     reasoning/research configuration as interactive ones. Injected rather than
     imported specifically to avoid the circular import with main.py.
+
+    STAYS ZERO-ARG across the model split, deliberately. Taking a `kind` here
+    would have been the obvious shape, but tasks.py receives an already-resolved
+    params dict and cannot import config — that circular import is the entire
+    reason this callable is injected — so scheduled reports could not have
+    resolved their own tier without widening the injection contract. Both models
+    travel instead, and reporting.py picks off the session.
+
+    `model` is the GENERAL one, and that is load-bearing: every existing reader
+    of params["model"] — the budget-page narrative, the alert narrative, driver
+    verification, the assumption refresh — is a surface that should be general,
+    so they all get the cheap model with no edit. Only the report path reads
+    `model_heavy`, and it opts in explicitly.
     """
     cfg = get_settings()
     return {
-        "model": cfg["model"],
+        "model": cfg["models"]["general"],
+        "model_heavy": cfg["models"]["heavy"],
         "reasoning": cfg["reasoning"]["enabled"],
         "effort": cfg["reasoning"]["effort"],
         "research": cfg["research"],

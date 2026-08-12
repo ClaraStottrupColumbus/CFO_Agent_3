@@ -54,17 +54,32 @@ MODEL_CAPS = {
 }
 
 # Derived from the registry, so a model can never reach the picker without
-# capability data behind it — and, since the loop sends `fallbacks` on every
-# request, without the capability to ACCEPT every parameter we send. `fallbacks`
-# was the one model-dependent field that wasn't derived, and the result was a
-# 400 on every turn for whoever picked sonnet:
+# capability data behind it — and specifically from what the loop sends on EVERY
+# request regardless of model: the two web tools, adaptive thinking, effort.
+#
+# `fallbacks` is deliberately NOT in this list any more. It used to be, because
+# the loop sent `betas` + `fallbacks` unconditionally and a model that cannot
+# accept them 400s on the first turn:
 #     'claude-sonnet-5' does not support the `fallbacks` parameter.
-# Deriving availability from the requirement is what makes that unrepresentable
-# rather than merely fixed. If a model without server-side fallback routing is
-# wanted in the picker later, gate lines in build-the-request on this cap too;
-# do not widen this list on its own.
-AVAILABLE_MODELS = [m for m, caps in MODEL_CAPS.items() if caps["fallbacks"]]
-DEFAULT_MODEL = "claude-opus-5"
+# The fix at the time was to exclude such models from the picker, with a note
+# saying to gate the request lines on the cap before widening the list. That
+# gating now exists — see `model_request_fields` — so the requirement this list
+# derives from genuinely shrank, and sonnet is offerable. The rule is unchanged:
+# a field only some models accept must be gated there and dropped from here, in
+# that order. Never widen this list on its own.
+AVAILABLE_MODELS = [m for m, caps in MODEL_CAPS.items()
+                    if caps["web_search"] and caps["web_fetch"]
+                    and caps["thinking"] == "adaptive" and caps["effort"]]
+
+# Two tiers, because depth and cost pull in opposite directions and only the
+# reports need the expensive answer. config.py owns which surface gets which;
+# this module only says what the defaults are. DEFAULT_MODEL is the coercion
+# fallback below, and it points at the HEAVY one on purpose: a settings file
+# naming a model that has since left the picker should degrade toward quality,
+# not silently downgrade the budget the CFO is about to defend.
+DEFAULT_MODEL_HEAVY = "claude-opus-5"
+DEFAULT_MODEL_GENERAL = "claude-sonnet-5"
+DEFAULT_MODEL = DEFAULT_MODEL_HEAVY
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_EFFORT = "high"
@@ -390,6 +405,33 @@ def clamp_effort(effort: str | None, reasoning: bool) -> str:
     return level
 
 
+def model_request_fields(model: str, effort: str) -> dict:
+    """The request fields that exist only on models whose caps allow them.
+
+    Split out of run_agent so the gating is a pure function with a test behind
+    it, rather than two `if` statements buried in a streaming loop. This is what
+    lets AVAILABLE_MODELS stop deriving from `fallbacks`: the parameter is now
+    absent on a model that cannot take it, instead of the model being absent
+    from the picker. Any future model-dependent request field belongs here, and
+    the corresponding cap must NOT be added to the AVAILABLE_MODELS derivation.
+
+    betas + fallbacks are accepted only on the beta messages endpoint, so the
+    whole loop runs through client.beta.messages.stream. The header and the
+    parameter form are paired: server-side-fallback-2026-07-01 goes with the
+    SCALAR fallbacks="default"; the older array form needs -2026-06-01. Crossing
+    them is a 400. "default" routes by refusal category and needs no maintenance
+    when a pinned model is retired.
+    """
+    caps = MODEL_CAPS.get(model) or MODEL_CAPS[DEFAULT_MODEL]
+    fields: dict = {}
+    if caps.get("fallbacks"):
+        fields["betas"] = [FALLBACK_BETA]
+        fields["fallbacks"] = "default"
+    if caps.get("effort"):
+        fields["output_config"] = {"effort": effort}
+    return fields
+
+
 def build_system(profile_text: str | None, volatile: str | None,
                  reasoning: bool = True) -> list[dict]:
     """Two blocks: a cached one (static prompt + the stable company profile) and
@@ -482,26 +524,17 @@ def run_agent(messages: list[dict], model: str = DEFAULT_MODEL, *,
         "tools": tools,
         "thinking": thinking,
     }
-    # betas + fallbacks are accepted only on the beta messages endpoint, so this
-    # whole loop runs through client.beta.messages.stream. The header and
-    # parameter form are paired: server-side-fallback-2026-07-01 goes with the
-    # SCALAR fallbacks="default"; the older array form needs -2026-06-01.
-    # Crossing them is a 400. "default" routes by refusal category and needs no
-    # maintenance when a pinned model is retired.
-    #
-    # Gated on the cap like every other model-dependent field below — as an
-    # unconditional literal this 400'd on any model but opus-5, which is exactly
-    # what AVAILABLE_MODELS now prevents from being selectable.
-    if caps.get("fallbacks"):
-        request["betas"] = [FALLBACK_BETA]
-        request["fallbacks"] = "default"
-    if caps.get("effort"):
-        request["output_config"] = {"effort": effort}
+    # Everything model-dependent about the request lives in one pure function,
+    # so "which models can this loop call" is derivable rather than remembered.
+    request.update(model_request_fields(model, effort))
 
     client = get_client()
     records: list[dict] = []
     fetched: set[str] = set()
-    ctx = {"fetched_urls": fetched, "profile": profile or {}}
+    # `model` is here for propose_watchlist, which records on the stored profile
+    # which model proposed it. It read ctx.get("model") against a ctx that never
+    # carried one, so every proposal's provenance was None.
+    ctx = {"fetched_urls": fetched, "profile": profile or {}, "model": model}
 
     try:
         any_text = False

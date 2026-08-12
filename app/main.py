@@ -147,7 +147,10 @@ class ProposeRequest(BaseModel):
 
 
 class SettingsRequest(BaseModel):
-    model: str | None = None
+    # {"heavy": ..., "general": ...}. Either key alone is a valid payload —
+    # config._merge merges nested dicts key-by-key, so the two selects in the
+    # settings panel can post independently without clobbering each other.
+    models: dict | None = None
     reasoning: dict | None = None
     research: dict | None = None
     notifications: dict | None = None

@@ -69,8 +69,11 @@
 
 /* style.css:757 sets a bare `select { max-width: 190px }`, which clips a scenario
    name like "Pet cost breach — forward curve" to a useless stub. width:100% does
-   NOT beat a max-width, so the cap has to be lifted explicitly — #model-select
-   overrides it the same way. */
+   NOT beat a max-width, so the cap has to be lifted explicitly — the settings
+   panel's two model selects do the same. (They only started doing so with the
+   heavy/general split: the old #model-select set width alone and was quietly
+   clipped to 190px in a 340px panel, which is what this comment used to cite as
+   the good example.) */
 .bo-compare select {
   max-width: none;
   width: 100%;

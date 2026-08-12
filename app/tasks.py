@@ -379,7 +379,13 @@ def _params_for(task: dict, params: dict) -> dict:
     # is not one run_agent can call. Validating against the registry is how a
     # stored override for a retired model used to reach the API and 400.
     if override and override in AVAILABLE_MODELS:
+        # BOTH slots, so an override actually means "run this task on this
+        # model". A report task resolves its model through the heavy slot
+        # (reporting.model_for_session), so setting only `model` would leave a
+        # pinned weekly scan running on the configured heavy model and look like
+        # the override was ignored.
         out["model"] = override
+        out["model_heavy"] = override
     out["reasoning"] = bool(task.get("reasoning", False))
     return out
 

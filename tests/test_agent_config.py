@@ -6,8 +6,10 @@
 
 import pytest
 
-from app.agent import (AVAILABLE_MODELS, DEFAULT_MODEL, EFFORT_LEVELS, MODEL_CAPS,
-                       build_system, build_tools, clamp_effort, volatile_context)
+from app.agent import (AVAILABLE_MODELS, DEFAULT_MODEL, DEFAULT_MODEL_GENERAL,
+                       DEFAULT_MODEL_HEAVY, EFFORT_LEVELS, FALLBACK_BETA, MODEL_CAPS,
+                       build_system, build_tools, clamp_effort, model_request_fields,
+                       volatile_context)
 
 
 # ---------- Constraint 1: the picker cannot offer a model that cannot research ----------
@@ -35,17 +37,45 @@ def test_every_offered_model_can_research_and_think_and_take_effort(model):
     assert caps["effort"] is True
 
 
-@pytest.mark.parametrize("model", AVAILABLE_MODELS)
-def test_every_offered_model_accepts_the_fallbacks_parameter(model):
-    """run_agent sends `betas` + `fallbacks` on every request, so an offered
-    model that cannot take them 400s on the FIRST turn, for every user, with
-    'does not support the `fallbacks` parameter'.
+def test_both_tier_defaults_are_offered():
+    # The two slots in settings both coerce against AVAILABLE_MODELS, so a
+    # default outside it would silently resolve to something else on first read.
+    assert DEFAULT_MODEL_HEAVY in AVAILABLE_MODELS
+    assert DEFAULT_MODEL_GENERAL in AVAILABLE_MODELS
+    assert DEFAULT_MODEL_HEAVY != DEFAULT_MODEL_GENERAL
 
-    This is the assertion whose absence let that ship: `fallbacks` was the one
-    model-dependent request field not derived from the registry, so the picker
-    happily offered two models that could not receive it.
+
+def test_fallbacks_is_sent_only_to_a_model_that_accepts_it():
+    """The invariant that used to be enforced by excluding models from the
+    picker. `betas` + `fallbacks` 400 on a model without server-side fallback
+    routing — 'claude-sonnet-5 does not support the `fallbacks` parameter' —
+    so the parameter is now absent on such a model rather than the model being
+    absent from the app.
+
+    This is the assertion that lets AVAILABLE_MODELS stop deriving from
+    `fallbacks`. Delete it and the derivation silently becomes unsafe again.
     """
-    assert MODEL_CAPS[model]["fallbacks"] is True
+    opus = model_request_fields("claude-opus-5", "high")
+    assert opus["fallbacks"] == "default"
+    assert opus["betas"] == [FALLBACK_BETA]
+
+    sonnet = model_request_fields("claude-sonnet-5", "high")
+    assert "fallbacks" not in sonnet
+    # The beta header and the parameter are paired; sending the header alone is
+    # pointless and sending it with the wrong parameter form is a 400.
+    assert "betas" not in sonnet
+
+
+@pytest.mark.parametrize("model", AVAILABLE_MODELS)
+def test_effort_reaches_every_offered_model(model):
+    # effort is the one model-dependent field EVERY offered model takes, which
+    # is why `effort` is part of the AVAILABLE_MODELS derivation and `fallbacks`
+    # is not.
+    assert model_request_fields(model, "medium")["output_config"] == {"effort": "medium"}
+
+
+def test_an_unknown_model_gets_the_default_request_fields():
+    assert model_request_fields("not-a-model", "high") == model_request_fields(DEFAULT_MODEL, "high")
 
 
 @pytest.mark.parametrize("model", sorted(MODEL_CAPS))
@@ -206,12 +236,18 @@ def test_an_unconfirmed_profile_renders_nothing():
     assert _render(None) is None
 
 
-def test_the_cached_prefix_clears_the_512_token_floor():
+def test_the_cached_prefix_clears_the_1024_token_floor():
     """A prefix below the model's minimum silently does not cache — no error,
     just cache_creation_input_tokens: 0. ~4 chars/token is a conservative
-    estimate, so this is a floor check, not an exact count."""
+    estimate, so this is a floor check, not an exact count.
+
+    1024, not 512: the minimum is per model and is NOT monotonic across
+    generations — claude-opus-5 caches from 512 tokens but claude-sonnet-5, the
+    general-tier default that now runs most turns, needs 1024. A prefix between
+    the two would cache on reports and quietly stop caching on chat, which is
+    the traffic that most needs it."""
     text = build_system(_render(PROFILE), volatile_context())[0]["text"]
-    assert len(text) / 4 > 512
+    assert len(text) / 4 > 1024
 
 
 def test_thinking_off_adds_a_generic_tag_guardrail():

@@ -26,6 +26,36 @@ AGENT_SEMAPHORE = threading.BoundedSemaphore(2)
 # JSON doesn't balloon.
 MAX_REASONING_CHARS = 20_000
 
+# The two session kinds that run on the heavy model. A report is the one thing
+# this app produces that somebody has to defend line by line, and it is written
+# once per period rather than once per question — so it is worth the expensive
+# answer, and chat is not.
+HEAVY_KINDS = ("weekly", "monthly")
+
+
+def model_for_session(session: dict, params: dict) -> str | None:
+    """Which of the two configured models this session's turns run on.
+
+    The decision lives HERE, next to the session, rather than at each call site.
+    run_session_turn already holds the session, so the tier cannot be forgotten
+    by a caller — and there are four callers, one of which is the scheduler,
+    which could not have resolved it itself (see config.get_run_params).
+
+    The `parent_id` clause is not defensive, it is half the rule. A chat thread
+    under a report is created with the REPORT'S OWN KIND — `startThread` and
+    `resolveTargetSession` both call apiCreateSession(view.kind, reportId) — so
+    a follow-up question about a market scan is a `weekly` session too, and kind
+    alone would put every one of them on the expensive model. Only the report
+    itself, which has no parent, is heavy. `is_conversation` two functions down
+    tells the same two records apart the same way.
+
+    Falls back to params["model"] when no heavy model is configured, so a params
+    dict built before the split — or by a test — still runs.
+    """
+    if session.get("kind") in HEAVY_KINDS and not session.get("parent_id"):
+        return params.get("model_heavy") or params.get("model")
+    return params.get("model")
+
 
 def period_key(kind: str) -> str:
     """Current period identifier: ISO week for weekly, year-month for monthly.
@@ -78,9 +108,11 @@ def run_session_turn(session: dict, message: str, params: dict,
                      profile: dict | None = None, volatile: str | None = None):
     """Append a user message, run the agent, yield events, persist the reply.
 
-    `params` is the dict from config.get_run_params(): {model, reasoning,
-    effort, research}. Passed through rather than read here, so this module
-    never imports config and stays callable from tests.
+    `params` is the dict from config.get_run_params(): {model, model_heavy,
+    reasoning, effort, research}. Passed through rather than read here, so this
+    module never imports config and stays callable from tests — the one field
+    it does interpret is the model, via model_for_session, because picking
+    between the two tiers needs the session and config does not have it.
     """
     is_first_user = not any(m.get("role") == "user" for m in session["messages"])
     content, display = build_user_content(message, attachments)
@@ -110,7 +142,7 @@ def run_session_turn(session: dict, message: str, params: dict,
     turn_charts: list[dict] = []
 
     for event in run_agent(effective,
-                           model=params.get("model"),
+                           model=model_for_session(session, params),
                            reasoning=bool(params.get("reasoning", True)),
                            effort=params.get("effort"),
                            research=params.get("research"),
@@ -189,6 +221,11 @@ def run_agent_to_text(messages: list[dict], params: dict, *,
 
     Used by background callers that need only the final text — the urgency
     narrative and the assumption refresh, neither of which creates a session.
+
+    No session means no tier to pick, so these run on params["model"], the
+    general one. That is the right answer rather than a limitation: all three
+    callers are short single-shot turns, and two of them already fall back to
+    deterministic text when the API is unreachable.
     """
     text, error = "", None
     for event in run_agent(messages,

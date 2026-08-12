@@ -1,4 +1,4 @@
-// app.js — Client logic for the CFO Finance Agent demo.
+// app.js — Client logic for the CFO Budgeting Agent demo.
 // Hash-routed SPA. A bare `#/` is Home: the shared feature view wearing the
 // .is-home modifier — no sidebar, no header, composer centred — where a question
 // is asked and answered without leaving the page. `#/chat` is Ask, the archive of
@@ -45,11 +45,14 @@ const newSessionBtn = document.getElementById("new-session-btn");
 const featureHeading = document.getElementById("feature-heading");
 const featureSub = document.getElementById("feature-sub");
 const topicSwitcher = document.getElementById("topic-switcher");
+const demoNotice = document.getElementById("demo-notice");
 const attachBtn = document.getElementById("attach-btn");
 const fileInput = document.getElementById("file-input");
 const attachmentsEl = document.getElementById("attachments");
 
-let settings = { model: null, show_debug: false };
+// `model` used to be mirrored here and read by nothing. The selects render off
+// the /api/settings payload directly, so the model never needed a mirror.
+let settings = { show_debug: false };
 let profile = null;             // company profile; gates every route until confirmed
 let driverPollTimer = null;     // 2s poll while any driver is re-verifying
 let pendingAttachments = [];   // files staged for the next message: {name, kind, media_type, data}
@@ -1463,6 +1466,10 @@ function updateNav(kind) {
     a.classList.toggle("active", a.dataset.kind === kind));
   dataLink.classList.toggle("active", kind === "data");
   schedulerLink.classList.toggle("active", kind === "scheduler");
+  // Home only. It belongs here rather than in renderHome for the reason above:
+  // this is the one function that decides header chrome, and it is reached from
+  // both entrances to Home — route() and goHome(), which fires no hashchange.
+  demoNotice.classList.toggle("hidden", kind !== "home");
 }
 
 // ---------- Data ingestion view (#/data) ----------
@@ -1972,7 +1979,13 @@ window.addEventListener("hashchange", route);
 
 // ---------- Settings panel ----------
 
-const modelSelect = document.getElementById("model-select");
+// Two model slots, not one. `heavy` runs the weekly scan and the monthly budget
+// revision; `general` runs everything else. The server decides which surface is
+// which — the panel only picks the two models.
+const modelSelects = {
+  heavy: document.getElementById("model-heavy-select"),
+  general: document.getElementById("model-general-select"),
+};
 const refreshEnabled = document.getElementById("refresh-enabled");
 const refreshInterval = document.getElementById("refresh-interval");
 const refreshStatus = document.getElementById("refresh-status");
@@ -1984,10 +1997,13 @@ document.getElementById("close-settings").addEventListener("click", () =>
   settingsPanel.classList.add("hidden"));
 
 function applySettings(data) {
-  settings.model = data.model;
   settings.show_debug = data.show_debug;
-  modelSelect.innerHTML = data.available_models
-    .map(m => `<option value="${m}" ${m === data.model ? "selected" : ""}>${m}</option>`).join("");
+  for (const [slot, select] of Object.entries(modelSelects)) {
+    const current = (data.models || {})[slot];
+    select.innerHTML = data.available_models
+      .map(m => `<option value="${escapeAttr(m)}" ${m === current ? "selected" : ""}>${escapeHtml(m)}</option>`)
+      .join("");
+  }
   showDebug.checked = data.show_debug;
   refreshEnabled.checked = data.scheduler.enabled;
   refreshInterval.value = String(data.scheduler.interval_seconds);
@@ -2019,7 +2035,11 @@ async function pushSettings(update) {
   applySettings(await resp.json());
 }
 
-modelSelect.addEventListener("change", () => pushSettings({ model: modelSelect.value }));
+// One slot per post. config._merge merges nested dicts key-by-key, so sending
+// only the slot that changed leaves the other one alone.
+for (const [slot, select] of Object.entries(modelSelects)) {
+  select.addEventListener("change", () => pushSettings({ models: { [slot]: select.value } }));
+}
 showDebug.addEventListener("change", () => pushSettings({ show_debug: showDebug.checked }));
 refreshEnabled.addEventListener("change", () => pushSettings({ refresh_enabled: refreshEnabled.checked }));
 refreshInterval.addEventListener("change", () =>
@@ -2160,7 +2180,24 @@ async function loadProfile() {
   return profile;
 }
 
+// The demo notice opens by default and remembers being collapsed, so it is
+// honest on first contact without nagging anyone who demos this daily.
+// localStorage is the only use of it in this app and it throws outright in some
+// privacy modes, so both sides are wrapped: a disclaimer that cannot remember a
+// preference is a far smaller problem than one that breaks boot.
+const DEMO_NOTICE_KEY = "cfo3.demoNotice.collapsed";
+
+function initDemoNotice() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(DEMO_NOTICE_KEY) === "1"; } catch { /* default: open */ }
+  demoNotice.open = !collapsed;
+  demoNotice.addEventListener("toggle", () => {
+    try { localStorage.setItem(DEMO_NOTICE_KEY, demoNotice.open ? "0" : "1"); } catch { /* not fatal */ }
+  });
+}
+
 async function boot() {
+  initDemoNotice();
   // In parallel: Budget Outlook's gate is independent of the profile gate, and
   // preloading it here means route() can paint #/budget without first showing
   // the boot dots while its own fetch resolves.

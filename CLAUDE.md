@@ -112,7 +112,24 @@ Chat, weekly market scan and monthly budget revision are all **sessions** — on
 `data/history/{kind}/{id}.json`, `KINDS = ("chat", "weekly", "monthly")`. A report is just a session
 whose first user message is a preset prompt (`WEEKLY_PROMPT` / `MONTHLY_PROMPT`), so report
 generation, report follow-ups, scheduled prompts, the setup proposal stream and ordinary chat all run
-through one function, `reporting.run_session_turn`. Child chats under a report carry `parent_id`.
+through one function, `reporting.run_session_turn`. Child chats under a report carry `parent_id`
+**and the report's own kind** — `startThread` and `resolveTargetSession` both call
+`apiCreateSession(view.kind, reportId)`, so a follow-up question about a market scan is itself a
+`weekly` session. Kind alone therefore does *not* separate a report from a conversation about it;
+`parent_id` is the discriminator, which is why `is_conversation` and `model_for_session` both test it
+and why the sidebar lists filter on `!s.parent_id`.
+
+**Which of the two configured models runs a turn is decided from that pair**, in the pure
+`reporting.model_for_session`: a `weekly`/`monthly` session with no parent is the heavy model
+(default `claude-opus-5`), everything else is the general one (default `claude-sonnet-5`). The
+decision lives next to the session rather than at the four call sites because the session is the only
+place both facts are available — and because `tasks.execute_task` receives an already-resolved params
+dict and cannot import `config`, which is the whole reason `get_run_params` is *injected* into the
+scheduler. `get_run_params()` stays zero-arg and ships both models; its `model` key is the **general**
+one, so every pre-split reader of `params["model"]` — the budget-page narrative, the alert narrative,
+driver verification, the assumption refresh — is on the cheap model with no edit, and only the report
+path opts up. A per-task override in `tasks.py` sets both slots, or a pinned scan would silently keep
+running on the configured heavy model.
 
 Neither the `monthly` nor the `weekly` kind has **a tab of its own**. Both are the same merge, done
 twice, and neither changed anything server-side:
@@ -152,12 +169,17 @@ correctness-critical and commented as such:
   it as "finished" silently truncates a research turn with no error. Bounded by `MAX_CONTINUATIONS`.
 - A round with **no local tool uses** must break before appending a user turn, or it POSTs
   `content: []` → 400. `MAX_TOOL_TURNS` counts only rounds that ran ≥1 local tool.
-- `MODEL_CAPS` derives tool version, thinking mode, effort and **`fallbacks`** support per model.
-  `AVAILABLE_MODELS` is the subset whose `fallbacks` is true — not the whole registry — because the
-  loop sends `betas` + `fallbacks` on every request, so a model that cannot accept them cannot be
-  offered. That was a real 400 on every turn for anyone who picked sonnet; the fix is that the picker
-  is derived from what the request actually sends, so it is unrepresentable rather than merely fixed.
-  Any new model-dependent request field must be gated on a cap the same way, or it recurs.
+- `MODEL_CAPS` derives tool version, thinking mode, effort and **`fallbacks`** support per model, and
+  **`model_request_fields` is the one place a model-dependent request field is written**.
+  `AVAILABLE_MODELS` is a subset of the registry — the models whose caps clear what the loop needs of
+  every model: the two web tools (this app's premise is cited research), adaptive thinking, effort.
+  `fallbacks` is deliberately **not** in that derivation any more. It was, and it had to be, back
+  when the loop sent `betas` + `fallbacks` unconditionally — that was a real 400 on every turn for
+  anyone who picked sonnet, and excluding the model was the fix available at the time. Gating the two
+  lines on the cap is the better fix, and once it exists the requirement genuinely shrinks and sonnet
+  becomes offerable. The rule is unchanged and is the thing to preserve: a field only some models
+  accept gets gated in `model_request_fields` and dropped from the `AVAILABLE_MODELS` derivation,
+  **in that order**. Never widen the list on its own.
   `web_search` and `web_fetch` carry separate version keys deliberately (pre-4.6 dates differ).
 
 Also: `build_system` splits the system prompt into a **cached** block (static prompt + stable company
@@ -670,8 +692,11 @@ and `.bo-regen.hidden` are declared next to their elements for the same reason.
 
 One more trap in the same family, in the other direction: **`style.css` ships a bare
 `select { max-width: 190px }`**, so any new `<select>` outside `.bo-field` silently inherits it — and
-`width: 100%` does not beat a `max-width`. `.bo-compare select` and `#model-select` both lift it
-explicitly. A scenario name clipped to 190px is a stub nobody can tell apart from the next one.
+`width: 100%` does not beat a `max-width`. `.bo-compare select` and the settings panel's two model
+selects lift it explicitly, with `max-width: none`. That second example used to be `#model-select`,
+which set `width: 100%` **and nothing else** — so the one rule this file cited as the good example
+was itself clipped to 190px in a 340px panel for as long as it existed. A scenario name clipped to
+190px is a stub nobody can tell apart from the next one.
 
 `createStreamRenderer(container, bubble, opts)` is the extracted streaming reveal loop, shared by
 chat, the setup wizard and the reasoning disclosure. Its 130 ms cadence, `max(14, backlog/5)` batch

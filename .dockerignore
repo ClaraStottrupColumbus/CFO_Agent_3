@@ -1,0 +1,22 @@
+# Secrets must never reach an image layer — anyone who can pull the image can
+# read them. The API key is injected as a runtime app setting instead.
+.env
+.env.*
+
+# Bulk and build artefacts
+.venv/
+.git/
+.gitignore
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.DS_Store
+
+# Not needed at runtime
+tests/
+skills/
+.claude/
+*.md
+Dockerfile
+.dockerignore

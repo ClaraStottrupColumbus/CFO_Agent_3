@@ -1,4 +1,4 @@
-/* style.css — CFO Finance Agent UI, styled with the Columbus Design System.
+/* style.css — CFO Budgeting Agent UI, styled with the Columbus Design System.
    Tokens come from columbus-tokens.css (navy #010190 / cream #F4E8E3 / orange
    #FF7800; Instrument Serif display + Onest body). Brand ratio: ~70% cream,
    25% navy, 5% orange — orange is reserved for primary CTAs only. Cards use
@@ -766,7 +766,14 @@ select {
   outline: none;
 }
 select:focus { border-color: var(--columbus-navy); box-shadow: 0 0 0 2px rgba(1, 1, 144, 0.18); }
-#model-select { width: 100%; }
+/* `max-width: none` is the load-bearing half, not `width`. The bare
+   `select { max-width: 190px }` above applies to every select in the app, and
+   width does not beat a max-width — so these two clipped to 190px inside a
+   340px panel until the cap was lifted explicitly. */
+#model-heavy-select,
+#model-general-select { width: 100%; max-width: none; }
+#settings-panel .field-label { display: block; margin: 0.6rem 0 0.3rem; }
+#settings-panel .field-label:first-of-type { margin-top: 0; }
 input[type="checkbox"] { width: 1.15rem; height: 1.15rem; accent-color: var(--columbus-navy); }
 
 .hint { font-size: 0.76rem; color: var(--fg-3); margin: 0.5rem 0 0.7rem; }
@@ -1304,6 +1311,61 @@ details.reasoning.is-live .reasoning-spinner {
   align-items: flex-start; justify-content: center; overflow-y: auto;
 }
 .page-inner { max-width: 1000px; width: 100%; padding: 2.2rem 1.5rem 3rem; margin: 0 auto; }
+
+/* ---------------- Demo notice ----------------
+   A body-level sibling of <header>, shown on Home only (updateNav decides).
+   In normal flow rather than absolutely positioned: the header wraps
+   #topic-switcher onto a second row under 1180px and there is no
+   --header-height token to key an offset off, so `align-self: flex-end` on the
+   body flex column is what keeps it under the bar at every width instead of
+   overlapping it. Muted like .panel-note / .hint rather than tinted like
+   .report-banner — --accent-soft reads as an active state, and this is a
+   standing fact about the data, not something that just happened. */
+
+.demo-notice {
+  align-self: flex-end;
+  max-width: min(34ch, calc(100% - var(--space-6) * 2));
+  margin: var(--space-3) var(--space-6) 0;
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  font-size: var(--fs-caption);
+  color: var(--fg-3);
+}
+.demo-notice.hidden { display: none; }
+
+.demo-notice > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.35rem 0.7rem;
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-wide);
+  color: var(--fg-2);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: inherit;
+  transition: color var(--duration-base) var(--ease-out);
+}
+.demo-notice > summary::-webkit-details-marker { display: none; }
+.demo-notice > summary::after {
+  content: "▾";
+  margin-left: auto;
+  font-size: 0.8rem;
+  line-height: 1;
+  color: var(--fg-2);
+  transition: transform var(--duration-base) var(--ease-out);
+}
+.demo-notice[open] > summary::after { transform: rotate(180deg); }
+.demo-notice > summary:hover { color: var(--accent); }
+.demo-notice > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.demo-notice > p {
+  margin: 0;
+  padding: 0 0.7rem 0.55rem;
+  line-height: var(--lh-relaxed);
+}
 
 /* ---------------- Home (`#/`) ----------------
    Home is #feature-view with .is-home on it — the same DOM, the same composer,

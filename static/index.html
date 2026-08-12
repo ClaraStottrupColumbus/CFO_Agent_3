@@ -1,4 +1,4 @@
-<!-- index.html — CFO Finance Agent demo UI.
+<!-- index.html — CFO Budgeting Agent demo UI.
      A hash-routed single page. `#/` is Home: the shared feature view worn as a
      centred, sidebar-less chat (#feature-view.is-home), where a question is asked
      and answered in place. `#/chat` is Ask, the archive of past conversations;
@@ -14,10 +14,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CFO Finance Agent</title>
-  <link rel="stylesheet" href="/static/columbus-tokens.css?v=34">
-  <link rel="stylesheet" href="/static/style.css?v=34">
-  <link rel="stylesheet" href="/static/budget.css?v=34">
+  <title>CFO Budgeting Agent</title>
+  <link rel="stylesheet" href="/static/columbus-tokens.css?v=36">
+  <link rel="stylesheet" href="/static/style.css?v=36">
+  <link rel="stylesheet" href="/static/budget.css?v=36">
 </head>
 <body>
   <header>
@@ -65,6 +65,20 @@
       <button id="settings-btn" title="Settings" aria-label="Settings">⚙</button>
     </div>
   </header>
+
+  <!-- Demo notice. A body-level sibling of <header>, deliberately outside every
+       view: renderHome() rewrites #messages wholesale on each visit and
+       sendMessage() strips .home-hero out of it, so anything placed in there is
+       transient. <body> is a flex column, so this sits in normal flow under the
+       header and right-aligns via align-self — no hard-coded header offset,
+       which matters because the header grows a second row under 1180px.
+       updateNav() owns its visibility, the same way it owns #topic-switcher's;
+       render functions must not touch header chrome. -->
+  <details id="demo-notice" class="demo-notice hidden">
+    <summary>Demo data</summary>
+    <p>This is a demonstration. It runs on a preloaded fictional company, NordFeed Group,
+       an animal-feed manufacturer. Every figure is synthetic.</p>
+  </details>
 
   <!-- Boot view: the ONLY view without `hidden`. Nothing else paints until
        route() decides, so a gated URL never flashes the wrong view. -->
@@ -342,8 +356,13 @@
     </div>
 
     <section>
-      <h3>Model</h3>
-      <select id="model-select"></select>
+      <h3>Models</h3>
+      <label class="field-label" for="model-heavy-select">Reports</label>
+      <select id="model-heavy-select"></select>
+      <label class="field-label" for="model-general-select">Everything else</label>
+      <select id="model-general-select"></select>
+      <p class="hint">Market scans and budget revisions run on the first model. Chat,
+        alerts, driver checks and the Budget page read run on the second.</p>
     </section>
 
     <section>
@@ -389,7 +408,7 @@
 
   <!-- budget.js BEFORE app.js: it only declares window.BudgetPlan, while app.js
        ends by calling boot() → route(), which needs it to already exist. -->
-  <script src="/static/budget.js?v=34"></script>
-  <script src="/static/app.js?v=34"></script>
+  <script src="/static/budget.js?v=36"></script>
+  <script src="/static/app.js?v=36"></script>
 </body>
 </html>
