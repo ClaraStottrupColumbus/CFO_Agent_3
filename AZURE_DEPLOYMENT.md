@@ -15,21 +15,63 @@ it records what was tried, what failed, why, and the exact commands that worked.
 | Web app | `cfo-agent-demo-8105` | Agent 1. Public URL: `https://cfo-agent-demo-8105.azurewebsites.net` |
 | App Service plan | `cfo-agent3-plan` | **B1** (1 core / 1.75 GB), Linux — Agent 3 only |
 | Web app | `cfo-budget-agent-8105` | Agent 3 (this repo). Public URL: `https://cfo-budget-agent-8105.azurewebsites.net` |
+| App Service plan | `cfo-agent2-plan` | **B1** (1 core / 1.75 GB), Linux — Agent 2 only |
+| Web app | `cfo-anomaly-agent-8105` | Agent 2 (`../CFO_Agent_2`). Public URL: `https://cfo-anomaly-agent-8105.azurewebsites.net` |
 
 Live app settings on `cfo-agent-demo-8105`: `WEBSITES_PORT=8000`, `ANTHROPIC_API_KEY=<set>`,
 `alwaysOn=true`, image `cfoagentdemoacr8105.azurecr.io/cfo-agent-demo:v2` (`:latest` points at the
 same digest; `:v1` is retained for rollback).
 
 Live app settings on `cfo-budget-agent-8105`: `WEBSITES_PORT=8000`, `ANTHROPIC_API_KEY=<set>`,
-`alwaysOn=true`, `numberOfWorkers=1`, image `cfoagentdemoacr8105.azurecr.io/cfo-budget-agent:v1`
+`alwaysOn=true`, `numberOfWorkers=1`, image `cfoagentdemoacr8105.azurecr.io/cfo-budget-agent:v3`
 (`:latest` points at the same digest).
+
+Live app settings on `cfo-anomaly-agent-8105`: `WEBSITES_PORT=8000`, `ANTHROPIC_API_KEY=<set>`,
+`alwaysOn=true`, `numberOfWorkers=1`, image `cfoagentdemoacr8105.azurecr.io/cfo-anomaly-agent:v1`
+(`:latest` points at the same digest). Full runbook:
+[`../CFO_Agent_2/AZURE_DEPLOYMENT.md`](../CFO_Agent_2/AZURE_DEPLOYMENT.md).
+
+Tag history for `cfo-anomaly-agent` — same warning as below, derive the next tag from the registry:
+
+| Tag | Digest (short) | Pushed | Contents |
+|---|---|---|---|
+| `v1`, `latest` | `8cf58ae7` | 2026-08-13 | first Agent 2 image, through `a0c8d3f` |
+
+**Agent 2 deliberately does NOT bake `data/` into its image** — the opposite of the choice below,
+and not an oversight. Agent 3 bakes a snapshot for two reasons that both fail to apply to Agent 2:
+it has no setup gate (every route serves unconditionally, so an empty `data/` is not a broken
+demo), and it primes on a daemon thread rather than in the blocking lifespan hook (so the port
+opens in ~1s regardless — measured: HTTP 200 within 12s of `docker run`). It seeds itself via
+`generate_data.seed_if_empty()` on first boot instead. Don't "fix" its Dockerfile by copying this
+one's `COPY data/` line.
+
+Tag history for `cfo-budget-agent` — **read this before choosing a tag for a new push**:
+
+| Tag | Digest (short) | Pushed | Contents |
+|---|---|---|---|
+| `v1` | `2ef691f0` | 2026-08-11 | first Agent 3 image |
+| `v2` | `c3aded4b` | 2026-08-11 | through `ca5b856` (data ingestion) |
+| `v3`, `latest` | `e90c3266` | 2026-08-13 | through `1a29f09` (token-spend cuts), assets at `?v=42` |
+
+**This section said `:v1` was live until 2026-08-13, and it was wrong — `:v2` had been deployed
+without the runbook being updated.** Pushing the "next" tag by reading this file alone would have
+overwritten the image actually serving the demo and destroyed a rollback point. Always derive the
+next tag from the registry and the app, never from this table:
+
+```bash
+az acr manifest list-metadata --registry cfoagentdemoacr8105 --name cfo-budget-agent \
+  --orderby time_desc --query "[?tags!=null].{tags:tags, digest:digest, created:createdTime}" -o json
+az webapp config show --name cfo-budget-agent-8105 --resource-group cfo-demo-rg2 \
+  --query linuxFxVersion -o tsv
+```
 
 Continuous deployment is currently **off** on both — a new image requires a manual restart to pick up.
 
 **Each app has its own plan on purpose.** B1 is one core, and the runbook's own sizing says B1 → 1
 app. Giving Agent 3 a separate B1 rather than resizing `cfo-demo-plan` to B2 costs the same and means
 neither demo can restart or starve the other — a plan SKU change restarts every app on the plan, and
-these are demoed live.
+these are demoed live. Agent 2 followed the same precedent in 2026-08 (`cfo-agent2-plan`), so the
+account now runs three B1 plans with one app each. Free Trial had no quota objection to the third.
 
 **Before running anything destructive or anything that restarts/resizes the plan, confirm
 the demo isn't in use.** A plan SKU change (`az appservice plan update --sku ...`) restarts
@@ -117,8 +159,8 @@ az webapp create --name $NEWAPP --resource-group $RG --plan $PLAN \
 
 # NOTE: az webapp create has a bug where --container-image-name including the registry
 # host gets the host prepended AGAIN (resulting image path becomes doubled and wrong).
-# It fires every time — it did again on the Agent 3 deploy — so treat this as a step,
-# not a contingency. ALWAYS verify:
+# It fires every time — it has now fired on all THREE deploys to this account (Agent 1,
+# Agent 3, Agent 2) — so treat this as a step, not a contingency. ALWAYS verify:
 az webapp config show --name $NEWAPP --resource-group $RG --query linuxFxVersion --output tsv
 
 # If it shows "<acr>.azurecr.io/<acr>.azurecr.io/<repo>:v1", fix with `container set`.
@@ -227,7 +269,18 @@ so `/api/profile` is the real readiness signal for both a smoke test and any hea
 ## Gotchas worth remembering
 
 - **`--platform linux/amd64`** is required on any build machine that isn't already amd64
-  (e.g. Apple Silicon Macs default to arm64, which won't run on Azure).
+  (e.g. Apple Silicon Macs default to arm64, which won't run on Azure). On a Windows amd64 box with
+  Docker Desktop's WSL2 backend the flag is a no-op, but leave it in — it costs nothing and the
+  command is then correct on every machine.
+- **A 200 right after `az webapp restart` does not mean your new image is live.** App Service keeps
+  the old container serving while the new one warms, so `/api/profile` answered 200 five seconds
+  into a 758 MB pull — from the *previous* build. Verify the running image by fetching something
+  that differs between builds, not by status code. The `?v=N` cache-busting string on the five
+  asset links in `static/index.html` is ideal, since it changes on every frontend edit anyway:
+  ```bash
+  curl -s https://cfo-budget-agent-8105.azurewebsites.net/ | grep -o '?v=[0-9]*' | sort -u
+  ```
+  The real swap shows up as one failed request followed by the new version — expect ~15-30s.
 - **State is ephemeral.** Anything written to the container filesystem (JSON files,
   SQLite, etc.) is lost on every restart and every redeploy. If a future app needs
   persistent state, mount an Azure File share into the container rather than relying on
